@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest>=8.0.0
+debugpy==1.8.14
+agent-dev-cli==0.0.1b260427

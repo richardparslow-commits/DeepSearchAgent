@@ -1,0 +1,45 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "agentdev CLI",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "va_legal_agent",
+      "args": [
+        "service connection for tinnitus",
+        "--max-results",
+        "5"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
+      "name": "Foundry Toolkit Agent Inspector",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "va_legal_agent",
+      "args": [
+        "service connection for tinnitus",
+        "--max-results",
+        "5"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true,
+      "env": {
+        "AGENT_DEBUG": "1"
+      }
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install project dependencies",
+      "type": "shell",
+      "command": ". .venv/bin/activate && python -m pip install -r requirements-dev.txt",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run legal research agent",
+      "type": "shell",
+      "command": ". .venv/bin/activate && python -m va_legal_agent \"service connection for tinnitus\"",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": ". .venv/bin/activate && python -m pytest -q",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
