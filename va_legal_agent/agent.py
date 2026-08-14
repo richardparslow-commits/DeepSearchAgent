@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .fetch import fetch_case_details
+from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis
 from .models import CaseRecord, LegalAnalysis
 from .ranking import rank_cases
@@ -168,7 +169,11 @@ ENRICH_CASE_LIMIT = 5
 
 
 def enrich_top_cases(cases: list[CaseRecord], limit: int = ENRICH_CASE_LIMIT) -> list[CaseRecord]:
-    """Fetch source pages for the top cases and fill in citation/date/holding details."""
+    """Fetch source pages for the top cases and fill in structured details.
+
+    Fills citation, decision date, holding, docket, judge, statutes, and
+    outcome where the source page provides them.
+    """
     for case in cases[:limit]:
         if not case.url:
             continue
@@ -177,35 +182,24 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int = ENRICH_CASE_LIMIT) ->
         except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
             logger.warning("Could not fetch details for %s: %s", case.url, exc)
             continue
-        case.citation = details.get("citation") or case.citation
-        case.decision_date = details.get("decision_date") or case.decision_date
-        case.holding = details.get("holding") or case.holding
+        for key in ("citation", "decision_date", "holding", "docket", "judge", "outcome"):
+            value = details.get(key) or getattr(case, key)
+            if value:
+                setattr(case, key, value)
+        statutes = details.get("statutes") or []
+        if statutes:
+            case.statutes = list(statutes)
     return cases
 
 
 def summarize_case_impact(case: CaseRecord) -> str:
-    text = f"{case.title} {case.snippet} {case.holding} {case.impact}".lower()
-    issues: list[str] = []
-    if "service connection" in text:
-        issues.append("service connection")
-    if "benefit of the doubt" in text:
-        issues.append("benefit of the doubt")
-    if "reasons and bases" in text:
-        issues.append("reasons and bases")
-    if "evidence" in text:
-        issues.append("evidence evaluation")
-    if "nexus" in text:
-        issues.append("nexus")
-    if "rating" in text:
-        issues.append("rating")
-    if not issues:
-        issues.append(case.issue.lower() or "the factual and legal issue")
+    """Build a nuanced impact summary for one case.
 
-    return (
-        f"This ruling is relevant to {', '.join(issues[:3])} in VA compensation claims. "
-        f"It underscores that the agency must apply the governing standards carefully, explain the basis for the decision, "
-        f"and assess the evidence in a way that is consistent with veterans-law principles and reviewable on appeal."
-    )
+    Delegates to the impact-analysis layer, which layers procedural-posture,
+    statutory-anchor, and authority-weight notes onto the relevance sentence.
+    Kept as the public entry point used by the research pipeline.
+    """
+    return analyze_case_impact(case).nuance
 
 
 def analyze_cases_for_claim(claim_issue: str, claim_type: str = "Compensation", max_results: int = 10, enrich: bool = True) -> LegalAnalysis:

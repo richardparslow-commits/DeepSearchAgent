@@ -1,4 +1,8 @@
-"""Best-effort extraction of case details (citation, decision date, holding) from source pages."""
+"""Best-effort extraction of case details from source pages.
+
+Extracts citation, decision date, holding, docket number, judge attribution,
+cited VA statutes, and procedural outcome from HTML pages and PDF opinions.
+"""
 
 from __future__ import annotations
 
@@ -82,13 +86,87 @@ def extract_decision_date(text: str) -> str:
     return ""
 
 
+_DOCKET_PATTERNS = (
+    re.compile(r"\b(?:Docket|Case|Appeal)\s+No\.?\s*([0-9][0-9\-\s]*[0-9])\b", re.IGNORECASE),
+    re.compile(r"\bNo\.\s*([0-9][0-9\-]{3,12})\b"),
+)
+_JUDGE_PATTERN = re.compile(
+    r"\b(?:Chief\s+Judge|Acting\s+Judge|Judge)\s+"
+    r"((?:[A-Z]\.\s*)*[A-Z][A-Za-z'\-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'\-]+){1,2})\b"
+)
+_PER_CURIAM_PATTERN = re.compile(r"\bper\s+curiam\b", re.IGNORECASE)
+_USC_PATTERN = re.compile(
+    r"\b38\s*U\.?\s*S\.?\s*C\.?\s*§*\s*([0-9]{2,4}[A-Za-z]?(?:\s*\([a-zA-Z0-9]+\))*)",
+    re.IGNORECASE,
+)
+_CFR_PATTERN = re.compile(
+    r"\b38\s*C\.?\s*F\.?\s*R\.?\s*§*\s*([0-9]{1,2}\.[0-9]{2,4}(?:\s*\([a-zA-Z0-9]+\))*)",
+    re.IGNORECASE,
+)
+# Checked in priority order; most appellate dispositions lead with vacatur/remand.
+OUTCOME_SIGNALS: tuple[str, ...] = ("vacated", "remanded", "affirmed", "dismissed", "granted", "denied")
+_HOLDING_PATTERN = re.compile(
+    r"\b(?:we|this court|the court|the board|this decision)\s+"
+    r"(?:hold|holds|held|conclude|concludes|concluded|find|finds|found)\s+that\s+[^.;]{10,400}?[.;]",
+    re.IGNORECASE,
+)
+
+
+def extract_docket(text: str) -> str:
+    """Return the first docket/case number found (e.g. '19-4433'), or ''."""
+    for pattern in _DOCKET_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return re.sub(r"\s+", " ", match.group(1)).strip()
+    return ""
+
+
+def extract_judge(text: str) -> str:
+    """Return the attributed judge's name (or 'Per Curiam'), or ''."""
+    match = _JUDGE_PATTERN.search(text)
+    if match:
+        return re.sub(r"\s+", " ", match.group(1)).strip()
+    if _PER_CURIAM_PATTERN.search(text):
+        return "Per Curiam"
+    return ""
+
+
+def extract_statutes(text: str, limit: int = 6) -> list[str]:
+    """Return unique cited VA statutes in normalized form (38 U.S.C. / 38 C.F.R.)."""
+    statutes: list[str] = []
+    for pattern, prefix in ((_USC_PATTERN, "38 U.S.C. § "), (_CFR_PATTERN, "38 C.F.R. § ")):
+        for match in pattern.finditer(text):
+            entry = prefix + re.sub(r"\s+", "", match.group(1))
+            if entry not in statutes:
+                statutes.append(entry)
+    return statutes[:limit]
+
+
+def extract_outcome(text: str, limit: int = 2) -> str:
+    """Return the detected procedural outcome, e.g. 'vacated and remanded'."""
+    lowered = text.lower()
+    hits = [signal for signal in OUTCOME_SIGNALS if re.search(rf"\b{signal}\b", lowered)]
+    return " and ".join(hits[:limit])
+
+
+def extract_holding_sentence(text: str) -> str:
+    """Return the first explicit holding sentence found in the text, or ''."""
+    match = _HOLDING_PATTERN.search(re.sub(r"\s+", " ", text))
+    if not match:
+        return ""
+    sentence = match.group(0).strip().rstrip(";")
+    if not sentence.endswith("."):
+        sentence += "."
+    return sentence[0].upper() + sentence[1:]
+
+
 def _extract_pdf_text(content: bytes) -> str:
     try:
         from pypdf import PdfReader  # required dependency; lazy import keeps failure local
 
         reader = PdfReader(io.BytesIO(content))
         chunks: list[str] = []
-        for page in reader.pages[:2]:
+        for page in reader.pages[:4]:
             try:
                 chunks.append(page.extract_text() or "")
             except Exception:  # noqa: BLE001 - skip unreadable pages
@@ -99,10 +177,12 @@ def _extract_pdf_text(content: bytes) -> str:
         return ""
 
 
-def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str]:
-    """Fetch a case page or PDF and extract citation, decision date, and a holding summary.
+def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | list[str]]:
+    """Fetch a case page or PDF and extract structured details.
 
-    Network failures raise FetchError; parse failures return empty fields.
+    Extracts citation, decision date, holding, docket number, judge, cited
+    statutes, and procedural outcome where detectable. Network failures raise
+    FetchError; parse failures return empty fields.
     """
     timeout = timeout or int(os.getenv("REQUEST_TIMEOUT_SECONDS", "20"))
     headers = {"User-Agent": "Mozilla/5.0 (compatible; VA-Legal-Agent/1.0; +https://example.com)"}
@@ -115,22 +195,28 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str]:
     content_type = response.headers.get("Content-Type", "")
     looks_pdf = "pdf" in content_type.lower() or url.lower().split("?")[0].endswith(".pdf")
     if looks_pdf:
-        text = _extract_pdf_text(response.content)
-        return {
-            "citation": extract_citation(text),
-            "decision_date": extract_decision_date(text),
-            "holding": "",
-        }
+        return _details_from_text(_extract_pdf_text(response.content))
 
     soup = BeautifulSoup(response.text, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
     meta = soup.find("meta", attrs={"name": "description"}) or soup.find(
         "meta", attrs={"property": "og:description"}
     )
-    holding = (meta.get("content") or "").strip() if meta else ""
     page_text = soup.get_text(" ", strip=True)
+    details = _details_from_text(f"{title} {page_text}")
+    if not details["holding"] and meta:
+        details["holding"] = (meta.get("content") or "").strip()
+    return details
+
+
+def _details_from_text(text: str) -> dict[str, str | list[str]]:
+    """Extract all structured details from raw decision text."""
     return {
-        "citation": extract_citation(page_text) or extract_citation(title),
-        "decision_date": extract_decision_date(page_text),
-        "holding": holding,
+        "citation": extract_citation(text),
+        "decision_date": extract_decision_date(text),
+        "holding": extract_holding_sentence(text),
+        "docket": extract_docket(text),
+        "judge": extract_judge(text),
+        "statutes": extract_statutes(text),
+        "outcome": extract_outcome(text),
     }

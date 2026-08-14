@@ -104,6 +104,10 @@ def test_fetch_cases_enriches_top_case_details(monkeypatch):
             "citation": "23 Vet.App. 1",
             "decision_date": "2011-03-15",
             "holding": "The Board must provide adequate reasons and bases.",
+            "docket": "09-1234",
+            "judge": "Mary J. Smith",
+            "statutes": ["38 U.S.C. § 7104(d)(1)"],
+            "outcome": "vacated and remanded",
         },
     )
 
@@ -112,6 +116,10 @@ def test_fetch_cases_enriches_top_case_details(monkeypatch):
     assert cases[0].citation == "23 Vet.App. 1"
     assert cases[0].decision_date == "2011-03-15"
     assert cases[0].holding == "The Board must provide adequate reasons and bases."
+    assert cases[0].docket == "09-1234"
+    assert cases[0].judge == "Mary J. Smith"
+    assert cases[0].statutes == ["38 U.S.C. § 7104(d)(1)"]
+    assert cases[0].outcome == "vacated and remanded"
     assert cases[0].impact  # impact summary assigned after enrichment
 
 

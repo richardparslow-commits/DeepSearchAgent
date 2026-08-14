@@ -13,6 +13,10 @@ class CaseRecord(BaseModel):
     issue: str = ""
     holding: str = ""
     impact: str = ""
+    docket: str = ""
+    judge: str = ""
+    statutes: list[str] = Field(default_factory=list)
+    outcome: str = ""
     authority_rank: int = 0
     authority_weight: int = 0
     relevance_score: int = 0
@@ -60,3 +64,15 @@ class LegalAnalysis(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     coverage_score: float = 0.0
     interpretation_source: str = "template"
+
+
+class ImpactProfile(BaseModel):
+    """Structured, nuanced impact analysis for a single case."""
+
+    issue_tags: list[str] = Field(default_factory=list)
+    outcome: str = ""
+    outcome_note: str = ""
+    statutes: list[str] = Field(default_factory=list)
+    statute_note: str = ""
+    authority_note: str = ""
+    nuance: str = ""

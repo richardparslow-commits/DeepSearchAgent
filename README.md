@@ -54,7 +54,8 @@ print(analysis.model_dump_json(indent=2))
 - Searches across the major veterans law sources: CAVC, Federal Circuit, Supreme Court, and BVA (queries run concurrently).
 - Finds candidate cases based on claim issue, benefit type, and legal topic.
 - Ranks results with an explainable ranking layer: court-authority tiers (Supreme Court > Federal Circuit > CAVC > BVA) are strictly dominant, and within a tier cases are scored by issue relevance, decision recency, and extracted-detail completeness.
-- Fetches the top cases' source pages (HTML or PDF) to populate citation, decision date, and holding details where they can be extracted.
+- Fetches the top cases' source pages (HTML or PDF) to populate citation, decision date, holding, docket number, judge attribution, cited statutes, and procedural outcome where they can be extracted.
+- Analyzes each case's impact with a nuanced profile: claim topics touched, procedural posture, statutory anchors, and weight of authority.
 - Converts findings into structured VA claims guidance via the interpretive analysis layer: detected legal elements, case-backed principles, strengths/gaps, a coverage score, and actionable next steps. The narrative can be enhanced by OpenAI/Azure OpenAI when `OPENAI_API_KEY` is set; otherwise a deterministic template is used.
 - Produces a structured analysis suitable for legal research and issue-spotting.
 
@@ -69,6 +70,31 @@ The ranking layer (`va_legal_agent/ranking.py`) orders candidates in two steps:
    - completeness (15%): share of citation/decision date/holding extracted during enrichment
 
 Each case carries a `composite_score` (authority tier + within-tier score) and a `ranking_explanation` describing the factor breakdown, and the analysis summary reports the score alongside authority and relevance.
+
+## Case detail extraction
+
+The enrichment step (`va_legal_agent/fetch.py`) pulls structured details from each top case's source page or PDF opinion:
+
+- **Citation** — reporter citations (Vet.App., F.2d/F.3d/F.4th, U.S., S. Ct., Westlaw) and BVA citation numbers
+- **Decision date** — ISO date, preferring dates marked "Decided"/"Filed"/"Issued"
+- **Holding** — the first explicit holding sentence ("we hold that...", "the Court holds that..."), falling back to the page's meta description for HTML
+- **Docket** — docket/case/appeal numbers (e.g. `19-4433`)
+- **Judge** — judge attribution ("Judge Mary J. Smith", "Chief Judge ...") or "Per Curiam"
+- **Statutes** — unique cited VA statutes, normalized (e.g. `38 U.S.C. § 5107(b)`, `38 C.F.R. § 3.303`)
+- **Outcome** — procedural posture detected from disposition language (e.g. `vacated and remanded`)
+
+All fields are best-effort: unparseable pages leave fields empty rather than failing the research run.
+
+## Impact analysis layer
+
+`va_legal_agent/impact.py` turns each case record into an `ImpactProfile` with a nuanced narrative (`agent.summarize_case_impact` delegates to it):
+
+- **Issue tags** — claim topics the ruling touches (service connection, benefit of the doubt, reasons and bases, evidence evaluation, nexus, rating), in priority order, falling back to the claim issue itself.
+- **Procedural posture** — the outcome (from enrichment, or detected from the title/holding) plus a nuance note explaining what vacatur, remand, affirmance, etc. can mean for a claim.
+- **Statutory anchors** — statutes the ruling engages, mapped to doctrine hints (e.g. § 5107(b) benefit-of-the-doubt, § 7104(d)(1) reasons-and-bases).
+- **Weight of authority** — binding appellate precedent vs. persuasive Board-level decisions vs. unidentified sources.
+
+Output is deterministic research support derived from public decisions, not legal advice.
 
 ## Interpretive analysis layer
 

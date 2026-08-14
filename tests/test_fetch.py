@@ -7,6 +7,11 @@ from va_legal_agent.fetch import (
     FetchError,
     extract_citation,
     extract_decision_date,
+    extract_docket,
+    extract_holding_sentence,
+    extract_judge,
+    extract_outcome,
+    extract_statutes,
     fetch_case_details,
 )
 
@@ -90,7 +95,15 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
 
     details = fetch_case_details("https://uscourts.cavc.gov/documents/case.pdf")
 
-    assert details == {"citation": "", "decision_date": "", "holding": ""}
+    assert details == {
+        "citation": "",
+        "decision_date": "",
+        "holding": "",
+        "docket": "",
+        "judge": "",
+        "statutes": [],
+        "outcome": "",
+    }
 
 
 def test_fetch_case_details_raises_fetch_error_on_network_failure(monkeypatch):
@@ -101,3 +114,122 @@ def test_fetch_case_details_raises_fetch_error_on_network_failure(monkeypatch):
 
     with pytest.raises(FetchError, match="Failed to fetch"):
         fetch_case_details("https://uscourts.cavc.gov/unreachable")
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Docket No. 12-34 567 was assigned by the Board.", "12-34 567"),
+        ("Appeal No. 23-10567 is pending.", "23-10567"),
+        ("Case No. 2023-1234, Fed. Cir.", "2023-1234"),
+        ("No. 19-2233 (order issued).", "19-2233"),
+        ("The docket is not mentioned here.", ""),
+    ],
+)
+def test_extract_docket(text, expected):
+    assert extract_docket(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Before Judge Mary J. Smith, the court held.", "Mary J. Smith"),
+        ("Chief Judge Alan B. Ward wrote separately.", "Alan B. Ward"),
+        ("PER CURIAM.", "Per Curiam"),
+        ("Judge held that nothing useful followed.", ""),
+        ("No judicial attribution here.", ""),
+    ],
+)
+def test_extract_judge(text, expected):
+    assert extract_judge(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "See 38 U.S.C. § 1110 and 38 U.S.C. § 5107(b).",
+            ["38 U.S.C. § 1110", "38 U.S.C. § 5107(b)"],
+        ),
+        ("Section 38 C.F.R. § 3.303(a) governs service connection.", ["38 C.F.R. § 3.303(a)"]),
+        ("38 U.S.C. § 1110 applies; again, 38 U.S.C. § 1110.", ["38 U.S.C. § 1110"]),
+        ("Also 38 U.S.C. 5103A without the section mark.", ["38 U.S.C. § 5103A"]),
+        ("Also cited 38 u.s.c. § 1110 in lowercase text.", ["38 U.S.C. § 1110"]),
+        ("No statutory citations appear.", []),
+    ],
+)
+def test_extract_statutes(text, expected):
+    assert extract_statutes(text) == expected
+
+
+def test_extract_statutes_caps_results():
+    text = " and ".join(f"38 U.S.C. § {n}" for n in (1110, 1131, 1151, 5103, 5107, 7104, 7252))
+
+    assert len(extract_statutes(text)) == 6
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("The decision is vacated and remanded.", "vacated and remanded"),
+        ("The Board decision is AFFIRMED.", "affirmed"),
+        ("The motion was granted but the appeal denied.", "granted and denied"),
+        ("vacated, remanded, and affirmed all appear.", "vacated and remanded"),
+        ("No disposition language appears here.", ""),
+    ],
+)
+def test_extract_outcome(text, expected):
+    assert extract_outcome(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "We hold that the Board erred in weighing the evidence.",
+            "We hold that the Board erred in weighing the evidence.",
+        ),
+        (
+            "the Court holds that VA failed in its duty; remand follows.",
+            "The Court holds that VA failed in its duty.",
+        ),
+        ("We   conclude\nthat the notice was adequate.", "We conclude that the notice was adequate."),
+        ("We hold that so.", ""),
+        ("No holding sentence here.", ""),
+    ],
+)
+def test_extract_holding_sentence(text, expected):
+    assert extract_holding_sentence(text) == expected
+
+
+RICH_HTML_PAGE = """
+<html><head>
+<title>Doe v. McDonough</title>
+<meta name="description" content="Old meta holding.">
+</head><body>
+<h1>Doe v. McDonough</h1>
+<p>Decided: June 2, 2022. Docket No. 19-4433. Before Judge Mary J. Smith.</p>
+<p>The Court holds that the Board provided inadequate reasons and bases for its decision.</p>
+<p>See 38 U.S.C. § 7104(d)(1) and 38 C.F.R. § 3.303. The decision is vacated and remanded.</p>
+</body></html>
+"""
+
+
+def test_fetch_case_details_extracts_rich_fields(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None: FakePageResponse(
+            text=RICH_HTML_PAGE, headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    details = fetch_case_details("https://uscourts.cavc.gov/doe.html")
+
+    assert details["decision_date"] == "2022-06-02"
+    assert details["docket"] == "19-4433"
+    assert details["judge"] == "Mary J. Smith"
+    assert details["holding"] == (
+        "The Court holds that the Board provided inadequate reasons and bases for its decision."
+    )
+    assert details["statutes"] == ["38 U.S.C. § 7104(d)(1)", "38 C.F.R. § 3.303"]
+    assert details["outcome"] == "vacated and remanded"
