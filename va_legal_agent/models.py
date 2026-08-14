@@ -14,6 +14,7 @@ class CaseRecord(BaseModel):
     holding: str = ""
     impact: str = ""
     authority_rank: int = 0
+    authority_weight: int = 0
     relevance_score: int = 0
 
 

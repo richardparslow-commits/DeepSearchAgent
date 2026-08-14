@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "va-legal-agent"
+version = "0.1.0"
+description = "Legal research and case-analysis agent for U.S. veterans compensation claims"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32.0",
+    "beautifulsoup4>=4.2.0",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.8.0",
+    "pypdf>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "debugpy==1.8.14",
+    "agent-dev-cli==0.0.1b260427",
+]
+llm = ["openai>=1.35.0"]
+
+[project.scripts]
+va-legal-agent = "va_legal_agent.__main__:main"
+
+[tool.setuptools]
+packages = ["va_legal_agent"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
