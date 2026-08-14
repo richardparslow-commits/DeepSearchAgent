@@ -31,6 +31,22 @@ class ResearchRequest(BaseModel):
     include_supreme_court_cases: bool = True
 
 
+class ClaimElement(BaseModel):
+    """A legal element detected in the claim issue, with claimant guidance."""
+
+    name: str
+    description: str
+    guidance: str
+    covered_by: list[str] = Field(default_factory=list)
+
+
+class PrincipleFinding(BaseModel):
+    """A legal principle found in the retrieved cases, with attribution."""
+
+    principle: str
+    source_cases: list[str] = Field(default_factory=list)
+
+
 class LegalAnalysis(BaseModel):
     issue: str
     summary: str
@@ -38,3 +54,9 @@ class LegalAnalysis(BaseModel):
     how_it_affects_va_claims: str
     next_steps: list[str] = Field(default_factory=list)
     top_cases: list[str] = Field(default_factory=list)
+    detected_elements: list[ClaimElement] = Field(default_factory=list)
+    principle_findings: list[PrincipleFinding] = Field(default_factory=list)
+    strengths: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    coverage_score: float = 0.0
+    interpretation_source: str = "template"

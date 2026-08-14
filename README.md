@@ -55,7 +55,7 @@ print(analysis.model_dump_json(indent=2))
 - Finds candidate cases based on claim issue, benefit type, and legal topic.
 - Ranks results with an explainable ranking layer: court-authority tiers (Supreme Court > Federal Circuit > CAVC > BVA) are strictly dominant, and within a tier cases are scored by issue relevance, decision recency, and extracted-detail completeness.
 - Fetches the top cases' source pages (HTML or PDF) to populate citation, decision date, and holding details where they can be extracted.
-- Optionally uses OpenAI/Azure OpenAI to interpret how the top cases affect the claim when `OPENAI_API_KEY` is set; otherwise it falls back to template-based summaries.
+- Converts findings into structured VA claims guidance via the interpretive analysis layer: detected legal elements, case-backed principles, strengths/gaps, a coverage score, and actionable next steps. The narrative can be enhanced by OpenAI/Azure OpenAI when `OPENAI_API_KEY` is set; otherwise a deterministic template is used.
 - Produces a structured analysis suitable for legal research and issue-spotting.
 
 ## How case ranking works
@@ -69,6 +69,16 @@ The ranking layer (`va_legal_agent/ranking.py`) orders candidates in two steps:
    - completeness (15%): share of citation/decision date/holding extracted during enrichment
 
 Each case carries a `composite_score` (authority tier + within-tier score) and a `ranking_explanation` describing the factor breakdown, and the analysis summary reports the score alongside authority and relevance.
+
+## Interpretive analysis layer
+
+`va_legal_agent/interpretation.py` turns the ranked cases plus the claim issue into structured VA claims guidance:
+
+- **Detected elements** — legal elements mentioned in the issue (service connection, nexus, benefit of the doubt, reasons and bases, presumptions, rating, aggravation, duty to assist, evidence evaluation), each with claimant guidance; `covered_by` lists which retrieved cases address the element.
+- **Case-backed principles** — known veterans-law principles (e.g. 38 U.S.C. § 5107(b) benefit of the doubt, § 7104(d)(1) reasons and bases, nexus, evidence rules) scanned out of the case text with source-case attribution.
+- **Strengths, gaps, and coverage score** — the share of detected elements that retrieved authority actually covers; gaps suggest where targeted research is needed.
+- **Actionable next steps** — derived from the detected elements rather than static boilerplate.
+- **Narrative** (`how_it_affects_va_claims`) — LLM-enhanced when `OPENAI_API_KEY` is set (`interpretation_source: "llm"`), deterministic template otherwise (`"template"`). All output states it is research support, not legal advice.
 
 ## Configuration
 

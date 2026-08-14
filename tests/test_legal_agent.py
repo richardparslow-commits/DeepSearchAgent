@@ -160,6 +160,13 @@ def test_analyze_cases_for_claim_returns_structured_analysis(monkeypatch):
     assert analysis.summary
     assert analysis.how_it_affects_va_claims
     assert any("Smith v. Wilkie" in case for case in analysis.top_cases)
+    # Interpretive analysis layer: principles derived from the cases, not static text.
+    assert analysis.likely_applicable_principles
+    assert any("nexus" in principle.lower() for principle in analysis.likely_applicable_principles)
+    assert [element.name for element in analysis.detected_elements] == ["service connection"]
+    assert analysis.coverage_score == 1.0
+    assert analysis.interpretation_source == "template"  # OPENAI_API_KEY removed by stub
+    assert analysis.strengths
 
 
 def test_analyze_cases_for_claim_raises_when_no_cases(monkeypatch):

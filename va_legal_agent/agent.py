@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .fetch import fetch_case_details
-from .llm import interpret_cases
+from .interpretation import build_interpretive_analysis
 from .models import CaseRecord, LegalAnalysis
 from .ranking import rank_cases
 from .search import SearchError, search_web
@@ -218,31 +218,25 @@ def analyze_cases_for_claim(claim_issue: str, claim_type: str = "Compensation", 
         f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
         for case in cases[:5]
     )
-    likely_principles = [
-        "Evidence must be assessed under the applicable VA and veterans-law standards",
-        "The agency must provide a reasoned decision supported by the record",
-        "The claimant's entitlement depends on the quality, explanation, and evaluation of the evidence",
-        "The court will review whether the Board followed the governing legal framework and credited the proper evidence",
-    ]
 
-    direct_relevancies = [summarize_case_impact(case) for case in cases[:3]]
-    template_text = " ".join(direct_relevancies)
-    llm_text = interpret_cases(claim_issue, claim_type, cases[:3])
-    how_it_affects_va_claims = llm_text or template_text
+    # The interpretive analysis layer derives principles, strengths, gaps, and
+    # next steps from the cases (optionally enhanced by the LLM).
+    interpretive = build_interpretive_analysis(claim_issue, claim_type, cases)
     top_cases = [f"{case.title} ({case.court})" for case in cases[:5]]
 
     return LegalAnalysis(
         issue=claim_issue,
         summary=summary,
-        likely_applicable_principles=likely_principles,
-        how_it_affects_va_claims=how_it_affects_va_claims,
-        next_steps=[
-            "Identify the precise legal issue and the evidence in the claim file",
-            "Compare the facts of the current claim to the most analogous quoted authorities",
-            "Prepare a concise argument tying the evidence to the governing veterans-law standard",
-            "Check whether the Board or agency decision failed to explain a key fact, medical opinion, or benefit-of-the-doubt issue",
-        ],
+        likely_applicable_principles=interpretive.likely_applicable_principles,
+        how_it_affects_va_claims=interpretive.how_it_affects_va_claims,
+        next_steps=interpretive.next_steps,
         top_cases=top_cases,
+        detected_elements=interpretive.detected_elements,
+        principle_findings=interpretive.principle_findings,
+        strengths=interpretive.strengths,
+        gaps=interpretive.gaps,
+        coverage_score=interpretive.coverage_score,
+        interpretation_source=interpretive.interpretation_source,
     )
 
 
