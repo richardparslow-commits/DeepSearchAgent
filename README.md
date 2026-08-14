@@ -53,10 +53,22 @@ print(analysis.model_dump_json(indent=2))
 
 - Searches across the major veterans law sources: CAVC, Federal Circuit, Supreme Court, and BVA (queries run concurrently).
 - Finds candidate cases based on claim issue, benefit type, and legal topic.
-- Ranks results by court authority (Supreme Court > Federal Circuit > CAVC > BVA), then by issue relevance within each tier.
+- Ranks results with an explainable ranking layer: court-authority tiers (Supreme Court > Federal Circuit > CAVC > BVA) are strictly dominant, and within a tier cases are scored by issue relevance, decision recency, and extracted-detail completeness.
 - Fetches the top cases' source pages (HTML or PDF) to populate citation, decision date, and holding details where they can be extracted.
 - Optionally uses OpenAI/Azure OpenAI to interpret how the top cases affect the claim when `OPENAI_API_KEY` is set; otherwise it falls back to template-based summaries.
 - Produces a structured analysis suitable for legal research and issue-spotting.
+
+## How case ranking works
+
+The ranking layer (`va_legal_agent/ranking.py`) orders candidates in two steps:
+
+1. **Authority tiers are strictly dominant.** A Federal Circuit decision always outranks any CAVC or BVA decision, and so on up the hierarchy, because binding authority matters more than signal scores.
+2. **Within a tier, a weighted composite score decides:**
+   - relevance (60%): issue keyword relevance, normalized against the best match in the batch
+   - recency (25%): decision year scaled from 1985 to today; unknown dates get a neutral score
+   - completeness (15%): share of citation/decision date/holding extracted during enrichment
+
+Each case carries a `composite_score` (authority tier + within-tier score) and a `ranking_explanation` describing the factor breakdown, and the analysis summary reports the score alongside authority and relevance.
 
 ## Configuration
 

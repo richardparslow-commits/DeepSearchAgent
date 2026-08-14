@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .fetch import fetch_case_details
 from .llm import interpret_cases
 from .models import CaseRecord, LegalAnalysis
+from .ranking import rank_cases
 from .search import SearchError, search_web
 
 logger = logging.getLogger(__name__)
@@ -145,21 +146,19 @@ def fetch_cases_for_issue(
 
     deduped: list[CaseRecord] = []
     seen: set[tuple[str, str]] = set()
-    # Rank by court authority first, then by issue relevance within the same tier.
+    # Pre-rank by court authority then relevance so enrichment targets the strongest candidates.
     for case in sorted(cases, key=lambda c: (c.authority_weight, c.relevance_score), reverse=True):
         key = (case.title, case.url)
         if key not in seen:
             seen.add(key)
             deduped.append(case)
 
-    ranked = []
-    for index, case in enumerate(deduped, start=1):
-        case.authority_rank = index
-        ranked.append(case)
-    ranked = ranked[:max_results]
-
     if enrich:
-        enrich_top_cases(ranked)
+        enrich_top_cases(deduped, limit=min(ENRICH_CASE_LIMIT, max(max_results, 1)))
+
+    # Final ordering comes from the ranking layer (authority tiers strictly
+    # dominant; within a tier: relevance, recency, and completeness).
+    ranked = rank_cases(deduped)[:max_results]
     for case in ranked:
         case.impact = summarize_case_impact(case)
     return ranked
@@ -215,7 +214,8 @@ def analyze_cases_for_claim(claim_issue: str, claim_type: str = "Compensation", 
         raise ValueError(f"No cases found for: {claim_issue}")
 
     summary = "\n".join(
-        f"- {case.title} ({case.court}) [authority: {case.authority_weight}, relevance: {case.relevance_score}]"
+        f"- {case.title} ({case.court}) "
+        f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
         for case in cases[:5]
     )
     likely_principles = [

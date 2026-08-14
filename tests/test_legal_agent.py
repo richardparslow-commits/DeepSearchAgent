@@ -90,6 +90,9 @@ def test_fetch_cases_orders_by_authority_then_relevance(monkeypatch):
     assert cases[0].authority_weight == 3
     assert cases[1].authority_weight == 2
     assert cases[1].relevance_score > cases[2].relevance_score
+    # The ranking layer assigns an explainable composite score consistent with the order.
+    assert cases[0].composite_score > cases[1].composite_score > cases[2].composite_score
+    assert "authority tier 3" in cases[0].ranking_explanation
 
 
 def test_fetch_cases_enriches_top_case_details(monkeypatch):
