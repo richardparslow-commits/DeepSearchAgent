@@ -2,6 +2,9 @@
 
 A focused legal research and case-analysis agent for U.S. veterans compensation claims.
 
+[![CI](https://github.com/richardparslow-commits/DeepSearchAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/richardparslow-commits/DeepSearchAgent/actions/workflows/ci.yml)
+[![Mutation kill gate](https://github.com/richardparslow-commits/DeepSearchAgent/actions/workflows/mutation.yml/badge.svg)](https://github.com/richardparslow-commits/DeepSearchAgent/actions/workflows/mutation.yml)
+
 ## Purpose
 
 This project is designed to search widely for relevant court and board decisions affecting veterans compensation cases, then explain the impact of those rulings on the VA claims process.
