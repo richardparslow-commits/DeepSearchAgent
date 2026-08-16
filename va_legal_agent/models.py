@@ -24,17 +24,6 @@ class CaseRecord(BaseModel):
     ranking_explanation: str = ""
 
 
-class ResearchRequest(BaseModel):
-    claimant_issue: str
-    benefit_type: str = "Compensation"
-    jurisdiction: str = "United States"
-    max_results: int = 10
-    include_board_cases: bool = True
-    include_cavc_cases: bool = True
-    include_federal_circuit_cases: bool = True
-    include_supreme_court_cases: bool = True
-
-
 class ClaimElement(BaseModel):
     """A legal element detected in the claim issue, with claimant guidance."""
 
@@ -52,6 +41,7 @@ class PrincipleFinding(BaseModel):
 
 
 class LegalAnalysis(BaseModel):
+    run_id: str = ""
     issue: str
     summary: str
     likely_applicable_principles: list[str] = Field(default_factory=list)
@@ -64,6 +54,8 @@ class LegalAnalysis(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     coverage_score: float = 0.0
     interpretation_source: str = "template"
+    search_telemetry: dict[str, dict[str, object]] = Field(default_factory=dict)
+    search_flags: list[str] = Field(default_factory=list)
 
 
 class ImpactProfile(BaseModel):

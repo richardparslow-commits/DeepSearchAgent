@@ -19,6 +19,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mutmut>=3.7.0",
     "debugpy==1.8.14",
     "agent-dev-cli==0.0.1b260427",
 ]
@@ -32,3 +35,16 @@ packages = ["va_legal_agent"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]
+
+[tool.mutmut]
+source_paths = ["va_legal_agent/ranking.py"]
+use_coverage = true
+test_timeout = 30
+pytest_add_cli_args_test_selection = ["tests/test_ranking.py"]

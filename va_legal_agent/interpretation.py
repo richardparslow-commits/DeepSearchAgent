@@ -13,14 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .config import get_settings
 from .llm import interpret_cases
 from .models import CaseRecord, ClaimElement, PrincipleFinding
-
-# Narrative interpretation is produced from the strongest cases, while
-# principle scanning covers a slightly wider pool.
-INTERPRET_CASE_LIMIT = 3
-PRINCIPLE_SCAN_LIMIT = 5
-
+from .topics import PRINCIPLE_PATTERNS, TOPICS
 
 @dataclass(frozen=True)
 class ElementSpec:
@@ -31,140 +27,78 @@ class ElementSpec:
     step: str
 
 
-ELEMENT_LIBRARY: tuple[ElementSpec, ...] = (
-    ElementSpec(
-        name="service connection",
-        phrases=("service connection", "service-connected"),
-        description=(
-            "The Caluza elements: a current diagnosed disability, an in-service "
-            "event or aggravation, and a nexus linking the two."
-        ),
-        guidance=(
-            "Assemble (1) a current diagnosis, (2) evidence of the in-service "
-            "event, and (3) a medical nexus opinion connecting the two."
-        ),
-        step=(
-            "Map the record to the three Caluza elements (diagnosis, in-service "
-            "event, nexus) and identify which element is contested."
-        ),
+# Claimant guidance per topic, keyed by Topic.name. Topic names and detection
+# phrases live in topics.TOPICS; this table only adds the interpretation text.
+_ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
+    "service connection": (
+        "The Caluza elements: a current diagnosed disability, an in-service "
+        "event or aggravation, and a nexus linking the two.",
+        "Assemble (1) a current diagnosis, (2) evidence of the in-service "
+        "event, and (3) a medical nexus opinion connecting the two.",
+        "Map the record to the three Caluza elements (diagnosis, in-service "
+        "event, nexus) and identify which element is contested.",
     ),
-    ElementSpec(
-        name="nexus",
-        phrases=("nexus", "medical opinion", "caused by service", "related to service"),
-        description="A medical or factual link between the current disability and military service.",
-        guidance=(
-            "Obtain a supporting medical nexus opinion that addresses the "
-            "'at least as likely as not' standard."
-        ),
-        step="Secure a nexus opinion that explicitly applies the 'at least as likely as not' standard.",
+    "nexus": (
+        "A medical or factual link between the current disability and military service.",
+        "Obtain a supporting medical nexus opinion that addresses the "
+        "'at least as likely as not' standard.",
+        "Secure a nexus opinion that explicitly applies the 'at least as likely as not' standard.",
     ),
-    ElementSpec(
-        name="benefit of the doubt",
-        phrases=("benefit of the doubt", "reasonable doubt", "equipoise"),
-        description=(
-            "When the evidence for and against the claim is in relative balance, the "
-            "benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b))."
-        ),
-        guidance=(
-            "Highlight areas where favorable and unfavorable evidence are roughly in "
-            "balance, and request that the benefit of the doubt be applied."
-        ),
-        step="Identify issues where the evidence is in equipoise and argue the benefit of the doubt.",
-    ),
-    ElementSpec(
-        name="reasons and bases",
-        phrases=("reasons and bases", "adequate explanation", "statement of reasons"),
-        description=(
-            "The Board must provide an adequate statement of the reasons and bases "
-            "for its decision (38 U.S.C. § 7104(d)(1))."
-        ),
-        guidance="Point out any findings the Board failed to explain or evidence it failed to address.",
-        step="Check the decision for findings that lack reasons-and-bases support.",
-    ),
-    ElementSpec(
-        name="evidence evaluation",
-        phrases=("evidence", "competent evidence", "lay evidence", "medical evidence"),
-        description="Evidence must be competent, credible, and properly weighed under VA standards.",
-        guidance=(
-            "Gather competent evidence supporting the claim, and challenge any "
-            "improper weighing of lay or medical evidence."
-        ),
-        step="Audit whether VA weighed the competent and lay evidence properly.",
-    ),
-    ElementSpec(
-        name="presumption",
-        phrases=("presumption", "presumptive"),
-        description="Presumptive service connection may apply to certain conditions for qualifying veterans.",
-        guidance="Confirm whether the condition and service history qualify for any presumptions.",
-        step="Check whether presumptive service connection applies.",
-    ),
-    ElementSpec(
-        name="rating",
-        phrases=("rating", "evaluation", "schedular"),
-        description=(
-            "Disability evaluation applies the rating schedule to the symptoms and "
-            "severity shown in the record."
-        ),
-        guidance=(
-            "Compare the veteran's symptoms against the rating criteria to argue "
-            "for the appropriate evaluation."
-        ),
-        step="Compare the symptoms against the rating schedule criteria.",
-    ),
-    ElementSpec(
-        name="aggravation",
-        phrases=("aggravation", "aggravated"),
-        description="A pre-existing condition aggravated by service may be service-connected.",
-        guidance="Document the pre-service baseline and the worsening during service.",
-        step="Document the pre-service baseline and the in-service worsening.",
-    ),
-    ElementSpec(
-        name="duty to assist",
-        phrases=("duty to assist",),
-        description="VA has a duty to assist the claimant in developing evidence relevant to the claim.",
-        guidance="Identify records or exams that VA failed to obtain or provide.",
-        step="Identify any evidence that VA failed to help develop.",
-    ),
-)
-
-
-# Phrase -> principle statement; scanned across retrieved case text with attribution.
-PRINCIPLE_PATTERNS: tuple[tuple[str, str], ...] = (
-    (
-        "benefit of the doubt",
-        "When the evidence for and against the claim is in relative equipoise, the "
+    "benefit of the doubt": (
+        "When the evidence for and against the claim is in relative balance, the "
         "benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b)).",
+        "Highlight areas where favorable and unfavorable evidence are roughly in "
+        "balance, and request that the benefit of the doubt be applied.",
+        "Identify issues where the evidence is in equipoise and argue the benefit of the doubt.",
     ),
-    (
-        "reasons and bases",
-        "The Board must provide an adequate statement of reasons and bases for its "
-        "decision (38 U.S.C. § 7104(d)(1)).",
+    "reasons and bases": (
+        "The Board must provide an adequate statement of the reasons and bases "
+        "for its decision (38 U.S.C. § 7104(d)(1)).",
+        "Point out any findings the Board failed to explain or evidence it failed to address.",
+        "Check the decision for findings that lack reasons-and-bases support.",
     ),
-    (
-        "nexus",
-        "Service connection requires a nexus linking the current disability to an in-service event.",
+    "evidence evaluation": (
+        "Evidence must be competent, credible, and properly weighed under VA standards.",
+        "Gather competent evidence supporting the claim, and challenge any "
+        "improper weighing of lay or medical evidence.",
+        "Audit whether VA weighed the competent and lay evidence properly.",
     ),
-    (
-        "competent evidence",
-        "Claims must be supported by competent evidence addressing the required elements.",
+    "presumption": (
+        "Presumptive service connection may apply to certain conditions for qualifying veterans.",
+        "Confirm whether the condition and service history qualify for any presumptions.",
+        "Check whether presumptive service connection applies.",
     ),
-    (
-        "lay evidence",
-        "Competent lay evidence may establish observable symptoms and continuity without medical training.",
+    "rating": (
+        "Disability evaluation applies the rating schedule to the symptoms and "
+        "severity shown in the record.",
+        "Compare the veteran's symptoms against the rating criteria to argue "
+        "for the appropriate evaluation.",
+        "Compare the symptoms against the rating schedule criteria.",
     ),
-    (
-        "medical evidence",
-        "Medical evidence is required to establish diagnosis and, where appropriate, etiology.",
+    "aggravation": (
+        "A pre-existing condition aggravated by service may be service-connected.",
+        "Document the pre-service baseline and the worsening during service.",
+        "Document the pre-service baseline and the in-service worsening.",
     ),
-    (
-        "presumption",
-        "Presumptive service connection may apply for qualifying conditions and service histories.",
-    ),
-    (
-        "duty to assist",
+    "duty to assist": (
         "VA has a duty to assist the claimant in developing evidence relevant to the claim.",
+        "Identify records or exams that VA failed to obtain or provide.",
+        "Identify any evidence that VA failed to help develop.",
     ),
-)
+}
+
+
+def _build_element_library() -> tuple[ElementSpec, ...]:
+    """Join the shared topic names/phrases with the guidance text above."""
+    specs = []
+    for topic in TOPICS:
+        description, guidance, step = _ELEMENT_DETAILS[topic.name]
+        specs.append(ElementSpec(topic.name, topic.phrases, description, guidance, step))
+    return tuple(specs)
+
+
+ELEMENT_LIBRARY: tuple[ElementSpec, ...] = _build_element_library()
+
 
 GENERIC_NEXT_STEPS = [
     "Compare the facts of the current claim to the cited authorities and identify the closest analog.",
@@ -219,9 +153,10 @@ def _template_interpretation(
     cases: list[CaseRecord],
     elements: list[ElementSpec],
     findings: list[PrincipleFinding],
+    interpret_limit: int,
 ) -> str:
     disclaimer = "This guidance is research support derived from public decisions, not legal advice."
-    case_names = ", ".join(case.title for case in cases[:INTERPRET_CASE_LIMIT])
+    case_names = ", ".join(case.title for case in cases[:interpret_limit])
     if findings:
         principle_text = " ".join(finding.principle for finding in findings[:3])
         element_text = (
@@ -245,7 +180,10 @@ def build_interpretive_analysis(
     claim_issue: str, claim_type: str, cases: list[CaseRecord]
 ) -> InterpretiveAnalysis:
     """Build structured VA-claims guidance from ranked cases and the claim issue."""
-    scan_pool = cases[:PRINCIPLE_SCAN_LIMIT]
+    settings = get_settings()
+    interpret_limit = settings.interpret_case_limit
+    scan_limit = settings.principle_scan_limit
+    scan_pool = cases[:scan_limit]
     element_specs = detect_claim_elements(claim_issue)
     findings = extract_principle_findings(scan_pool)
 
@@ -290,8 +228,10 @@ def build_interpretive_analysis(
         next_steps.append("Identify the precise legal issue and the evidence in the claim file.")
     next_steps.extend(GENERIC_NEXT_STEPS)
 
-    template_text = _template_interpretation(claim_issue, claim_type, cases, element_specs, findings)
-    llm_text = interpret_cases(claim_issue, claim_type, cases[:INTERPRET_CASE_LIMIT])
+    template_text = _template_interpretation(
+        claim_issue, claim_type, cases, element_specs, findings, interpret_limit
+    )
+    llm_text = interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
 
     return InterpretiveAnalysis(
         likely_applicable_principles=[

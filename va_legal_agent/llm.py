@@ -7,8 +7,9 @@ installed. Any failure falls back to the template-based analysis.
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING
+
+from .config import get_settings
 
 if TYPE_CHECKING:
     from .models import CaseRecord
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def llm_enabled() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return bool(get_settings().openai_api_key)
 
 
 def _build_messages(issue: str, claim_type: str, cases: "list[CaseRecord]") -> list[dict[str, str]]:
@@ -39,15 +40,16 @@ def _build_messages(issue: str, claim_type: str, cases: "list[CaseRecord]") -> l
 def _call_openai(messages: list[dict[str, str]]) -> str:
     from openai import OpenAI  # optional dependency
 
+    settings = get_settings()
     client = OpenAI(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL") or None,
+        api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
     )
     completion = client.chat.completions.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         messages=messages,
-        timeout=60,
-        max_tokens=700,
+        model=settings.openai_model,
+        timeout=settings.openai_timeout_seconds,
+        max_tokens=settings.openai_max_tokens,
     )
     return (completion.choices[0].message.content or "").strip()
 

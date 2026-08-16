@@ -1,8 +1,11 @@
+import pytest
+
 from va_legal_agent.models import CaseRecord
 from va_legal_agent.ranking import (
     WEIGHT_COMPLETENESS,
     WEIGHT_RECENCY,
     WEIGHT_RELEVANCE,
+    _parse_year,
     completeness_score,
     rank_cases,
     recency_score,
@@ -146,3 +149,41 @@ def test_rank_is_deterministic_for_exact_ties():
     second = [case.title for case in rank_cases(list(ties))]
 
     assert first == second == ["Alpha", "Bravo"]  # title breaks exact ties
+
+
+def test_parse_year_edges():
+    # Exactly four digits is a year; short digit runs are not; non-digit prefixes are not.
+    assert _parse_year("2020") == 2020
+    assert _parse_year("2020-01-01") == 2020
+    assert _parse_year("123") is None
+    assert _parse_year("ab12") is None
+    assert _parse_year("") is None
+
+
+def test_recency_score_respects_explicit_current_year():
+    # At the recency floor the span is 1, so the current year must be used as-is
+    # (not replaced by the wall-clock year) and the span must not widen.
+    assert recency_score("1986-01-01", current_year=1986) == 1.0
+    # A date above the floor is clamped to 1.0 even when the span is only 1.
+    assert recency_score("1987-01-01", current_year=1985) == 1.0
+
+
+def test_score_case_uses_max_relevance_one_and_current_year():
+    case = make_case("Dated", relevance=1, date="2015-01-01")
+
+    tier_score, _ = score_case(case, max_relevance=1, current_year=2016)
+
+    # max_relevance=1 still normalizes relevance, and recency is anchored to 2016:
+    # (2015-1985)/(2016-1985) = 30/31. The date field also counts as one of the
+    # three completeness signals.
+    expected = WEIGHT_RELEVANCE * 1.0 + WEIGHT_RECENCY * (30 / 31) + WEIGHT_COMPLETENESS * (1 / 3)
+    assert tier_score == pytest.approx(expected)
+
+
+def test_rank_cases_respects_current_year():
+    case = make_case("Dated", relevance=1, date="2015-01-01")
+
+    ranked = rank_cases([case], current_year=2016)
+
+    tier = WEIGHT_RELEVANCE * 1.0 + WEIGHT_RECENCY * (30 / 31) + WEIGHT_COMPLETENESS * (1 / 3)
+    assert ranked[0].composite_score == pytest.approx(case.authority_weight + tier)

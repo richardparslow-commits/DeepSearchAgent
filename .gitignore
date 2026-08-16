@@ -6,6 +6,12 @@ __pycache__/
 build/
 dist/
 
+# Mutation testing (mutmut) scratch
+.mutmut-cache/
+mutants/
+.coverage
+.mutmut-cache
+
 # Environments
 .env
 .venv/

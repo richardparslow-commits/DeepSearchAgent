@@ -11,15 +11,18 @@ from __future__ import annotations
 
 from .fetch import extract_outcome, extract_statutes
 from .models import CaseRecord, ImpactProfile
+from .topics import (
+    BINDING_COURTS,
+    BOARD_COURT,
+    ISSUE_TAG_ORDER,
+    STATUTE_HINTS,
+    TOPICS_BY_NAME,
+)
 
-# Detection phrase -> reported tag, checked in priority order.
-ISSUE_TAG_PATTERNS: tuple[tuple[str, str], ...] = (
-    ("service connection", "service connection"),
-    ("benefit of the doubt", "benefit of the doubt"),
-    ("reasons and bases", "reasons and bases"),
-    ("evidence", "evidence evaluation"),
-    ("nexus", "nexus"),
-    ("rating", "rating"),
+# Detection phrase -> reported tag, derived from the shared topic table in
+# topics.py, checked in priority order.
+ISSUE_TAG_PATTERNS: tuple[tuple[str, str], ...] = tuple(
+    (TOPICS_BY_NAME[name].phrases[0], name) for name in ISSUE_TAG_ORDER
 )
 
 # Procedural-posture notes keyed by the leading outcome signal. Phrasing
@@ -46,30 +49,11 @@ OUTCOME_NOTES: dict[str, str] = {
     "denied": "The request was denied, which may counsel caution when relying on the theory discussed.",
 }
 
-# Statute fragment -> doctrine hint.
-STATUTE_HINTS: tuple[tuple[str, str], ...] = (
-    ("5107", "the benefit-of-the-doubt rule under 38 U.S.C. § 5107(b)"),
-    ("7104", "the reasons-and-bases requirement of 38 U.S.C. § 7104(d)(1)"),
-    ("1110", "the core service-connection entitlement under 38 U.S.C. § 1110"),
-    ("1131", "peacetime service connection under 38 U.S.C. § 1131"),
-    ("5103", "the notice-and-development duties of 38 U.S.C. § 5103A"),
-    ("3.303", "the service-connection framework of 38 C.F.R. § 3.303"),
-    ("3.159", "the duty-to-assist regulation at 38 C.F.R. § 3.159"),
-    ("4.1", "the rating-schedule requirements of 38 C.F.R. Part 4"),
-)
-
 BOILERPLATE = (
     "It underscores that the agency must apply the governing standards carefully, "
     "explain the basis for the decision, and assess the evidence in a way that is "
     "consistent with veterans-law principles and reviewable on appeal."
 )
-
-BINDING_COURTS = (
-    "U.S. Supreme Court",
-    "U.S. Court of Appeals for the Federal Circuit",
-    "Court of Appeals for Veterans Claims",
-)
-BOARD_COURT = "Board of Veterans' Appeals"
 
 
 def _impact_text(case: CaseRecord) -> str:

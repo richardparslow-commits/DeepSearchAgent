@@ -1,0 +1,441 @@
+"""Search provider abstraction: DuckDuckGo (default), CourtListener, and BVA.
+
+The research pipeline calls :func:`search_all`, which runs every configured
+provider (``SEARCH_PROVIDERS``) across up to ``SEARCH_PAGES_PER_QUERY`` pages
+per query and merges the results, deduping by canonical URL.
+
+Each provider returns result dicts with the standard keys ``title``/``url``/
+``snippet`` plus optional structured fields (``court``, ``citation``,
+``decision_date``, ``docket``, ``judge``) that the agent layer carries into
+``CaseRecord`` directly, avoiding a re-fetch.
+"""
+
+from __future__ import annotations
+
+import html as html_module
+import json
+import logging
+import re
+import time
+from typing import Protocol
+
+import requests
+
+from .config import get_settings
+from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
+from .search import DuckDuckGoProvider, SearchError
+from .topics import (
+    COURT_BVA,
+    COURT_CAVC,
+    COURT_FEDERAL_CIRCUIT,
+    COURT_SUPREME,
+    COURT_UNKNOWN,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class SearchProvider(Protocol):
+    """A search backend returning result dicts for a query."""
+
+    name: str
+
+    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+        """Return up to *max_results* results for *query* on the given *page*."""
+
+
+# CourtListener court id -> canonical court name (topics.COURT_*).
+_CL_COURT_NAMES = {
+    "cavc": COURT_CAVC,
+    "cafc": COURT_FEDERAL_CIRCUIT,
+    "scotus": COURT_SUPREME,
+}
+
+
+class CourtListenerProvider:
+    """Structured case search over CourtListener's REST API.
+
+    CourtListener aggregates federal court opinions with rich metadata
+    (citation, decision date, docket, judges), so the results carry those
+    fields directly instead of relying on HTML enrichment. The court filter
+    targets CAVC, the Federal Circuit, and SCOTUS; the Board (BVA) is not on
+    CourtListener, so those queries fall back to DuckDuckGo.
+
+    CourtListener's v4 API now requires a token: anonymous requests get a 401.
+    Set ``COURTLISTENER_API_KEY`` (a free account token) or this provider will
+    fail every query.
+    """
+
+    name = "courtlistener"
+    API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
+
+    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+        settings = get_settings()
+        headers = {"User-Agent": settings.user_agent}
+        if settings.courtlistener_api_key:
+            headers["Authorization"] = f"Token {settings.courtlistener_api_key}"
+        # CourtListener has its own court filter; site: tokens are noise there.
+        query = strip_site_prefixes(query)
+        params = {
+            "q": query,
+            "court": ["cavc", "cafc", "scotus"],
+            "page_size": min(max(max_results, 1), 100),
+            "page": page,
+            "format": "json",
+        }
+        try:
+            response = requests.get(
+                self.API_URL,
+                params=params,
+                headers=headers,
+                timeout=settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            if (
+                not settings.courtlistener_api_key
+                and getattr(exc, "response", None) is not None
+                and getattr(exc.response, "status_code", None) == 401
+            ):
+                raise SearchError(
+                    f"CourtListener requires an API token (401 Unauthorized); "
+                    f"set COURTLISTENER_API_KEY. Query: {query}"
+                ) from exc
+            raise SearchError(f"CourtListener search failed for query: {query}: {exc}") from exc
+
+        data = response.json()
+        results: list[dict[str, str]] = []
+        for item in data.get("results", []):
+            case_name = item.get("case_name") or "Untitled case"
+            absolute_url = item.get("absolute_url") or ""
+            url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
+            if not url:
+                continue
+            citations = item.get("citations") or []
+            citation = citations[0].get("cite", "") if citations else ""
+            results.append(
+                {
+                    "title": case_name,
+                    "url": url,
+                    "snippet": "",
+                    "court": _CL_COURT_NAMES.get(item.get("court"), COURT_UNKNOWN),
+                    "citation": citation,
+                    "decision_date": item.get("date_filed") or "",
+                    "docket": item.get("docket_number") or "",
+                    "judge": item.get("judges") or "",
+                }
+            )
+            if len(results) >= max_results:
+                break
+        if not results:
+            raise SearchError(f"No search results returned for query: {query}")
+        return results
+
+
+class BVAProvider:
+    """Board of Veterans' Appeals decisions via search.usa.gov.
+
+    The BVA publishes its decisions as plain-text files on va.gov, indexed by
+    search.usa.gov under the ``bvadecisions`` affiliate. The HTML search page
+    embeds the result set as JSON (``resultsData``), so we parse that instead
+    of scraping markup. Each result links to a ``.txt`` decision file, which
+    the fetch layer handles directly.
+
+    search.usa.gov rate-limits anonymous requests aggressively (HTTP 202
+    challenge pages), so failures surface as :class:`SearchError` and the
+    caller's retry/merge logic treats them like DuckDuckGo throttling.
+    """
+
+    name = "bva"
+    SEARCH_URL = "https://search.usa.gov/search"
+    AFFILIATE = "bvadecisions"
+    _RESULTS_KEY = '"resultsData":'
+
+    @staticmethod
+    def _parse_results_data(html_text: str) -> list[dict[str, object]]:
+        """Extract the ``resultsData`` JSON embedded in a search.usa.gov page.
+
+        The page HTML-escapes the JSON (``&quot;`` for quotes), so we unescape
+        first, then locate the ``resultsData`` key and decode the object that
+        follows it (robust to the surrounding script markup).
+        """
+        decoded = html_module.unescape(html_text)
+        start = decoded.find(BVAProvider._RESULTS_KEY)
+        if start < 0:
+            return []
+        try:
+            data, _ = json.JSONDecoder().raw_decode(decoded[start + len(BVAProvider._RESULTS_KEY):].lstrip())
+        except json.JSONDecodeError:
+            logger.warning("Could not parse BVA resultsData JSON")
+            return []
+        results = data.get("results", [])
+        return results if isinstance(results, list) else []
+
+    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+        settings = get_settings()
+        headers = {"User-Agent": settings.user_agent}
+        # BVA's index searches only Board decisions; site: tokens are noise.
+        query = strip_site_prefixes(query)
+        params = {"affiliate": self.AFFILIATE, "query": query}
+        if page > 1:
+            params["page"] = page
+        try:
+            response = requests.get(
+                self.SEARCH_URL,
+                params=params,
+                headers=headers,
+                timeout=settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise SearchError(f"BVA search failed for query: {query}: {exc}") from exc
+
+        if response.status_code == 202 or "anomaly" in response.text.lower():
+            raise SearchError(
+                f"BVA search returned a rate-limit/anomaly challenge page for query: {query}. "
+                "Slow down requests or raise SEARCH_DELAY_SECONDS."
+            )
+
+        results: list[dict[str, str]] = []
+        for item in self._parse_results_data(response.text):
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("url") or "")
+            if not url:
+                continue
+            title = str(item.get("title") or "")
+            # Titles look like "A25049742.txt"; surface the citation, not the extension.
+            if title.lower().endswith(".txt"):
+                title = title[:-4]
+            description = str(item.get("description") or "")
+            # Strip the <strong> highlight tags search.usa.gov injects.
+            snippet = re.sub(r"<[^>]+>", "", description).strip()
+            results.append(
+                {
+                    "title": title or "Board of Veterans' Appeals decision",
+                    "url": url,
+                    "snippet": snippet,
+                    "court": COURT_BVA,
+                    "citation": title,
+                }
+            )
+            if len(results) >= max_results:
+                break
+        if not results:
+            raise SearchError(f"No search results returned for query: {query}")
+        return results
+
+
+_PROVIDERS: dict[str, type[SearchProvider]] = {
+    "duckduckgo": DuckDuckGoProvider,
+    "courtlistener": CourtListenerProvider,
+    "bva": BVAProvider,
+}
+
+
+def get_provider(name: str) -> SearchProvider:
+    """Instantiate the named provider, raising for unknown names."""
+    try:
+        return _PROVIDERS[name]()
+    except KeyError as exc:
+        raise ValueError(f"Unknown search provider: {name!r}") from exc
+
+
+def resolve_search_providers(raw: str | None = None) -> list[str]:
+    """Return the provider names that will actually run, skipping unknown ones.
+
+    Does not log; use :func:`validate_search_providers` when a warning is
+    wanted. An empty list falls back to ``duckduckgo``; a list of only unknown
+    names yields no providers.
+    """
+    if raw is None:
+        raw = get_settings().search_providers
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    if not names:
+        return ["duckduckgo"]
+    return [name for name in names if name in _PROVIDERS]
+
+
+def validate_search_providers(raw: str | None = None) -> list[str]:
+    """Resolve the ``SEARCH_PROVIDERS`` list, warning about unknown names.
+
+    Returns the names that are actually registered; typo'd entries are logged
+    (not fatal) and skipped. An empty list falls back to ``duckduckgo``.
+    Call at startup — including ``--show-config`` runs — so misconfigurations
+    surface immediately, and from :func:`search_all` for library users.
+    """
+    if raw is None:
+        raw = get_settings().search_providers
+    names = [n.strip() for n in raw.split(",") if n.strip()]
+    for name in names:
+        if name not in _PROVIDERS:
+            logger.warning(
+                "Unknown search provider in SEARCH_PROVIDERS: %r; available: %s. "
+                "Skipping it.",
+                name,
+                ", ".join(sorted(_PROVIDERS)),
+            )
+    return resolve_search_providers(raw)
+
+
+_TELEMETRY_KEYS = ("queries_issued", "results", "deduped", "failures")
+
+
+def rollup_search_telemetry(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Sum per-provider telemetry records into a ``{provider: {stat: count}}`` dict.
+
+    Shared by the batch summary and the analysis output so both report the
+    same recall picture. Each row carries the aggregate counters plus a
+    ``variants`` dict mapping each expanded query to its own
+    ``{results, failures}`` counts, merged across records by variant text.
+    Records with unknown providers are skipped.
+    """
+    rolled: dict[str, dict[str, object]] = {}
+    for record in records:
+        provider = str(record.get("provider", ""))
+        if not provider:
+            continue
+        row = rolled.setdefault(provider, {key: 0 for key in _TELEMETRY_KEYS})
+        row.setdefault("variants", {})
+        for key in _TELEMETRY_KEYS:
+            row[key] = int(row[key]) + int(record.get(key, 0) or 0)
+        variants = record.get("variants")
+        if not isinstance(variants, dict):
+            continue
+        # row["variants"] is always the dict setdefault inserted above: a fresh
+        # row is created without the key and gets {} here, and an existing row's
+        # "variants" was set the same way. An isinstance guard is therefore
+        # provably unreachable, so it is intentionally omitted (a broken
+        # invariant should raise rather than silently skip).
+        target = row["variants"]
+        for variant, vstat in variants.items():
+            if not isinstance(vstat, dict):
+                continue
+            vrow = target.setdefault(str(variant), {"results": 0, "failures": 0})
+            vrow["results"] += int(vstat.get("results", 0) or 0)
+            vrow["failures"] += int(vstat.get("failures", 0) or 0)
+    return rolled
+
+
+def recall_flags(telemetry: dict[str, dict[str, object]]) -> list[str]:
+    """Flag low-recall / failing providers from rolled-up search telemetry.
+
+    Emits one flag per provider that either had failed query attempts or
+    returned nothing despite issuing queries. Used both in the analysis output
+    (``search_flags``) and the text report's Gaps block, so the JSON and the
+    human-readable report always agree.
+    """
+    flags: list[str] = []
+    for provider, row in sorted(telemetry.items()):
+        queries = int(row.get("queries_issued", 0) or 0)
+        results = int(row.get("results", 0) or 0)
+        failures = int(row.get("failures", 0) or 0)
+        if failures > 0:
+            flags.append(
+                f"Search provider {provider} had {failures} failed query attempt(s); "
+                "results may be incomplete."
+            )
+        elif queries > 0 and results == 0:
+            flags.append(
+                f"Search provider {provider} returned no results across {queries} queries; "
+                "consider broadening the issue phrasing."
+            )
+    return flags
+
+
+def search_all(
+    query: str,
+    max_results: int = 10,
+    telemetry: list[dict[str, object]] | None = None,
+    deadline: float | None = None,
+) -> list[dict[str, str]]:
+    """Run *query* across all configured providers, pages, and variants, merging results.
+
+    Providers are taken from ``SEARCH_PROVIDERS`` (comma-separated names,
+    default ``duckduckgo``). The query is expanded into up to
+    ``SEARCH_QUERY_VARIANTS`` variants (see :func:`derive_variants`), with
+    ``SEARCH_QUERY_VARIANTS_BY_PROVIDER`` overriding the limit per provider
+    (e.g. ``bva=0`` disables expansion on a throttling backend); each variant
+    runs up to ``SEARCH_PAGES_PER_QUERY`` pages (overridable per provider via
+    ``SEARCH_PAGES_PER_QUERY_BY_PROVIDER``) and is adapted for the provider
+    (e.g. ``site:`` tokens stripped for CourtListener). Results are deduped by
+    canonical URL and capped at *max_results*.
+
+    When *telemetry* (a list) is given, one record per provider is appended
+    with ``provider``, ``queries_issued`` (search calls made), ``results``
+    (raw results returned), ``deduped`` (dropped as URL duplicates),
+    ``failures`` (search attempts that raised), and ``variants`` — a dict
+    mapping each expanded query to its own ``{results, failures}`` counts so
+    callers can see which variant phrasings actually surfaced cases.
+
+    *deadline* is a ``time.monotonic()`` timestamp; once the wall clock passes
+    it, the loop stops starting new provider calls and raises ``SearchError``
+    (so a caller enforcing a wall-time budget can abandon the query's
+    remaining variants/pages instead of letting the nested retry loops run to
+    exhaustion). ``None`` disables the check.
+    """
+    settings = get_settings()
+    provider_names = validate_search_providers(settings.search_providers)
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    errors: list[Exception] = []
+    for name in provider_names:
+        try:
+            provider = get_provider(name)
+        except ValueError as exc:
+            logger.warning("%s; skipping.", exc)
+            continue
+        pages = max(
+            settings.search_pages_per_query_by_provider.get(
+                name, settings.search_pages_per_query
+            ),
+            1,
+        )
+        limit = settings.search_query_variants_by_provider.get(
+            name, settings.search_query_variants
+        )
+        variants = derive_variants(query, limit=limit)
+        variant_stats: dict[str, dict[str, int]] = {}
+        stats: dict[str, object] = {
+            "provider": name,
+            "queries_issued": 0,
+            "results": 0,
+            "deduped": 0,
+            "failures": 0,
+            "variants": variant_stats,
+        }
+        for variant in variants:
+            adapted = adapt_query_for_provider(variant, name)
+            vstat = variant_stats.setdefault(adapted, {"results": 0, "failures": 0})
+            for page in range(1, pages + 1):
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise SearchError(f"Search wall-time budget exhausted for query {query!r}")
+                try:
+                    results = provider.search(adapted, max_results, page=page)
+                except SearchError as exc:
+                    logger.warning(
+                        "Provider %s returned no results for query %r: %s", name, adapted, exc
+                    )
+                    errors.append(exc)
+                    stats["failures"] = int(stats["failures"]) + 1
+                    vstat["failures"] += 1
+                    continue
+                stats["queries_issued"] = int(stats["queries_issued"]) + 1
+                stats["results"] = int(stats["results"]) + len(results)
+                vstat["results"] += len(results)
+                for result in results:
+                    url = result.get("url")
+                    if url and url not in seen:
+                        seen.add(url)
+                        merged.append(result)
+                    else:
+                        stats["deduped"] = int(stats["deduped"]) + 1
+                    if len(merged) >= max_results:
+                        if telemetry is not None:
+                            telemetry.append(stats)
+                        return merged
+        if telemetry is not None:
+            telemetry.append(stats)
+    if not merged and errors:
+        raise errors[-1]
+    return merged

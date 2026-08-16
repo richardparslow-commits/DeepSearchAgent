@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Create the project venv so the Makefile's default PYTHON (.venv/bin/python)
+      # resolves exactly as it does locally.
+      - name: Create venv
+        run: python -m venv .venv
+
+      - name: Install dependencies
+        run: |
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e .
+          .venv/bin/pip install pytest pytest-cov ruff
+
+      - name: Lint (ruff)
+        run: make lint
+
+      - name: Tests with warnings as errors
+        run: make test-w
+
+      - name: Coverage gate (line + branch, must stay at 100%)
+        run: make coverage ARGS="--cov-fail-under=100"

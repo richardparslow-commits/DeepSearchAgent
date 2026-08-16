@@ -1,11 +1,13 @@
 """Tests for the interpretive analysis layer (va_legal_agent.interpretation)."""
 
 from va_legal_agent.interpretation import (
+    _build_element_library,
     build_interpretive_analysis,
     detect_claim_elements,
     extract_principle_findings,
 )
 from va_legal_agent.models import CaseRecord
+from va_legal_agent.topics import TOPICS
 
 
 def _case(title: str, snippet: str = "", holding: str = "") -> CaseRecord:
@@ -16,6 +18,16 @@ def _case(title: str, snippet: str = "", holding: str = "") -> CaseRecord:
         snippet=snippet,
         holding=holding,
     )
+
+
+def test_element_library_builds_wellformed_specs():
+    # The library is built once at import time; calling the builder directly must
+    # yield the same well-formed, topic-mirroring specs every time.
+    specs = _build_element_library()
+
+    assert [spec.name for spec in specs] == [topic.name for topic in TOPICS]
+    assert all(spec.name for spec in specs)
+    assert all(spec.phrases and spec.description and spec.guidance and spec.step for spec in specs)
 
 
 def test_detect_claim_elements_from_issue_text():
@@ -68,10 +80,15 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
 
 def test_build_analysis_uses_llm_text_when_available(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        "va_legal_agent.interpretation.interpret_cases",
-        lambda issue, claim_type, cases: "LLM says: Smith controls.",
-    )
+    captured: dict[str, object] = {}
+
+    def fake_llm(issue, claim_type, cases):
+        captured["issue"] = issue
+        captured["claim_type"] = claim_type
+        captured["cases"] = cases
+        return "LLM says: Smith controls."
+
+    monkeypatch.setattr("va_legal_agent.interpretation.interpret_cases", fake_llm)
 
     result = build_interpretive_analysis(
         "service connection", "Compensation", [_case("Smith v. Wilkie", snippet="service connection")]
@@ -79,6 +96,10 @@ def test_build_analysis_uses_llm_text_when_available(monkeypatch):
 
     assert result.interpretation_source == "llm"
     assert result.how_it_affects_va_claims == "LLM says: Smith controls."
+    # The issue, claim type, and capped case list are passed through unchanged.
+    assert captured["issue"] == "service connection"
+    assert captured["claim_type"] == "Compensation"
+    assert [c.title for c in captured["cases"]] == ["Smith v. Wilkie"]
     # Structured fields remain populated even when the narrative is LLM-enhanced.
     assert result.detected_elements[0].name == "service connection"
 
@@ -101,10 +122,14 @@ def test_build_analysis_falls_back_to_template_when_llm_unavailable(monkeypatch)
 def test_build_analysis_flags_missing_principles():
     cases = [_case("Doe v. VA", snippet="procedural posture only")]
 
-    result = build_interpretive_analysis("service connection", "Compensation", cases)
+    result = build_interpretive_analysis("presumption of exposure", "Compensation", cases)
 
     assert result.principle_findings == []
-    assert any("No explicit legal principle" in gap for gap in result.gaps)
+    # The missing-principle flag leads the gaps (before element-level gaps).
+    assert result.gaps[0] == (
+        "No explicit legal principle was extracted from the retrieved results; "
+        "verify the query terms or broaden the search."
+    )
     assert "No explicit principle" in result.how_it_affects_va_claims
 
 
@@ -115,4 +140,96 @@ def test_build_analysis_handles_no_detected_elements():
 
     assert result.detected_elements == []
     assert result.coverage_score == 0.0
-    assert any("precise legal issue" in step for step in result.next_steps)
+    assert result.next_steps[0] == (
+        "Identify the precise legal issue and the evidence in the claim file."
+    )
+    assert "XXXX" not in result.how_it_affects_va_claims
+
+
+def test_template_narrative_is_exact(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case("Smith v. Wilkie", snippet="service connection requires competent evidence"),
+        _case("Jones v. McDonough", snippet="the benefit of the doubt rule applies"),
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    text = result.how_it_affects_va_claims
+    assert "For the issue of service connection under Compensation" in text
+    assert "(Smith v. Wilkie, Jones v. McDonough)" in text
+    assert "governing principles:" in text
+    assert "Key elements to establish: service connection." in text
+    assert (
+        "This guidance is research support derived from public decisions, not legal advice." in text
+    )
+    assert "None" not in text
+    assert "XX" not in text
+
+
+def test_template_joins_elements_with_semicolons(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = build_interpretive_analysis(
+        "service connection and presumption of exposure",
+        "Compensation",
+        [_case("Smith v. Wilkie", snippet="service connection requires competent evidence")],
+    )
+
+    assert "Key elements to establish: service connection; presumption." in result.how_it_affects_va_claims
+
+
+def test_strengths_and_principles_cite_sources_exactly(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case("Case A", snippet="service connection requires a nexus"),
+        _case("Case B", snippet="service connection requires a nexus"),
+        _case("Case C", snippet="service connection requires a nexus"),
+        _case("Case D", snippet="service connection requires a nexus"),
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    # The principle strength leads; element strengths cite at most three sources.
+    assert result.strengths[0].startswith("Retrieved authority articulates")
+    strength = next(s for s in result.strengths if "addresses 'service connection'" in s)
+    assert strength == "Retrieved authority addresses 'service connection': Case A, Case B, Case C."
+    assert any("(see: Case A, Case B, Case C)" in p for p in result.likely_applicable_principles)
+
+
+def test_template_caps_principles_at_three(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    case = _case(
+        "Many v. VA",
+        snippet=(
+            "benefit of the doubt reasons and bases nexus competent evidence "
+            "lay evidence medical evidence presumption duty to assist"
+        ),
+    )
+
+    result = build_interpretive_analysis("service connection", "Compensation", [case])
+
+    text = result.how_it_affects_va_claims
+    first = "the benefit of the doubt is given to the veteran"
+    second = "adequate statement of reasons and bases"
+    third = "nexus linking the current disability"
+    fourth = "competent evidence addressing the required elements"
+    assert first in text and second in text and third in text
+    assert fourth not in text  # template lists at most three governing principles
+
+
+def test_build_analysis_limits_read_env(monkeypatch):
+    monkeypatch.setenv("INTERPRET_CASE_LIMIT", "1")
+    monkeypatch.setenv("PRINCIPLE_SCAN_LIMIT", "1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    cases = [
+        _case("Case A", snippet="benefit of the doubt rule applies"),
+        _case("Case B", snippet="benefit of the doubt rule applies"),
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.principle_findings[0].source_cases == ["Case A"]
+    assert "Case A" in result.how_it_affects_va_claims
+    assert "Case B" not in result.how_it_affects_va_claims

@@ -1,5 +1,8 @@
 -r requirements.txt
 pytest>=8.0.0
+pytest-cov>=5.0.0
+ruff>=0.6.0
+mutmut>=3.7.0
 debugpy==1.8.14
 agent-dev-cli==0.0.1b260427
 openai>=1.35.0

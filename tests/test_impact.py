@@ -104,11 +104,49 @@ def test_statute_note_mapping():
     assert statute_note_for([]) == ""
 
 
+def test_statute_note_single_hint_is_exact():
+    assert statute_note_for(["38 U.S.C. § 5107(b)"]) == (
+        "The analysis engages the benefit-of-the-doubt rule under 38 U.S.C. § 5107(b), "
+        "which can anchor briefing."
+    )
+
+
+def test_statute_note_two_hints_join_with_and():
+    note = statute_note_for(["38 U.S.C. § 5107(b)", "38 U.S.C. § 7104(d)(1)"])
+
+    assert " and " in note
+    assert note.startswith("The analysis engages the benefit-of-the-doubt rule")
+    assert "the reasons-and-bases requirement" in note
+
+
+def test_statute_note_cites_non_hint_statutes_exactly():
+    assert statute_note_for(["12 U.S.C. § 999", "15 U.S.C. § 777"]) == (
+        "The ruling cites 12 U.S.C. § 999, 15 U.S.C. § 777, which may provide statutory anchors."
+    )
+
+
+def test_statute_note_caps_cited_statutes_at_three():
+    note = statute_note_for(["12 U.S.C. § 999", "15 U.S.C. § 777", "26 U.S.C. § 501", "42 U.S.C. § 1983"])
+
+    assert note == (
+        "The ruling cites 12 U.S.C. § 999, 15 U.S.C. § 777, 26 U.S.C. § 501, "
+        "which may provide statutory anchors."
+    )
+
+
 def test_authority_note_binding_vs_board_vs_unknown():
-    assert "binding" in authority_note_for(CAVC)
-    assert "binding" in authority_note_for("U.S. Supreme Court")
-    assert "persuasive but not binding" in authority_note_for(BVA)
-    assert "persuasive only" in authority_note_for("Veterans law research result")
+    assert authority_note_for(CAVC) == (
+        "As appellate precedent, this ruling is binding on the Board and VA adjudicators."
+    )
+    assert authority_note_for("U.S. Supreme Court") == (
+        "As appellate precedent, this ruling is binding on the Board and VA adjudicators."
+    )
+    assert authority_note_for(BVA) == (
+        "As a Board-level decision, this ruling is persuasive but not binding precedent."
+    )
+    assert authority_note_for("Veterans law research result") == (
+        "The issuing body is unidentified, so treat this ruling as persuasive only."
+    )
 
 
 def test_nuance_layers_posture_statute_and_authority_notes():
@@ -133,3 +171,27 @@ def test_analyze_case_impact_is_deterministic():
     case = _case(snippet="nexus", holding="affirmed", court=BVA)
 
     assert analyze_case_impact(case).nuance == analyze_case_impact(case).nuance
+
+
+def test_analyze_case_impact_lists_tags_and_completes_profile():
+    case = _case(
+        snippet=(
+            "service connection benefit of the doubt reasons and bases "
+            "evidence evaluation nexus rating"
+        ),
+        holding="vacated and remanded",
+        statutes=["38 U.S.C. § 5107(b)"],
+        court=CAVC,
+    )
+
+    profile = analyze_case_impact(case)
+
+    assert profile.nuance.startswith(
+        "This ruling is relevant to service connection, benefit of the doubt, "
+        "reasons and bases in VA compensation claims."
+    )
+    assert "XX" not in profile.nuance
+    assert profile.issue_tags
+    assert profile.outcome_note
+    assert profile.statute_note
+    assert profile.authority_note

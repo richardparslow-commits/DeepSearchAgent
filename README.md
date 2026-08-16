@@ -32,13 +32,99 @@ This project is designed to search widely for relevant court and board decisions
    ```bash
    python -m va_legal_agent "service connection for tinnitus"
    ```
-   Use `--no-enrich` to skip fetching case source pages for citation/date details.
+   Use `--no-enrich` to skip fetching case source pages for citation/date details,
+   `--output-format {json,text,csv}` to choose the analysis output format,
+   `--output-file PATH` to write the analysis to a file, `--show-config` to
+   print the resolved settings as JSON (useful for debugging; it includes
+   `effective_search_providers`, the post-validation provider list next to the
+   raw `search_providers` value),
+   `--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}` to control diagnostic log
+   verbosity, and `--log-format {text,json}` to emit log lines as plain text or
+   one JSON object per line (handy for machine parsing). Log output always goes
+   to stderr, so stdout stays clean for the analysis result. Set `LOG_JSON=1`
+   in the environment (or `.env`) to default to JSON logs without a flag.
+
+   When a run finishes, an `analysis_complete` event is always logged on stderr
+   (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
+   coverage score, and interpretation source as structured fields:
+   `{"event": "analysis_complete", "run_id": "...", "coverage_score": 0.85, "interpretation_source": "template"}`.
+   If analysis raises, an `analysis_failed` event is emitted instead
+   (`{"event": "analysis_failed", "run_id": "...", "issue": "...", "error": "..."}`)
+   and the exception is re-raised, so pipelines get a definitive terminal
+   signal on both success and failure without parsing the analysis output.
+   Set `RUN_ID` in the environment (or pass `--run-id ID`, which takes
+   precedence) to correlate events across invocations — e.g. one batch id
+   shared by many per-issue runs; otherwise a fresh id is generated per run.
+   The same id is stamped onto the analysis output as a top-level `run_id`
+   field (and a `Run id:` line in text / `run_id` column in CSV), so the
+   stdout result and the stderr log events can be joined on it.    Each analysis also carries a `search_telemetry` field (per-provider
+    queries issued, results returned, duplicates dropped, failures, plus a
+    `variants` breakdown showing which expanded query variants actually
+    returned results) so the output JSON shows the recall picture behind the
+    findings; the same numbers are aggregated into `batch_summary` events for
+    `--batch-size` runs. The JSON analysis also carries a computed
+    `search_flags` list flagging low-recall or failing providers (e.g.
+    “returned no results across 8
+   queries”), and text output shows the same flags as gaps while productive
+   providers appear as strengths.
+
+   Pass `--batch-size N` (with the same `--run-id` on each run) to have the
+   CLI track a batch locally: once `N` runs for that id have completed or
+   failed, it emits a `batch_summary` event aggregating completions, failures,
+   and coverage statistics (mean/min/max) for fleet monitoring, then cleans up
+   its state file (stored under `BATCH_STATE_DIR`, defaulting to a temp dir).
 
 ## Running tests
 
+The full suite (250 tests) runs in about a second, so run it after every
+change:
+
 ```bash
-python -m pytest -q
+make test            # full suite (or: python -m pytest -q)
+make test-search     # search parsing, providers, query expansion
+make test-fetch      # fetching, enrichment, agent pipeline
+make test-cli        # CLI output formats, events, batch tracking
+make test-config     # environment parsing and settings
+make test-core       # ranking, impact, interpretation, llm, topics
+make test-w          # full suite with warnings promoted to errors
+make lint            # ruff static checks (pyflakes + pycodestyle rules)
+make lint-fix        # auto-fix what ruff can
+make coverage        # full suite with a per-module coverage report
+make mutate          # mutation-testing pass (mutmut) over every module
+make mutate-check    # full mutation pass + the kill-property baseline gate
+make test ARGS="-k telemetry"   # pass pytest args through
+make smoke             # one real query per configured provider (manual network check)
+make smoke QUERY="tinnitus"      # ... with a custom query
 ```
+
+The suite holds 100% line and branch coverage across the package (`make
+coverage` measures both). The optional LLM path (`va_legal_agent/llm.py`) is
+covered via a mocked `openai` client, so it needs no network or API key. CI
+(GitHub Actions, on every push and PR) runs `make lint`, `make test-w`, and
+`make coverage ARGS="--cov-fail-under=100"` so the coverage baseline is
+enforced, not just measured.
+
+Coverage measures *execution*; `make mutate` checks whether the tests would
+actually *catch* a fault. It runs a mutmut pass per module (each module
+mutated against the test slice that exercises it) and writes every surviving
+mutant's diff to `/tmp/mutmut_survivors_<module>.txt`. A survivor is either a
+provably-equivalent mutation (log-message text, default args, unreachable
+fallbacks — expected and acceptable) or a real gap that needs a stronger
+test. The current suite kills every non-equivalent mutant: survivors are
+limited to equivalent ones. Run it after adding features or tests to keep
+that property, and triage survivors with `python scripts/mutmut_pass.py
+<module> <test_file>` for a single module.
+
+The kill-property is enforced, not assumed: a nightly GitHub Actions job
+(`mutation-kill-gate`) runs `make mutate` and fails when any module's
+survivor count exceeds its entry in `.mutation-baseline.json` (the triaged,
+provably-equivalent survivors per module; a module at `0` fails on *any*
+survivor). When the gate reports a violation, triage the diff in
+`/tmp/mutmut_survivors_<module>.txt` — kill real gaps with stronger tests,
+and bump the baseline only for a newly-proven equivalent (e.g. a new log
+message). Run the same gate locally in one shot with `make mutate-check`
+(full pass + baseline check; it exits non-zero with a triage pointer on any
+untriaged survivor), or trigger the job on demand via `workflow_dispatch`.
 
 ## Example usage
 
@@ -113,14 +199,83 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | Variable | Default | Purpose |
 |---|---|---|
 | `REQUEST_TIMEOUT_SECONDS` | `20` | Timeout for each outbound search/fetch request |
+| `MAX_FETCH_BYTES` | `20971520` | Cap on downloaded response size in bytes (20 MiB) |
 | `SEARCH_MAX_WORKERS` | `4` | Number of court-site search queries run concurrently |
 | `SEARCH_DELAY_SECONDS` | `0.5` | Stagger between starting consecutive search queries (`0` disables) |
+| `SEARCH_RETRY_ATTEMPTS` | `2` | Extra retries for throttled/transient DuckDuckGo responses (`0` disables) |
+| `SEARCH_BACKOFF_BASE_SECONDS` | `1.0` | Base delay (seconds) for retry backoff, doubled per attempt |
+| `SEARCH_BACKOFF_MAX_SECONDS` | `10.0` | Cap on the retry backoff delay (seconds) |
+| `SEARCH_MIN_INTERVAL_SECONDS` | `0` | Global minimum seconds between DuckDuckGo requests (`0` disables) |
+| `SEARCH_MAX_WALL_SECONDS` | `0` | Cap on total wall time (seconds) spent searching for one issue (`0` disables; override per run with `--max-wall-time`) |
+| `SEARCH_PROVIDERS` | `duckduckgo` | Comma-separated search providers (`duckduckgo`, `courtlistener`, `bva`) |
+| `SEARCH_PAGES_PER_QUERY` | `1` | Pages of results fetched per query per provider (`>1` deepens recall) |
+| `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=1,duckduckgo=4`; unlisted providers fall back to the global (each provider still fetches at least 1 page) |
+| `SEARCH_QUERY_VARIANTS` | `3` | Additional variant queries derived from topic synonyms and statute hints (`0` disables) |
+| `SEARCH_QUERY_VARIANTS_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=0,courtlistener=5`; unlisted providers fall back to the global (`0` disables expansion for that provider) |
+| `COURTLISTENER_API_KEY` | – | CourtListener API token (free account; now required — v4 returns 401 for anonymous requests) |
+| `ENRICH_CASE_LIMIT` | `5` | Top cases enriched with full source-page details |
+| `INTERPRET_CASE_LIMIT` | `3` | Top cases fed into the interpretation narrative / LLM |
+| `PRINCIPLE_SCAN_LIMIT` | `5` | Cases scanned for case-backed principle findings |
 | `OPENAI_API_KEY` | – | Enables optional LLM interpretation of the top cases |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model used for LLM interpretation |
+| `OPENAI_TIMEOUT_SECONDS` | `60` | Timeout (seconds) for each OpenAI completion request |
+| `OPENAI_MAX_TOKENS` | `700` | Maximum completion tokens for the LLM narrative |
 | `OPENAI_BASE_URL` | – | Endpoint override for Azure OpenAI / compatible APIs |
+| `LOG_JSON` | `0` | Emit diagnostic logs as JSON on stderr (`1`/`true`/`yes`/`on`); overridden by `--log-format` |
+| `RUN_ID` | – | Correlation id attached to terminal events; a fresh id is generated per run when unset |
+| `BATCH_STATE_DIR` | temp dir | Directory for per-run_id batch state files used by `--batch-size` |
 
 ## Notes
 
 This is a strong research foundation for legal analysis. For production use, a paid legal database or a more structured case-indexing layer can improve completeness and precision.
 
-Web search is performed against DuckDuckGo's HTML endpoint without an API key; heavy use may be rate-limited or blocked by the provider. If every query fails, the agent raises a `SearchError` describing the last underlying error. Request timeout can be tuned via `REQUEST_TIMEOUT_SECONDS` in `.env`.
+Web search is performed against DuckDuckGo's HTML endpoint without an API key; heavy use may be rate-limited or blocked by the provider. Throttled or transient responses (a 202/challenge page, a 429, or a 5xx) are retried with exponential backoff and jitter (`SEARCH_RETRY_ATTEMPTS`, `SEARCH_BACKOFF_BASE_SECONDS`, `SEARCH_BACKOFF_MAX_SECONDS`). A global minimum interval between requests can be enforced with `SEARCH_MIN_INTERVAL_SECONDS`. If every query still fails, the agent raises a `SearchError` describing the last underlying error. Request timeout can be tuned via `REQUEST_TIMEOUT_SECONDS` in `.env`.
+
+Search runs through a pluggable provider layer (`SEARCH_PROVIDERS`). By default only DuckDuckGo is used; adding `courtlistener` queries the CourtListener REST API for CAVC/Federal Circuit/SCOTUS opinions with structured metadata (citation, decision date, docket, judges) that skips HTML enrichment entirely. CourtListener's v4 API now requires a token — set `COURTLISTENER_API_KEY` (free account) or every query fails with 401. Adding `bva` searches the Board of Veterans' Appeals decisions index (search.usa.gov, `bvadecisions` affiliate), returning plain-text decision files that the fetch layer parses directly. Unknown or typo'd provider names in `SEARCH_PROVIDERS` are warned about at startup (visible in `--show-config` runs too) and skipped rather than failing the run, so the raw value stays in the config dump for inspection. Setting `SEARCH_PAGES_PER_QUERY` above `1` fetches multiple result pages per query for deeper recall (subject to the same throttling rules); backends that rate-limit pagination can be pinned to a single page per provider with `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` (e.g. `bva=1`) while others keep deeper paging.
+
+Each query is expanded into up to `SEARCH_QUERY_VARIANTS` variant queries derived from the shared topic vocabulary and the statute/doctrine table (fragments like `5107`, `3.303`), so one issue surfaces results that use different phrasing. Expansion is issue-aware: only topics whose keyword appears in the issue contribute synonyms (a rating issue expands with `evaluation`/`schedular`, not `nexus`), and terms already in the issue are skipped. `site:` tokens are stripped automatically for CourtListener, which has its own court filter; DuckDuckGo keeps them. Backends that throttle extra queries can be tuned per provider with `SEARCH_QUERY_VARIANTS_BY_PROVIDER` — e.g. `bva=0` runs only the base query against search.usa.gov while DuckDuckGo keeps the global expansion; unlisted providers fall back to `SEARCH_QUERY_VARIANTS`.
+
+### Retry and exhaustion chain (worst-case timing)
+
+A single run nests three retry loops, and each is governed by its own setting. If you are tuning for wall time — e.g. to bound how long a batch takes when a provider is throttling — reason about them bottom-up:
+
+1. **Inside each DuckDuckGo call** (`DuckDuckGoProvider.search`). A throttled/transient response is retried up to `SEARCH_RETRY_ATTEMPTS` times, so a call makes at most `SEARCH_RETRY_ATTEMPTS + 1` HTTP requests. Before each retry the provider sleeps `min(SEARCH_BACKOFF_BASE_SECONDS × 2ⁱ × jitter, SEARCH_BACKOFF_MAX_SECONDS)` (jitter is a random 0.75–1.25 multiplier; the `i`-th retry backoff doubles the base). If every attempt hangs to its timeout, a call's worst case is roughly `(SEARCH_RETRY_ATTEMPTS + 1) × REQUEST_TIMEOUT_SECONDS +` the sum of those backoffs. Only the DuckDuckGo provider retries internally — CourtListener and BVA fail fast on the first request error (one HTTP request, no backoff).
+2. **Inside each query** (`search_all`). For every provider, every expanded variant runs on every page: up to `(1 + SEARCH_QUERY_VARIANTS) × SEARCH_PAGES_PER_QUERY` provider calls per query (the original query is always included; per-provider overrides `SEARCH_QUERY_VARIANTS_BY_PROVIDER` / `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` replace the globals for that backend). Each of those calls is a step-1 call, so a fully-throttled query multiplies the step-1 worst case by that count.
+3. **Inside each issue** (`fetch_cases_for_issue`). The agent builds 8 court-site queries and runs them on `SEARCH_MAX_WORKERS` threads, submitting them staggered by `SEARCH_DELAY_SECONDS`. Because the pool overlaps execution, the wall time is roughly `(8 − 1) × SEARCH_DELAY_SECONDS` plus the *slowest* query's step-2 time — not the sum of all eight.
+
+When every level fails, the run raises a `SearchError` describing the **last** underlying error (the last retry's error inside a call, the last query×page's error in `search_all`, and the last query's error in `fetch_cases_for_issue`) — see the exhaustion tests for the exact contract.
+
+**Worked example (defaults, all DuckDuckGo, everything throttled to the worst case):** a call makes 3 requests and sleeps 1.25 + 2.5 s ≈ **63.75 s** worst case; a query makes 4 calls ≈ **255 s**; an issue runs 8 queries concurrently with a 0.5 s stagger ≈ **4.3 minutes** of wall time. Realistic partial failures are far cheaper — each successful call returns immediately — and `SEARCH_MIN_INTERVAL_SECONDS` (if set) adds pacing waits on top. To bound wall time when a backend is throttling: lower `SEARCH_RETRY_ATTEMPTS` (or `SEARCH_BACKOFF_MAX_SECONDS`), pin pages/variants down with the per-provider overrides, reduce `REQUEST_TIMEOUT_SECONDS` — or stop reasoning about the loops entirely and set a budget: `SEARCH_MAX_WALL_SECONDS` (or `--max-wall-time` per run) caps the total search time for one issue. When the budget is exhausted the remaining queries are abandoned — results already found are returned (with a warning), an in-flight query stops cooperatively between provider calls, and if nothing was found a `SearchError` is raised. The bound is not a hard abort of a request already in flight, but the run never starts new work past the deadline and returns at it.
+
+**Batch runs multiply the per-issue worst case.** The CLI analyzes one issue per invocation — `--batch-size N` does *not* parallelize; it merely correlates `N` separate invocations sharing a `--run-id` and emits a `batch_summary` once that many outcomes are recorded. A sequentially-driven batch therefore takes at most **N × (per-issue worst case)** (the ≈ 4.3 min figure above, which already embeds the 8-query `SEARCH_DELAY_SECONDS` stagger and the per-query exhaustion time), plus per-invocation overhead: process startup and the interpretation step (up to `OPENAI_TIMEOUT_SECONDS` per issue when the LLM path is enabled). With defaults and 50 throttled issues that is ≈ 50 × 4.3 min ≈ **3.6 hours** of worst-case wall time — with healthy providers it is a few seconds per issue instead. To bound a batch:
+
+- Shrink the per-issue term — `SEARCH_RETRY_ATTEMPTS`, `SEARCH_BACKOFF_MAX_SECONDS`, per-provider `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` / `SEARCH_QUERY_VARIANTS_BY_PROVIDER`, `REQUEST_TIMEOUT_SECONDS`, and `SEARCH_DELAY_SECONDS` all feed into it directly. The cleanest single lever is `--max-wall-time` (or `SEARCH_MAX_WALL_SECONDS`): each issue then returns at that deadline regardless of how the retry loops are misbehaving, turning the batch bound into `N × min(worst case, budget)`.
+- Or run invocations concurrently from the orchestrator: `P` parallel CLI processes cut the wall time to roughly `⌈N / P⌉ ×` per-issue time. The batch state file is designed for this — `record()` appends one line per outcome atomically and is safe under concurrent writers — so parallel orchestrators can share a `--run-id` without losing completions.
+
+## Troubleshooting
+
+### Recall looks thin or a provider seems dead
+
+Run `make smoke`, which sends one real query per configured provider and prints what each one returns, including the first few titles and URLs:
+
+```bash
+make smoke                       # uses SEARCH_PROVIDERS (default: duckduckgo)
+make smoke QUERY="hearing loss" # custom issue
+SEARCH_PROVIDERS="duckduckgo,courtlistener,bva" make smoke
+```
+
+- A provider that fails prints its error and the command exits non-zero, so failures are hard to miss.
+- A provider that returns nothing is often rate-limited — search.usa.gov throttles BVA queries aggressively — so retry later, or pin it down with `SEARCH_PAGES_PER_QUERY_BY_PROVIDER=bva=1` / `SEARCH_QUERY_VARIANTS_BY_PROVIDER=bva=0`.
+- Run it after changing provider code (new backends, query expansion, pagination) and before releasing, since CI cannot exercise the live network.
+
+### CourtListener always fails with 401
+
+Its v4 API now requires a token. Set `COURTLISTENER_API_KEY` to a free account token.
+
+### DuckDuckGo keeps serving challenge pages
+
+Throttled responses are retried with backoff automatically, but sustained heavy use still gets blocked. Reduce load with `SEARCH_DELAY_SECONDS`, `SEARCH_MIN_INTERVAL_SECONDS`, or fewer `SEARCH_QUERY_VARIANTS`.
+
+### A provider name is silently ignored
+
+Typos in `SEARCH_PROVIDERS` are warned about at startup and dropped; `--show-config` prints both `search_providers` (raw) and `effective_search_providers` (what will actually run). Valid names: `duckduckgo`, `courtlistener`, `bva`.
