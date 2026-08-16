@@ -51,6 +51,39 @@ _CL_COURT_NAMES = {
     "scotus": COURT_SUPREME,
 }
 
+# A CourtListener opinion URL carries its numeric id as either the frontend
+# form (".../opinion/12345/", produced by _map_courtlistener_opinion) or the
+# API form (".../api/rest/v4/opinions/12345/", the opinions-cited rows);
+# match both so traversal works end to end.
+_OPINION_ID_PATTERN = re.compile(r"/opinions?/(\d+)")
+
+
+def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
+    """Map one CourtListener opinion JSON object to a standard result dict."""
+    case_name = item.get("case_name") or "Untitled case"
+    absolute_url = item.get("absolute_url") or ""
+    url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
+    if not url:
+        return None
+    citations = item.get("citations") or []
+    citation = citations[0].get("cite", "") if citations else ""
+    return {
+        "title": case_name,
+        "url": url,
+        "snippet": "",
+        "court": _CL_COURT_NAMES.get(item.get("court"), COURT_UNKNOWN),
+        "citation": citation,
+        "decision_date": item.get("date_filed") or "",
+        "docket": item.get("docket_number") or "",
+        "judge": item.get("judges") or "",
+    }
+
+
+def extract_courtlistener_opinion_id(url: str) -> int | None:
+    """Return the numeric opinion id from a CourtListener opinion URL, if any."""
+    match = _OPINION_ID_PATTERN.search(url or "")
+    return int(match.group(1)) if match else None
+
 
 class CourtListenerProvider:
     """Structured case search over CourtListener's REST API.
@@ -61,6 +94,11 @@ class CourtListenerProvider:
     targets CAVC, the Federal Circuit, and SCOTUS; the Board (BVA) is not on
     CourtListener, so those queries fall back to DuckDuckGo.
 
+    Beyond search, the provider traverses the citation graph: the
+    ``opinions-cited`` endpoint yields the opinions a decision cites (its
+    authorities) and the later opinions that cite it (forward citations),
+    which the research loop follows for multi-hop recall.
+
     CourtListener's v4 API now requires a token: anonymous requests get a 401.
     Set ``COURTLISTENER_API_KEY`` (a free account token) or this provider will
     fail every query.
@@ -68,12 +106,17 @@ class CourtListenerProvider:
 
     name = "courtlistener"
     API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
+    CITATIONS_URL = "https://www.courtlistener.com/api/rest/v4/opinions-cited/"
 
-    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+    def _headers(self) -> dict[str, str]:
         settings = get_settings()
         headers = {"User-Agent": settings.user_agent}
         if settings.courtlistener_api_key:
             headers["Authorization"] = f"Token {settings.courtlistener_api_key}"
+        return headers
+
+    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+        settings = get_settings()
         # CourtListener has its own court filter; site: tokens are noise there.
         query = strip_site_prefixes(query)
         params = {
@@ -87,7 +130,7 @@ class CourtListenerProvider:
             response = requests.get(
                 self.API_URL,
                 params=params,
-                headers=headers,
+                headers=self._headers(),
                 timeout=settings.request_timeout_seconds,
             )
             response.raise_for_status()
@@ -103,33 +146,116 @@ class CourtListenerProvider:
                 ) from exc
             raise SearchError(f"CourtListener search failed for query: {query}: {exc}") from exc
 
-        data = response.json()
         results: list[dict[str, str]] = []
-        for item in data.get("results", []):
-            case_name = item.get("case_name") or "Untitled case"
-            absolute_url = item.get("absolute_url") or ""
-            url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
-            if not url:
+        for item in response.json().get("results", []):
+            mapped = _map_courtlistener_opinion(item)
+            if mapped is None:
                 continue
-            citations = item.get("citations") or []
-            citation = citations[0].get("cite", "") if citations else ""
-            results.append(
-                {
-                    "title": case_name,
-                    "url": url,
-                    "snippet": "",
-                    "court": _CL_COURT_NAMES.get(item.get("court"), COURT_UNKNOWN),
-                    "citation": citation,
-                    "decision_date": item.get("date_filed") or "",
-                    "docket": item.get("docket_number") or "",
-                    "judge": item.get("judges") or "",
-                }
-            )
+            results.append(mapped)
             if len(results) >= max_results:
                 break
         if not results:
             raise SearchError(f"No search results returned for query: {query}")
         return results
+
+    def _get_opinion(self, opinion_id: int) -> dict[str, str] | None:
+        """Fetch one opinion's detail and map it to a standard result dict."""
+        settings = get_settings()
+        try:
+            response = requests.get(
+                f"{self.API_URL}{opinion_id}/",
+                params={"format": "json"},
+                headers=self._headers(),
+                timeout=settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise SearchError(
+                f"CourtListener opinion {opinion_id} fetch failed: {exc}"
+            ) from exc
+        return _map_courtlistener_opinion(response.json())
+
+    def _related_opinions(
+        self, opinion_id: int, relation: str, max_results: int
+    ) -> list[dict[str, str]]:
+        """Traverse one citation relation for *opinion_id*.
+
+        ``relation`` is ``citing`` (opinions this decision cites) or ``cited``
+        (opinions citing this decision); each relationship row links the other
+        opinion, whose detail is fetched for its metadata.
+        """
+        settings = get_settings()
+        params = {
+            f"{relation}_opinion": opinion_id,
+            "page_size": min(max(max_results, 1), 100),
+            "format": "json",
+        }
+        try:
+            response = requests.get(
+                self.CITATIONS_URL,
+                params=params,
+                headers=self._headers(),
+                timeout=settings.request_timeout_seconds,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise SearchError(
+                f"CourtListener citation traversal ({relation}) failed for "
+                f"opinion {opinion_id}: {exc}"
+            ) from exc
+
+        other_key = "cited_opinion" if relation == "citing" else "citing_opinion"
+        results: list[dict[str, str]] = []
+        seen: set[int] = set()
+        for row in response.json().get("results", []):
+            other_id = extract_courtlistener_opinion_id(row.get(other_key) or "")
+            if other_id is None or other_id in seen:
+                continue
+            seen.add(other_id)
+            mapped = self._get_opinion(other_id)
+            if mapped is not None:
+                results.append(mapped)
+            if len(results) >= max_results:
+                break
+        if not results:
+            raise SearchError(f"No {relation} opinions found for opinion {opinion_id}")
+        return results
+
+    def citing_opinions(self, opinion_id: int, max_results: int = 10) -> list[dict[str, str]]:
+        """Return opinions citing *opinion_id* (forward citations)."""
+        return self._related_opinions(opinion_id, "cited", max_results)
+
+    def cited_opinions(self, opinion_id: int, max_results: int = 10) -> list[dict[str, str]]:
+        """Return opinions *opinion_id* cites (its authorities)."""
+        return self._related_opinions(opinion_id, "citing", max_results)
+
+
+def traverse_citations(urls: list[str], max_results: int = 10) -> list[dict[str, str]]:
+    """Follow one hop of the CourtListener citation graph from *urls*.
+
+    For each CourtListener opinion URL, fetch the opinions citing it and the
+    opinions it cites, merging the newly discovered opinions (deduped by URL)
+    as standard result dicts. Non-CourtListener URLs are skipped; a per-opinion
+    traversal failure is logged and skipped so one bad node does not abort the
+    trail.
+    """
+    provider = CourtListenerProvider()
+    merged: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for url in urls:
+        opinion_id = extract_courtlistener_opinion_id(url)
+        if opinion_id is None:
+            continue
+        for related in (provider.cited_opinions, provider.citing_opinions):
+            try:
+                for result in related(opinion_id, max_results):
+                    result_url = result.get("url", "")
+                    if result_url and result_url not in seen:
+                        seen.add(result_url)
+                        merged.append(result)
+            except SearchError as exc:
+                logger.warning("Citation traversal skipped opinion %s: %s", opinion_id, exc)
+    return merged
 
 
 class BVAProvider:

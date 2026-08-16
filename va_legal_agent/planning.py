@@ -13,7 +13,7 @@ every search sub-task.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .topics import STATUTE_HINTS, TOPICS
 
@@ -176,7 +176,8 @@ def refine_plan(plan: ResearchPlan, uncovered_elements: tuple[str, ...] = ()) ->
 
     Adaptive iteration (Phase 4): elements that no retrieved authority covered
     get a dedicated search sub-task. Existing sub-tasks are preserved; the new
-    gap tasks are appended before synthesis runs again.
+    gap tasks are inserted before the terminal synthesis step, which is
+    rewired to depend on them too so the dependency graph stays executable.
     """
     if not uncovered_elements:
         return plan
@@ -195,8 +196,15 @@ def refine_plan(plan: ResearchPlan, uncovered_elements: tuple[str, ...] = ()) ->
                 query=f'"{element}" "{plan.issue}" veterans law',
             )
         )
+    if not additions:
+        return plan
+    synthesize = plan.subtasks[-1]
+    updated_synthesize = replace(
+        synthesize,
+        depends_on=synthesize.depends_on + tuple(task.id for task in additions),
+    )
     return ResearchPlan(
         issue=plan.issue,
         claim_type=plan.claim_type,
-        subtasks=plan.subtasks + tuple(additions),
+        subtasks=plan.subtasks[:-1] + tuple(additions) + (updated_synthesize,),
     )

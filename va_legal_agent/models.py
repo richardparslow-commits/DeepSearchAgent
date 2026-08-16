@@ -22,6 +22,7 @@ class CaseRecord(BaseModel):
     relevance_score: int = 0
     composite_score: float = 0.0
     ranking_explanation: str = ""
+    source_reliability: str = ""
 
 
 class ClaimElement(BaseModel):

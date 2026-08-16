@@ -63,6 +63,8 @@ MUTATE_MODULES = \
 	"search.py tests/test_search.py" \
 	"queries.py tests/test_providers.py tests/test_search.py" \
 	"providers.py tests/test_providers.py tests/test_search.py" \
+	"tools.py tests/test_tools.py" \
+	"reliability.py tests/test_reliability.py tests/test_legal_agent.py" \
 	"fetch.py tests/test_fetch.py tests/test_legal_agent.py" \
 	"agent.py tests/test_legal_agent.py tests/test_research.py" \
 	"planning.py tests/test_planning.py" \

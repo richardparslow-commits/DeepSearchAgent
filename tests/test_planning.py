@@ -142,6 +142,28 @@ def test_refine_plan_noop_without_gaps():
     assert refine_plan(plan, uncovered_elements=()) == plan
 
 
+def test_refine_plan_keeps_synthesis_last_and_rewires_dependencies():
+    plan = decompose_issue("service connection", "Compensation")
+    refined = refine_plan(plan, uncovered_elements=("rating",))
+
+    # The terminal synthesis stays last, and now depends on the gap search too.
+    assert refined.subtasks[-1].kind == SYNTHESIZE
+    assert refined.subtasks[-1].id == "synthesize"
+    gap = next(t for t in refined.subtasks if t.id == "gap-rating")
+    assert gap.kind == SEARCH
+    assert gap.id in refined.subtasks[-1].depends_on
+    assert set(plan.subtasks[-1].depends_on) < set(refined.subtasks[-1].depends_on)
+
+
+def test_refine_plan_returns_same_plan_when_gap_already_present():
+    plan = decompose_issue("service connection", "Compensation")
+    refined = refine_plan(plan, uncovered_elements=("rating",))
+    again = refine_plan(refined, uncovered_elements=("rating",))
+
+    # Re-refining an already-covered gap adds nothing: the same plan is returned.
+    assert again == refined
+
+
 def test_every_statute_hint_has_a_topic_anchor():
     from va_legal_agent.planning import _TOPIC_STATUTES
     from va_legal_agent.topics import STATUTE_HINTS

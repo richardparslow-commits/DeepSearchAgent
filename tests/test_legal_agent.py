@@ -1,3 +1,4 @@
+import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -9,12 +10,14 @@ from va_legal_agent.models import CaseRecord, PrincipleFinding
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
+    _observe,
     analyze_cases_for_claim,
     build_case_queries,
     detect_court_name,
     enrich_top_cases,
     fetch_cases_for_issue,
     normalize_case,
+    research_issue,
     score_case_relevance,
     summarize_case_impact,
 )
@@ -679,9 +682,13 @@ def test_fetch_cases_budget_expires_before_first_query(monkeypatch):
     )
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
 
-    with pytest.raises(SearchError, match="before any results"):
+    with pytest.raises(SearchError) as excinfo:
         fetch_cases_for_issue("tinnitus", max_wall_seconds=0.5)
 
+    assert str(excinfo.value) == (
+        "Search wall-time budget of 0.5s exhausted for issue 'tinnitus' "
+        "before any results were returned."
+    )
     # The deadline check fired on the very first query: nothing was submitted.
     assert executor.submitted == []
 
@@ -828,6 +835,431 @@ def test_fetch_cases_all_fail_reports_last_error(monkeypatch):
         f"Last error: provider error for query: {queries[-1]}"
     )
     assert message == expected
+
+
+def test_research_issue_refines_uncovered_elements(monkeypatch, caplog):
+    """An uncovered claim element triggers a targeted gap re-search round."""
+    caplog.set_level(logging.INFO)
+    calls: list[tuple[str, int, object]] = []
+    telemetry: list[dict[str, object]] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        calls.append((query, max_results, telemetry))
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    cases = research_issue("service connection and rating", telemetry=telemetry)
+
+    # All 13 round-1/gap results collapse to the single deduped case.
+    assert [c.title for c in cases] == ["Smith v. Wilkie"]
+    gap_query = '"rating" "service connection and rating" veterans law'
+    assert len(calls) == len(build_case_queries("service connection and rating", "Compensation")) + 1
+    # The gap round reuses the same max_results and telemetry sink as round 1.
+    gap_call = next(c for c in calls if c[0] == gap_query)
+    assert gap_call[1] == 10
+    assert gap_call[2] is telemetry
+    # The observation and the post-refinement result are logged verbatim.
+    assert any(
+        r.getMessage() == "Research gap detected: uncovered=['rating'] search_flags=[]; refining queries."
+        for r in caplog.records
+    )
+    assert any(
+        r.getMessage() == "Research refinement complete: uncovered=['rating'] search_flags=[]."
+        for r in caplog.records
+    )
+
+
+def test_research_issue_skips_refinement_when_coverage_complete(monkeypatch):
+    queries_seen: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries_seen.append(query)
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection rating evidence"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    cases = research_issue("service connection and rating")
+
+    assert [c.title for c in cases] == ["Smith v. Wilkie"]
+    # Both elements are covered, so only the initial plan queries ran.
+    assert len(queries_seen) == len(build_case_queries("service connection and rating", "Compensation"))
+    assert not any(q.startswith('"rating" "service connection') for q in queries_seen)
+
+
+def test_research_issue_citation_traversal_merges_new_opinions(monkeypatch):
+    """When opted in, the loop follows citation trails and merges the new opinions."""
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    def fake_traverse(urls, max_results=10):
+        assert urls == ["https://uscourts.cavc.gov/smith"]
+        assert max_results == 5  # the loop forwards its own max_results, not a default
+        return [
+            {
+                "title": "Jones v. McDonough",
+                "url": "https://www.courtlistener.com/opinion/99/jones/",
+                "court": "Court of Appeals for Veterans Claims",
+                "snippet": "rating evidence",
+            },
+            {
+                "title": "Wilson v. Wilkie",
+                "url": "https://uscourts.cavc.gov/wilson",  # no court key -> derived from URL
+                "snippet": "rating evidence",
+            },
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    cases = research_issue("service connection and rating", max_results=5)
+
+    assert {c.title for c in cases} == {"Smith v. Wilkie", "Jones v. McDonough", "Wilson v. Wilkie"}
+    jones = next(c for c in cases if c.title == "Jones v. McDonough")
+    # The traversed opinion keeps its provider court label and is classified
+    # as official (primary legal data) by the reliability layer.
+    assert jones.court == COURT_CAVC
+    assert jones.source_reliability == "official"
+    # Without a provider court label, the court is derived from the URL.
+    wilson = next(c for c in cases if c.title == "Wilson v. Wilkie")
+    assert wilson.court == COURT_CAVC
+
+
+def test_research_issue_raises_when_round_one_all_fails(monkeypatch):
+    queries = build_case_queries("tinnitus", "Compensation")
+
+    def failing_search_all(query, max_results=10, telemetry=None, deadline=None):
+        raise SearchError(f"provider error for query: {query}")
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", failing_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    with pytest.raises(SearchError) as excinfo:
+        research_issue("tinnitus")
+
+    # The propagating error names the issue verbatim (not just a generic match).
+    assert str(excinfo.value) == (
+        f"All {len(queries)} searches failed for issue 'tinnitus'. "
+        "The search provider may be blocking or rate-limiting automated requests. "
+        f"Last error: provider error for query: {queries[-1]}"
+    )
+
+
+def test_research_issue_budget_stops_refinement(monkeypatch, caplog):
+    """When the budget expires after round 1, no refinement round starts."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    executor = _SyncExecutor()
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
+    clock = {"now": 100.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["now"])
+    queries_seen: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries_seen.append(query)
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    # The real _observe (imported at the top) is the original function object,
+    # so wrapping it expires the budget exactly at the observation boundary -
+    # after round 1 finished, before the refinement while-check reads the clock.
+    def expiring_observe(claim_issue, cases, telemetry):
+        result = _observe(claim_issue, cases, telemetry)
+        clock["now"] = 101.0  # exactly the deadline (100.0 + 1.0)
+        return result
+
+    monkeypatch.setattr("va_legal_agent.agent._observe", expiring_observe)
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    cases = research_issue("service connection and rating", max_wall_seconds=1.0)
+
+    # Round 1 completed fully, but the budget expired during observation, so
+    # the uncovered "rating" element did not trigger a refinement round.
+    assert [c.title for c in cases] == ["Smith v. Wilkie"]
+    assert len(queries_seen) == len(build_case_queries("service connection and rating", "Compensation"))
+    # A budget sitting exactly AT the deadline must not start a refinement
+    # round: entering the loop would log "gap detected" and then abort the gap
+    # fan-out at its own pre-submission check, emitting a misleading partial
+    # budget warning for work that never ran.
+    assert not any(r.getMessage().startswith("Research gap detected") for r in caplog.records)
+    assert not any("returning partial results" in r.getMessage() for r in caplog.records)
+
+
+def test_research_issue_defaults_claim_type_max_results_and_enrich(monkeypatch):
+    """Every default on research_issue's signature flows through to the search."""
+    queries_seen: list[str] = []
+    max_results_seen: list[int] = []
+    fetched: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries_seen.append(query)
+        max_results_seen.append(max_results)
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: fetched.append(url) or {},
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    research_issue("service connection")  # every argument uses its default
+
+    assert any('"Compensation"' in q for q in queries_seen)  # default claim type
+    assert max_results_seen and all(mr == 10 for mr in max_results_seen)  # default max_results
+    assert fetched == ["https://uscourts.cavc.gov/smith"]  # default enrich=True
+
+
+def test_research_issue_uses_env_wall_time_default_and_shared_deadline(monkeypatch):
+    """SEARCH_MAX_WALL_SECONDS supplies one deadline shared by every round."""
+    monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "5")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
+    deadlines: list[float | None] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        deadlines.append(deadline)
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    research_issue("service connection and rating")
+
+    # Round 1 (12 queries) plus the gap round (1 query) all share one non-None
+    # deadline derived from the env default.
+    assert len(deadlines) == len(build_case_queries("service connection and rating", "Compensation")) + 1
+    assert all(d is not None for d in deadlines)
+    assert len(set(deadlines)) == 1
+
+
+def test_research_issue_budget_expires_mid_round_returns_partial(monkeypatch, caplog):
+    """A budget exhausted mid-round-1 returns what completed, with a warning."""
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
+    values = iter([100.0, 100.0, 100.0, 200.0, 100.0, 200.0])
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: next(values))
+    monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
+    results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [dict(r) for r in results]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    cases = research_issue("tinnitus", max_wall_seconds=1.0)
+
+    assert [c.title for c in cases] == ["Case A"]
+    assert any(
+        r.getMessage() == "Search wall-time budget of 1.0s exhausted for issue 'tinnitus'; returning partial results."
+        for r in caplog.records
+    )
+
+
+def test_research_issue_budget_expires_before_results_raises(monkeypatch):
+    """A budget already spent before round 1 raised nothing: the error names it."""
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
+    state = {"n": 0}
+
+    def fake_monotonic():
+        state["n"] += 1
+        return 100.0 if state["n"] == 1 else 100.5
+
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.search_all",
+        lambda query, max_results=10, telemetry=None, deadline=None: [],
+    )
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    with pytest.raises(SearchError) as excinfo:
+        research_issue("tinnitus", max_wall_seconds=0.5)
+
+    assert str(excinfo.value) == (
+        "Search wall-time budget of 0.5s exhausted for issue 'tinnitus' "
+        "before any results were returned."
+    )
+
+
+def test_research_issue_continues_after_one_query_fails(monkeypatch):
+    first_query = build_case_queries("service connection", "Compensation")[0]
+    results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+
+    def flaky_search_all(query, max_results=10, telemetry=None, deadline=None):
+        if query == first_query:
+            raise SearchError("blocked by provider")
+        return [dict(r) for r in results]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", flaky_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    cases = research_issue("service connection", max_results=2)
+
+    # A partial failure does not abort the run: the successful queries' cases return.
+    assert [c.title for c in cases] == ["Case A"]
+
+
+def test_research_issue_logs_search_flags_during_refinement(monkeypatch, caplog):
+    """The loop observes and logs low-recall flags alongside coverage gaps."""
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
+    telemetry: list[dict[str, object]] = []
+    recorded = {"done": False}
+    flag = "Search provider duckduckgo had 1 failed query attempt(s); results may be incomplete."
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        if not recorded["done"]:
+            recorded["done"] = True
+            telemetry.append(
+                {"provider": "duckduckgo", "queries_issued": 1, "results": 0, "deduped": 0, "failures": 1}
+            )
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    research_issue("service connection and rating", telemetry=telemetry)
+
+    assert any(
+        r.getMessage() == f"Research gap detected: uncovered=['rating'] search_flags=['{flag}']; refining queries."
+        for r in caplog.records
+    )
+    assert any(
+        r.getMessage() == f"Research refinement complete: uncovered=['rating'] search_flags=['{flag}']."
+        for r in caplog.records
+    )
+
+
+def test_research_issue_gap_round_budget_warning(monkeypatch, caplog):
+    """The gap round is bounded by the same budget and reports when it is spent."""
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
+    clock = {"now": 100.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["now"])
+    gap_query = '"rating" "service connection and rating" veterans law'
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        if query == gap_query:
+            clock["now"] = 200.0  # burn the budget during the gap round
+            return []
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    cases = research_issue("service connection and rating", max_wall_seconds=1.0)
+
+    assert [c.title for c in cases] == ["Smith v. Wilkie"]
+    assert any(
+        r.getMessage()
+        == "Search wall-time budget of 1.0s exhausted for issue 'service connection and rating'; returning partial results."
+        for r in caplog.records
+    )
+
+
+def test_observe_returns_uncovered_elements_and_flags():
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie",
+            court="Court of Appeals for Veterans Claims",
+            snippet="service connection requires a nexus",
+        )
+    ]
+    telemetry = [
+        {"provider": "duckduckgo", "queries_issued": 1, "results": 0, "deduped": 0, "failures": 1}
+    ]
+
+    uncovered, flags = _observe("service connection and rating", cases, telemetry)
+
+    assert uncovered == ("rating",)
+    assert flags == [
+        "Search provider duckduckgo had 1 failed query attempt(s); results may be incomplete."
+    ]
+
+
+def test_observe_returns_empty_when_no_gaps_or_flags():
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie",
+            court="Court of Appeals for Veterans Claims",
+            snippet="service connection rating evidence",
+        )
+    ]
+
+    uncovered, flags = _observe("service connection and rating", cases, None)
+
+    assert uncovered == ()
+    assert flags == []
+
+
+def test_analyze_cases_for_claim_refines_before_analysis(monkeypatch):
+    """analyze_cases_for_claim runs the adaptive loop, not a single pass."""
+    queries_seen: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries_seen.append(query)
+        return [
+            {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    analysis = analyze_cases_for_claim("service connection and rating")
+
+    # The gap query ran, but the stub never covers "rating", so coverage stays half.
+    assert '"rating" "service connection and rating" veterans law' in queries_seen
+    assert analysis.coverage_score == 0.5
+    assert [e.name for e in analysis.detected_elements] == ["service connection", "rating"]
 
 
 def test_fetch_cases_no_sleep_when_delay_zero(monkeypatch):
@@ -1063,10 +1495,10 @@ def test_enrich_continues_after_fetch_failure(monkeypatch, caplog):
     )
 
 
-def test_analyze_cases_forwards_all_args_to_fetch(monkeypatch):
+def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     seen: dict[str, object] = {}
 
-    def recording_fetch(issue, claim_type, max_results=10, enrich=True, telemetry=None, max_wall_seconds=None):
+    def recording_research(issue, claim_type, max_results=10, enrich=True, telemetry=None, max_wall_seconds=None):
         seen.update(
             issue=issue,
             claim_type=claim_type,
@@ -1084,7 +1516,7 @@ def test_analyze_cases_forwards_all_args_to_fetch(monkeypatch):
             )
         ]
 
-    monkeypatch.setattr("va_legal_agent.agent.fetch_cases_for_issue", recording_fetch)
+    monkeypatch.setattr("va_legal_agent.agent.research_issue", recording_research)
     telemetry: list[dict[str, object]] = []
 
     analysis = analyze_cases_for_claim(

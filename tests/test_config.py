@@ -1,6 +1,6 @@
 """Tests for guarded environment parsing and typed settings (va_legal_agent.config)."""
 
-from va_legal_agent.config import DEFAULT_USER_AGENT, Settings, env_float, env_int, get_settings
+from va_legal_agent.config import DEFAULT_USER_AGENT, Settings, env_bool, env_float, env_int, get_settings
 
 
 _ENV_VARS = (
@@ -21,6 +21,8 @@ _ENV_VARS = (
     "SEARCH_QUERY_VARIANTS",
     "SEARCH_QUERY_VARIANTS_BY_PROVIDER",
     "COURTLISTENER_API_KEY",
+    "CITATION_TRAVERSAL",
+    "CITATION_TRAVERSE_LIMIT",
     "ENRICH_CASE_LIMIT",
     "INTERPRET_CASE_LIMIT",
     "PRINCIPLE_SCAN_LIMIT",
@@ -81,6 +83,29 @@ def test_env_float_parses_value_and_falls_back_on_garbage_and_negative(monkeypat
     assert env_float("SOME_FLOAT", 1.5) == 1.5
 
 
+def test_env_bool_truthy_set(monkeypatch):
+    for raw in ("1", "true", "yes", "on", "TRUE", "On"):
+        monkeypatch.setenv("SOME_BOOL", raw)
+        assert env_bool("SOME_BOOL", False) is True
+
+
+def test_env_bool_falsy_set(monkeypatch):
+    for raw in ("0", "false", "no", "off", "FALSE", "Off"):
+        monkeypatch.setenv("SOME_BOOL", raw)
+        assert env_bool("SOME_BOOL", True) is False
+
+
+def test_env_bool_falls_back_to_default(monkeypatch):
+    monkeypatch.delenv("SOME_MISSING_BOOL", raising=False)
+    assert env_bool("SOME_MISSING_BOOL", True) is True
+    assert env_bool("SOME_MISSING_BOOL", False) is False
+    # Unrecognized tokens are neither truthy nor falsy: the default wins.
+    monkeypatch.setenv("SOME_BOOL", "garbage")
+    assert env_bool("SOME_BOOL", True) is True
+    monkeypatch.setenv("SOME_BOOL", "")
+    assert env_bool("SOME_BOOL", False) is False
+
+
 def test_settings_defaults(monkeypatch):
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -104,6 +129,8 @@ def test_settings_defaults(monkeypatch):
     assert settings.search_query_variants == 3
     assert settings.search_query_variants_by_provider == {}
     assert settings.courtlistener_api_key is None
+    assert settings.citation_traversal is False
+    assert settings.citation_traverse_limit == 3
     assert settings.enrich_case_limit == 5
     assert settings.interpret_case_limit == 3
     assert settings.principle_scan_limit == 5
@@ -126,6 +153,8 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "5")
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "duckduckgo=2,bva=0")
     monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "5")
     monkeypatch.setenv("ENRICH_CASE_LIMIT", "4")
     monkeypatch.setenv("INTERPRET_CASE_LIMIT", "7")
     monkeypatch.setenv("PRINCIPLE_SCAN_LIMIT", "9")
@@ -149,6 +178,8 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.search_query_variants == 5
     assert settings.search_query_variants_by_provider == {"duckduckgo": 2, "bva": 0}
     assert settings.courtlistener_api_key == "tok-123"
+    assert settings.citation_traversal is True
+    assert settings.citation_traverse_limit == 5
     assert settings.enrich_case_limit == 4
     assert settings.interpret_case_limit == 7
     assert settings.principle_scan_limit == 9

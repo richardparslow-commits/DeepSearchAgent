@@ -87,6 +87,20 @@ def env_float(name: str, default: float) -> float:
     return value
 
 
+def env_bool(name: str, default: bool) -> bool:
+    """Read a boolean flag from the environment, falling back to *default*.
+
+    Recognizes the truthy set ``1/true/yes/on`` (case-insensitive); everything
+    else, including an unset variable, resolves to *default*.
+    """
+    raw = os.getenv(name, "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class Settings:
     """Typed runtime settings, populated from environment variables.
@@ -129,6 +143,13 @@ class Settings:
     # not listed fall back to search_query_variants.
     search_query_variants_by_provider: dict[str, int] = field(default_factory=dict)
     courtlistener_api_key: str | None = None
+
+    # Multi-hop citation traversal over CourtListener's citation graph.
+    # Off by default: it makes extra authenticated API calls per run, so
+    # operators opt in when they want deeper, trail-following recall.
+    citation_traversal: bool = False
+    # How many top cases seed the citation traversal.
+    citation_traverse_limit: int = 3
 
     # Pipeline limits
     enrich_case_limit: int = 5
@@ -182,6 +203,10 @@ class Settings:
                 os.getenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "")
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,
+            citation_traversal=env_bool("CITATION_TRAVERSAL", d.citation_traversal),
+            citation_traverse_limit=env_int(
+                "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit
+            ),
             enrich_case_limit=env_int("ENRICH_CASE_LIMIT", d.enrich_case_limit),
             interpret_case_limit=env_int("INTERPRET_CASE_LIMIT", d.interpret_case_limit),
             principle_scan_limit=env_int("PRINCIPLE_SCAN_LIMIT", d.principle_scan_limit),

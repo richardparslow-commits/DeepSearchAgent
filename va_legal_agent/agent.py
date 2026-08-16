@@ -9,11 +9,12 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from .config import get_settings
 from .fetch import fetch_case_details
 from .impact import analyze_case_impact
-from .interpretation import build_interpretive_analysis
+from .interpretation import build_interpretive_analysis, uncovered_element_names
 from .models import CaseRecord, LegalAnalysis
-from .planning import decompose_issue, plan_queries
-from .providers import recall_flags, rollup_search_telemetry, search_all
+from .planning import decompose_issue, plan_queries, refine_plan
+from .providers import recall_flags, rollup_search_telemetry, search_all, traverse_citations
 from .ranking import rank_cases
+from .reliability import classify_source
 from .search import SearchError
 from .topics import (
     COURT_BVA,
@@ -154,39 +155,47 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
         authority_rank=0,
         authority_weight=authority_weight_for(court_name),
         relevance_score=0,
+        source_reliability=classify_source(url),
     )
 
 
-def fetch_cases_for_issue(
-    claim_issue: str,
-    claim_type: str = "Compensation",
-    max_results: int = 10,
-    enrich: bool = True,
-    telemetry: list[dict[str, object]] | None = None,
-    max_wall_seconds: float | None = None,
-) -> list[CaseRecord]:
-    """Search every court-site query and return the merged, enriched cases.
+def _deadline_for(max_wall_seconds: float) -> float | None:
+    """Return an absolute monotonic deadline for the budget, or None if disabled.
 
-    *max_wall_seconds* caps the total wall time spent searching for this issue
-    (``0`` or unset disables it; the default comes from
-    ``SEARCH_MAX_WALL_SECONDS``). Once the budget is exhausted the remaining
-    queries are abandoned: results already found are returned, and a query
-    still in flight is stopped cooperatively via the deadline passed to
-    :func:`search_all`. If the budget expires before anything was found, a
-    ``SearchError`` is raised.
+    ``0`` (or a negative value) disables the budget; a positive value sets the
+    deadline that far in the future. Shared by the single-pass primitive and
+    the adaptive loop so both rounds bound against one clock.
     """
-    if max_wall_seconds is None:
-        max_wall_seconds = get_settings().search_max_wall_seconds
-    deadline: float | None = None
     if max_wall_seconds and max_wall_seconds > 0:
-        deadline = time.monotonic() + max_wall_seconds
+        return time.monotonic() + max_wall_seconds
+    return None
 
-    cases: list[CaseRecord] = []
-    errors: list[Exception] = []
-    queries = build_case_queries(claim_issue, claim_type)
+
+def _fanout_search(
+    queries: list[str],
+    claim_issue: str,
+    max_results: int,
+    telemetry: list[dict[str, object]] | None,
+    deadline: float | None,
+    max_wall_seconds: float,
+) -> tuple[list[CaseRecord], list[Exception], bool]:
+    """Fan *queries* out across the worker pool and return normalized cases.
+
+    Submits each query to :func:`search_all` with inter-query staggering and
+    waits up to *deadline* (an absolute ``time.monotonic`` timestamp, or
+    ``None`` for no cap). Returns ``(cases, errors, budget_exhausted)``:
+    *cases* are normalized and relevance-scored but not yet deduplicated,
+    enriched, or ranked; a failing query is recorded in *errors* without
+    aborting the others; and once *deadline* passes the remaining work is
+    abandoned. Never raises -- callers decide how an empty/error/budget
+    outcome should surface.
+    """
     settings = get_settings()
     max_workers = settings.search_max_workers
     stagger_seconds = settings.search_delay_seconds
+
+    cases: list[CaseRecord] = []
+    errors: list[Exception] = []
 
     # Manual pool management (not a context manager) so an exhausted budget can
     # return without waiting for already-running queries: shutdown(wait=False)
@@ -251,7 +260,17 @@ def fetch_cases_for_issue(
             )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+    return cases, errors, budget_exhausted
 
+
+def _raise_if_no_results(
+    cases: list[CaseRecord],
+    errors: list[Exception],
+    budget_exhausted: bool,
+    claim_issue: str,
+    max_wall_seconds: float,
+) -> None:
+    """Raise the canonical ``SearchError`` when a search round found nothing."""
     if not cases and errors:
         raise SearchError(
             f"All {len(errors)} searches failed for issue {claim_issue!r}. "
@@ -264,14 +283,25 @@ def fetch_cases_for_issue(
             f"{claim_issue!r} before any results were returned."
         )
 
+
+def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
+    """Dedupe *cases* by (title, url), pre-ranked by authority then relevance."""
     deduped: list[CaseRecord] = []
     seen: set[tuple[str, str]] = set()
-    # Pre-rank by court authority then relevance so enrichment targets the strongest candidates.
     for case in sorted(cases, key=lambda c: (c.authority_weight, c.relevance_score), reverse=True):
         key = (case.title, case.url)
         if key not in seen:
             seen.add(key)
             deduped.append(case)
+    return deduped
+
+
+def _dedupe_rank_and_enrich(
+    cases: list[CaseRecord], max_results: int, enrich: bool
+) -> list[CaseRecord]:
+    """Dedupe, enrich, rank, and attach impact summaries to *cases*."""
+    settings = get_settings()
+    deduped = _dedupe(cases)
 
     if enrich:
         enrich_top_cases(deduped, limit=min(settings.enrich_case_limit, max(max_results, 1)))
@@ -282,6 +312,130 @@ def fetch_cases_for_issue(
     for case in ranked:
         case.impact = summarize_case_impact(case)
     return ranked
+
+
+def _observe(
+    claim_issue: str, cases: list[CaseRecord], telemetry: list[dict[str, object]] | None
+) -> tuple[tuple[str, ...], list[str]]:
+    """Observe a research round: coverage gaps plus low-recall flags.
+
+    Returns ``(uncovered, flags)`` where *uncovered* is the claim elements no
+    retrieved case covers (the refinement trigger) and *flags* is the
+    per-provider low-recall picture for the round, which the loop logs and
+    which the final report surfaces as ``search_flags``.
+    """
+    uncovered = uncovered_element_names(claim_issue, cases)
+    flags = recall_flags(rollup_search_telemetry(telemetry or []))
+    return uncovered, flags
+
+
+def research_issue(
+    claim_issue: str,
+    claim_type: str = "Compensation",
+    max_results: int = 10,
+    enrich: bool = True,
+    telemetry: list[dict[str, object]] | None = None,
+    max_wall_seconds: float | None = None,
+) -> list[CaseRecord]:
+    """Run the adaptive research loop and return the merged, ranked cases.
+
+    Executes the plan's search sub-tasks (round 1), observes which detected
+    claim elements remain uncovered, and -- while coverage is incomplete and
+    the wall-time budget lasts -- refines the plan with targeted gap searches
+    (:func:`va_legal_agent.planning.refine_plan`) and re-searches. Every round
+    shares one absolute *deadline* derived from *max_wall_seconds*, so the
+    nested retry/backoff loops stay bounded without resetting per round. The
+    terminal synthesis step runs in :func:`analyze_cases_for_claim` once all
+    search sub-tasks complete.
+    """
+    if max_wall_seconds is None:
+        max_wall_seconds = get_settings().search_max_wall_seconds
+    deadline = _deadline_for(max_wall_seconds)
+
+    plan = decompose_issue(claim_issue, claim_type)
+    done: set[str] = set()
+    cases: list[CaseRecord] = []
+
+    initial = [task for task in plan.search_subtasks() if task.query]
+    done.update(task.id for task in initial)
+    round_cases, errors, budget_exhausted = _fanout_search(
+        [task.query for task in initial if task.query],
+        claim_issue,
+        max_results,
+        telemetry,
+        deadline,
+        max_wall_seconds,
+    )
+    cases.extend(round_cases)
+    _raise_if_no_results(cases, errors, budget_exhausted, claim_issue, max_wall_seconds)
+
+    uncovered, flags = _observe(claim_issue, cases, telemetry)
+    while uncovered and (deadline is None or time.monotonic() < deadline):
+        plan = refine_plan(plan, uncovered)
+        ready = [task for task in plan.search_subtasks() if task.id not in done and task.query]
+        if not ready:
+            break
+        logger.info(
+            "Research gap detected: uncovered=%s search_flags=%s; refining queries.",
+            list(uncovered),
+            flags,
+        )
+        done.update(task.id for task in ready)
+        gap_cases, _errors, _budget = _fanout_search(
+            [task.query for task in ready if task.query],
+            claim_issue,
+            max_results,
+            telemetry,
+            deadline,
+            max_wall_seconds,
+        )
+        cases.extend(gap_cases)
+        uncovered, flags = _observe(claim_issue, cases, telemetry)
+        logger.info(
+            "Research refinement complete: uncovered=%s search_flags=%s.",
+            list(uncovered),
+            flags,
+        )
+
+    # Multi-hop recall (opt-in): follow CourtListener citation trails from the
+    # strongest cases found so far, and merge the newly discovered opinions
+    # before the final ranking.
+    if get_settings().citation_traversal:
+        seeds = _dedupe(cases)[: get_settings().citation_traverse_limit]
+        for raw in traverse_citations([case.url for case in seeds], max_results=max_results):
+            court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
+            found = normalize_case(raw, court_name, claim_issue)
+            found.relevance_score = score_case_relevance(found, claim_issue)
+            cases.append(found)
+
+    return _dedupe_rank_and_enrich(cases, max_results, enrich)
+
+
+def fetch_cases_for_issue(
+    claim_issue: str,
+    claim_type: str = "Compensation",
+    max_results: int = 10,
+    enrich: bool = True,
+    telemetry: list[dict[str, object]] | None = None,
+    max_wall_seconds: float | None = None,
+) -> list[CaseRecord]:
+    """Search every planned query once and return the merged, enriched cases.
+
+    Single-pass primitive under :func:`research_issue`: it fans out the
+    plan-derived queries with the same deadline semantics, raises on an
+    unrecoverable empty round, and post-processes the result. Use
+    :func:`research_issue` for the adaptive multi-round loop.
+    """
+    if max_wall_seconds is None:
+        max_wall_seconds = get_settings().search_max_wall_seconds
+    deadline = _deadline_for(max_wall_seconds)
+
+    queries = build_case_queries(claim_issue, claim_type)
+    cases, errors, budget_exhausted = _fanout_search(
+        queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
+    )
+    _raise_if_no_results(cases, errors, budget_exhausted, claim_issue, max_wall_seconds)
+    return _dedupe_rank_and_enrich(cases, max_results, enrich)
 
 
 def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[CaseRecord]:
@@ -321,22 +475,13 @@ def summarize_case_impact(case: CaseRecord) -> str:
     return analyze_case_impact(case).nuance
 
 
-def analyze_cases_for_claim(
+def _build_analysis(
     claim_issue: str,
-    claim_type: str = "Compensation",
-    max_results: int = 10,
-    enrich: bool = True,
-    telemetry: list[dict[str, object]] | None = None,
-    max_wall_seconds: float | None = None,
+    claim_type: str,
+    cases: list[CaseRecord],
+    telemetry: list[dict[str, object]] | None,
 ) -> LegalAnalysis:
-    cases = fetch_cases_for_issue(
-        claim_issue,
-        claim_type,
-        max_results=max_results,
-        enrich=enrich,
-        telemetry=telemetry,
-        max_wall_seconds=max_wall_seconds,
-    )
+    """Build the structured ``LegalAnalysis`` from retrieved, ranked cases."""
     if not cases:
         raise ValueError(f"No cases found for: {claim_issue}")
 
@@ -368,6 +513,26 @@ def analyze_cases_for_claim(
         search_telemetry=rolled_telemetry,
         search_flags=recall_flags(rolled_telemetry),
     )
+
+
+def analyze_cases_for_claim(
+    claim_issue: str,
+    claim_type: str = "Compensation",
+    max_results: int = 10,
+    enrich: bool = True,
+    telemetry: list[dict[str, object]] | None = None,
+    max_wall_seconds: float | None = None,
+) -> LegalAnalysis:
+    """Run the adaptive research loop and build structured VA-claims guidance."""
+    cases = research_issue(
+        claim_issue,
+        claim_type,
+        max_results=max_results,
+        enrich=enrich,
+        telemetry=telemetry,
+        max_wall_seconds=max_wall_seconds,
+    )
+    return _build_analysis(claim_issue, claim_type, cases, telemetry)
 
 
 if __name__ == "__main__":

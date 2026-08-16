@@ -5,6 +5,7 @@ from va_legal_agent.interpretation import (
     build_interpretive_analysis,
     detect_claim_elements,
     extract_principle_findings,
+    uncovered_element_names,
 )
 from va_legal_agent.models import CaseRecord
 from va_legal_agent.topics import TOPICS
@@ -39,6 +40,21 @@ def test_detect_claim_elements_from_issue_text():
 
 def test_detect_claim_elements_empty_when_no_match():
     assert detect_claim_elements("completely unrelated phrase") == []
+
+
+def test_uncovered_element_names_flags_elements_without_coverage():
+    cases = [_case("Smith v. Wilkie", snippet="service connection requires a nexus")]
+
+    # service connection is covered; presumption is detected but uncovered.
+    assert uncovered_element_names("service connection", cases) == ()
+    assert uncovered_element_names(
+        "service connection and presumption of exposure", cases
+    ) == ("presumption",)
+
+
+def test_uncovered_element_names_empty_when_no_elements_detected():
+    assert uncovered_element_names("totally unrelated issue", []) == ()
+    assert uncovered_element_names("totally unrelated issue", [_case("Any")]) == ()
 
 
 def test_extract_principle_findings_attributes_source_cases():

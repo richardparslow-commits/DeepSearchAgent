@@ -1427,3 +1427,289 @@ def test_search_all_forwards_custom_max_results(monkeypatch):
     search_all("tinnitus", max_results=3)
 
     assert seen["max_results"] == 3
+
+
+def test_extract_courtlistener_opinion_id():
+    from va_legal_agent.providers import extract_courtlistener_opinion_id
+
+    assert extract_courtlistener_opinion_id("https://www.courtlistener.com/opinion/12345/x/") == 12345
+    assert extract_courtlistener_opinion_id("https://example.com/opinion/999/") == 999
+    assert extract_courtlistener_opinion_id("https://example.com/not-an-opinion") is None
+    assert extract_courtlistener_opinion_id("") is None
+    assert extract_courtlistener_opinion_id(None) is None
+
+
+def test_courtlistener_get_opinion_success(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "33")
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+        return FakeResponse(_cl_result())
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    result = CourtListenerProvider()._get_opinion(12345)
+
+    assert captured["url"] == CourtListenerProvider.API_URL + "12345/"
+    assert captured["params"] == {"format": "json"}
+    # The auth header and the configured timeout must actually be forwarded.
+    assert captured["headers"]["Authorization"] == "Token tok-123"
+    assert captured["timeout"] == 33
+    assert result["title"] == "Smith v. McDonough"
+    assert result["url"] == "https://www.courtlistener.com/opinion/12345/smith-v-mcdonough/"
+
+
+def test_courtlistener_get_opinion_http_error(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({}, status_code=500),
+    )
+
+    with pytest.raises(SearchError, match="opinion 12345 fetch failed"):
+        CourtListenerProvider()._get_opinion(12345)
+
+
+def test_courtlistener_cited_opinions_maps_authorities(monkeypatch):
+    """The `citing` relation maps cited_opinion rows and fetches each once."""
+    fetched: list[int] = []
+    rows = [
+        {"cited_opinion": "https://www.courtlistener.com/opinion/100/x/"},
+        {"cited_opinion": "https://www.courtlistener.com/opinion/100/x/"},  # dup id
+        {"cited_opinion": "https://www.courtlistener.com/opinion/101/y/"},
+        {"cited_opinion": "no-opinion-here"},  # unparseable -> skipped
+    ]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if url == CourtListenerProvider.CITATIONS_URL:
+            assert params["citing_opinion"] == 12345
+            return FakeResponse({"results": rows})
+        opinion_id = int(url.rstrip("/").split("/")[-1])
+        fetched.append(opinion_id)
+        return FakeResponse(_cl_result(absolute_url=f"/opinion/{opinion_id}/"))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().cited_opinions(12345, max_results=10)
+
+    assert fetched == [100, 101]  # deduped, unparseable skipped
+    assert [r["url"] for r in results] == [
+        "https://www.courtlistener.com/opinion/100/",
+        "https://www.courtlistener.com/opinion/101/",
+    ]
+
+
+def test_courtlistener_citing_opinions_maps_forward_citations(monkeypatch):
+    """The `cited` relation maps citing_opinion rows (opinions citing this one)."""
+    rows = [{"citing_opinion": "https://www.courtlistener.com/opinion/200/x/"}]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if url == CourtListenerProvider.CITATIONS_URL:
+            assert params["cited_opinion"] == 12345
+            return FakeResponse({"results": rows})
+        return FakeResponse(_cl_result(absolute_url="/opinion/200/"))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().citing_opinions(12345, max_results=10)
+
+    assert [r["url"] for r in results] == ["https://www.courtlistener.com/opinion/200/"]
+
+
+def test_courtlistener_related_opinions_http_error(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({}, status_code=500),
+    )
+
+    with pytest.raises(SearchError, match="citation traversal \\(citing\\) failed"):
+        CourtListenerProvider().cited_opinions(12345)
+
+
+def test_courtlistener_related_opinions_no_results(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({"results": []}),
+    )
+
+    with pytest.raises(SearchError, match="No citing opinions found for opinion 12345"):
+        CourtListenerProvider().cited_opinions(12345)
+
+
+def test_courtlistener_related_opinions_request_args(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "33")
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured.update(params=params, headers=headers, timeout=timeout)
+        return FakeResponse({"results": []})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError):
+        CourtListenerProvider().cited_opinions(12345, max_results=1)
+
+    # Exact params: the relation key, the lower-clamped page_size, and format;
+    # plus the forwarded auth header and timeout.
+    assert captured["params"] == {"citing_opinion": 12345, "page_size": 1, "format": "json"}
+    assert captured["headers"]["Authorization"] == "Token tok-123"
+    assert captured["timeout"] == 33
+
+
+def test_courtlistener_related_opinions_missing_results_key(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({}),
+    )
+
+    with pytest.raises(SearchError, match="No citing opinions found"):
+        CourtListenerProvider().cited_opinions(12345)
+
+
+def test_citing_and_cited_opinions_default_max_results(monkeypatch):
+    calls = []
+
+    def fake_related(self, opinion_id, relation, max_results):
+        calls.append((opinion_id, relation, max_results))
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._related_opinions", fake_related
+    )
+
+    CourtListenerProvider().citing_opinions(12345)
+    CourtListenerProvider().cited_opinions(12345)
+
+    assert calls == [(12345, "cited", 10), (12345, "citing", 10)]
+
+
+def test_courtlistener_related_opinions_caps_at_max_results(monkeypatch):
+    rows = [
+        {"cited_opinion": f"https://www.courtlistener.com/opinion/{i}/"}
+        for i in range(5)
+    ]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if url == CourtListenerProvider.CITATIONS_URL:
+            return FakeResponse({"results": rows})
+        opinion_id = int(url.rstrip("/").split("/")[-1])
+        return FakeResponse(_cl_result(absolute_url=f"/opinion/{opinion_id}/"))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().cited_opinions(12345, max_results=2)
+
+    assert len(results) == 2
+
+
+def test_courtlistener_related_opinions_clamps_page_size(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured["params"] = params
+        return FakeResponse({"results": []})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError):
+        CourtListenerProvider().cited_opinions(12345, max_results=150)
+
+    assert captured["params"]["page_size"] == 100  # capped, not forwarded as 150
+
+
+def test_courtlistener_related_opinions_skips_detail_without_url(monkeypatch):
+    rows = [
+        {"cited_opinion": "https://www.courtlistener.com/opinion/100/"},
+        {"cited_opinion": "https://www.courtlistener.com/opinion/101/"},
+    ]
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if url == CourtListenerProvider.CITATIONS_URL:
+            return FakeResponse({"results": rows})
+        opinion_id = int(url.rstrip("/").split("/")[-1])
+        if opinion_id == 100:
+            return FakeResponse(_cl_result(absolute_url=""))  # no url -> None
+        return FakeResponse(_cl_result(absolute_url=f"/opinion/{opinion_id}/"))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().cited_opinions(12345, max_results=10)
+
+    assert [r["url"] for r in results] == ["https://www.courtlistener.com/opinion/101/"]
+
+
+def test_traverse_citations_skips_non_courtlistener_urls(monkeypatch):
+    from va_legal_agent.providers import traverse_citations
+
+    calls = {"n": 0}
+
+    def related(self, opinion_id, max_results=10):
+        calls["n"] += 1
+        return []
+
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.cited_opinions", related)
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.citing_opinions", related)
+
+    result = traverse_citations(
+        ["https://example.com/not-cl", "https://www.courtlistener.com/opinion/1/"]
+    )
+
+    assert result == []
+    assert calls["n"] == 2  # only the one CourtListener url is traversed (cited + citing)
+
+
+def test_traverse_citations_merges_dedupes_and_forwards_args(monkeypatch):
+    from va_legal_agent.providers import traverse_citations
+
+    calls: list[tuple[int, int]] = []
+
+    def cited(self, opinion_id, max_results=10):
+        calls.append((opinion_id, max_results))
+        return [
+            {"title": "A", "url": "https://www.courtlistener.com/opinion/100/"},
+            {"title": "NoUrl", "no_url": True},  # url-less -> skipped
+            {"title": "Dup", "url": "https://www.courtlistener.com/opinion/101/"},
+        ]
+
+    def citing(self, opinion_id, max_results=10):
+        calls.append((opinion_id, max_results))
+        return [
+            {"title": "B", "url": "https://www.courtlistener.com/opinion/101/"},  # dup across relations
+            {"title": "C", "url": "https://www.courtlistener.com/opinion/102/"},
+        ]
+
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.cited_opinions", cited)
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.citing_opinions", citing)
+
+    result = traverse_citations(["https://www.courtlistener.com/opinion/1/"])
+
+    # Both relations are called with the extracted id and the default max_results.
+    assert calls == [(1, 10), (1, 10)]
+    # The url-less result is skipped; the duplicate across relations is deduped.
+    assert [r["url"] for r in result] == [
+        "https://www.courtlistener.com/opinion/100/",
+        "https://www.courtlistener.com/opinion/101/",
+        "https://www.courtlistener.com/opinion/102/",
+    ]
+
+
+def test_traverse_citations_skips_failed_node(monkeypatch, caplog):
+    from va_legal_agent.providers import traverse_citations
+
+    def cited(self, opinion_id, max_results=10):
+        raise SearchError("rate limited")
+
+    def citing(self, opinion_id, max_results=10):
+        return [{"title": "B", "url": "https://www.courtlistener.com/opinion/102/"}]
+
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.cited_opinions", cited)
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.citing_opinions", citing)
+
+    result = traverse_citations(["https://www.courtlistener.com/opinion/1/"])
+
+    assert [r["url"] for r in result] == ["https://www.courtlistener.com/opinion/102/"]
+    assert any(
+        r.getMessage() == "Citation traversal skipped opinion 1: rate limited"
+        for r in caplog.records
+    )

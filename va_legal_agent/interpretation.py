@@ -158,6 +158,18 @@ def _cases_covering_element(spec: ElementSpec, cases: list[CaseRecord]) -> list[
     ]
 
 
+def uncovered_element_names(issue: str, cases: list[CaseRecord]) -> tuple[str, ...]:
+    """Return the detected claim elements no retrieved case covers.
+
+    The observation primitive for the adaptive research loop: it reuses the
+    same detection and coverage logic as :func:`build_interpretive_analysis`
+    so refinement targets exactly the elements the final report flags as gaps.
+    """
+    return tuple(
+        spec.name for spec in detect_claim_elements(issue) if not _cases_covering_element(spec, cases)
+    )
+
+
 def _template_interpretation(
     issue: str,
     claim_type: str,
