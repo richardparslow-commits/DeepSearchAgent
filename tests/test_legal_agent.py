@@ -259,7 +259,9 @@ def test_fetch_cases_orders_by_authority_then_relevance(monkeypatch):
 
     cases = fetch_cases_for_issue("service connection", max_results=3)
 
-    assert len(calls) == 8  # one search per court query
+    # Every planned query ran: the 8 broad court recalls plus the
+    # statute-anchored searches derived from the detected element.
+    assert len(calls) == len(build_case_queries("service connection", "Compensation"))
     # Federal Circuit outranks CAVC regardless of relevance; within a tier relevance breaks ties.
     assert [case.title for case in cases] == ["Case B", "Case A", "Case C"]
     assert [case.authority_rank for case in cases] == [1, 2, 3]
@@ -556,7 +558,7 @@ def test_fetch_cases_defaults_claim_type_and_max_results(monkeypatch):
     # Execution order is nondeterministic (worker threads), so compare as a
     # multiset: every query uses the default claim type and max_results.
     queries = build_case_queries("tinnitus", "Compensation")
-    assert len(calls) == 8
+    assert len(calls) == len(queries)
     assert sorted(c[0] for c in calls) == sorted(queries)
     assert all(c[1] == 10 for c in calls)
 

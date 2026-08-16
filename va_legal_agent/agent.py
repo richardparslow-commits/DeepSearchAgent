@@ -11,6 +11,7 @@ from .fetch import fetch_case_details
 from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis
 from .models import CaseRecord, LegalAnalysis
+from .planning import decompose_issue, plan_queries
 from .providers import recall_flags, rollup_search_telemetry, search_all
 from .ranking import rank_cases
 from .search import SearchError
@@ -90,23 +91,14 @@ class _DaemonThreadPoolExecutor:
 
 
 def build_case_queries(claim_issue: str, claim_type: str) -> list[str]:
-    issue = claim_issue.strip()
-    if not issue:
-        issue = "VA compensation"
-    normalized_issue = issue.replace('"', "")
-    issue_query = f'"{normalized_issue}" "{claim_type}"'
+    """Return the plan-derived search queries for the issue.
 
-    court_queries = [
-        f"site:uscourts.cavc.gov {issue_query} veterans compensation",
-        f"site:cafc.uscourts.gov {issue_query} veterans compensation",
-        f"site:supremecourt.gov {issue_query} veterans compensation",
-        f"site:bva.va.gov {issue_query} veterans compensation",
-        f"site:uscourts.cavc.gov {normalized_issue} service connection veterans law",
-        f"site:cafc.uscourts.gov {normalized_issue} veterans benefits court",
-        f"site:supremecourt.gov {normalized_issue} veterans benefits law",
-        f"site:bva.va.gov {normalized_issue} veterans compensation decision",
-    ]
-    return court_queries
+    The first eight queries are the broad court-site recalls (CAVC, Federal
+    Circuit, Supreme Court, and BVA); the planner appends statute-anchored
+    queries for the claim elements detected in the issue (see
+    :func:`va_legal_agent.planning.decompose_issue`).
+    """
+    return plan_queries(decompose_issue(claim_issue, claim_type))
 
 
 def detect_court_name(url: str) -> str:
