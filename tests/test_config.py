@@ -1,11 +1,13 @@
 """Tests for guarded environment parsing and typed settings (va_legal_agent.config)."""
 
-from va_legal_agent.config import Settings, env_float, env_int, get_settings
+from va_legal_agent.config import DEFAULT_USER_AGENT, Settings, env_float, env_int, get_settings
 
 
 _ENV_VARS = (
     "REQUEST_TIMEOUT_SECONDS",
+    "USER_AGENT",
     "MAX_FETCH_BYTES",
+    "BATCH_STATE_DIR",
     "SEARCH_MAX_WORKERS",
     "SEARCH_DELAY_SECONDS",
     "SEARCH_RETRY_ATTEMPTS",
@@ -86,7 +88,9 @@ def test_settings_defaults(monkeypatch):
     settings = get_settings()
 
     assert settings.request_timeout_seconds == 20
+    assert settings.user_agent == DEFAULT_USER_AGENT
     assert settings.max_fetch_bytes == 20 * 1024 * 1024
+    assert settings.batch_state_dir.endswith("va_legal_agent_batches")
     assert settings.search_max_workers == 4
     assert settings.search_delay_seconds == 0.5
     assert settings.search_retry_attempts == 2
@@ -112,7 +116,9 @@ def test_settings_defaults(monkeypatch):
 
 def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("USER_AGENT", "Custom-Agent/9.9")
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
+    monkeypatch.setenv("BATCH_STATE_DIR", "/tmp/custom-batches")
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "6")
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,courtlistener")
     monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "3")
@@ -132,7 +138,9 @@ def test_settings_read_from_env(monkeypatch):
     settings = get_settings()
 
     assert settings.request_timeout_seconds == 30
+    assert settings.user_agent == "Custom-Agent/9.9"
     assert settings.max_fetch_bytes == 10
+    assert settings.batch_state_dir == "/tmp/custom-batches"
     assert settings.search_max_workers == 6
     assert settings.search_max_wall_seconds == 7.5
     assert settings.search_providers == "duckduckgo,courtlistener"

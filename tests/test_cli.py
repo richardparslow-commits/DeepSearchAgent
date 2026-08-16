@@ -96,6 +96,17 @@ def test_show_config_redacts_openai_api_key(capsys, monkeypatch):
     assert json.loads(output)["openai_api_key"] == "sk-1...cdef"
 
 
+def test_show_config_redacts_courtlistener_api_key(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "cl-secret-token-123456789")
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "cl-secret-token-123456789" not in output
+    assert json.loads(output)["courtlistener_api_key"] == "cl-s...6789"
+
+
 def test_redacted_settings_masks_short_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "short")
 
@@ -778,11 +789,14 @@ def test_cli_analysis_json_includes_search_telemetry(capsys, monkeypatch):
     ]
 
 
-def test_cli_analysis_telemetry_empty_without_batch(capsys, monkeypatch):
-    monkeypatch.setattr(
-        "va_legal_agent.__main__.analyze_cases_for_claim",
-        lambda issue, **kwargs: _sample_analysis(),
-    )
+def test_cli_analysis_collects_telemetry_without_batch(capsys, monkeypatch):
+    seen: dict[str, object] = {}
+
+    def _analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", _analyze)
     monkeypatch.setattr(
         "sys.argv",
         ["va-legal-agent", "tinnitus"],  # no --batch-size
@@ -790,9 +804,9 @@ def test_cli_analysis_telemetry_empty_without_batch(capsys, monkeypatch):
 
     main()
 
-    data = json.loads(capsys.readouterr().out)
-    assert data["search_telemetry"] == {}
-    assert data["search_flags"] == []
+    # A single-issue run must still receive a telemetry sink so the output's
+    # search_telemetry / search_flags carry the recall picture (not just batch runs).
+    assert seen["telemetry"] == []
 
 
 def test_recall_flags_shared_between_renderer_and_model():
@@ -888,11 +902,11 @@ def test_render_analysis_csv_telemetry_column():
     assert json.loads(data["search_telemetry"])["duckduckgo"]["queries_issued"] == 8
 
 
-def test_cli_without_batch_size_does_not_collect_telemetry(capsys, tmp_path, monkeypatch):
+def test_cli_without_batch_size_does_not_emit_batch_summary(capsys, tmp_path, monkeypatch):
     monkeypatch.setenv("BATCH_STATE_DIR", str(tmp_path))
 
     def _analyze(issue, **kwargs):
-        assert kwargs.get("telemetry") is None  # no batch -> no telemetry plumbing
+        assert kwargs.get("telemetry") == []  # telemetry is collected even without batch
         return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", _analyze)

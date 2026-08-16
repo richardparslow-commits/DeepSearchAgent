@@ -15,19 +15,21 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
 from pathlib import Path
+
+from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 def batch_state_dir() -> Path:
-    """Return the directory holding per-run_id batch state files."""
-    override = os.getenv("BATCH_STATE_DIR")
-    if override:
-        return Path(override)
-    return Path(tempfile.gettempdir()) / "va_legal_agent_batches"
+    """Return the directory holding per-run_id batch state files.
+
+    Delegates to the typed :class:`~va_legal_agent.config.Settings` object so
+    ``BATCH_STATE_DIR`` is resolved in one place like every other runtime
+    setting, instead of being read ad hoc from the environment.
+    """
+    return Path(get_settings().batch_state_dir)
 
 
 class BatchTracker:
@@ -74,7 +76,18 @@ class BatchTracker:
         outcomes = self.outcomes()
         completed = [o for o in outcomes if o.get("event") == "analysis_complete"]
         failed = [o for o in outcomes if o.get("event") == "analysis_failed"]
-        scores = [float(o["coverage_score"]) for o in completed if o.get("coverage_score") is not None]
+        scores: list[float] = []
+        for outcome in completed:
+            raw = outcome.get("coverage_score")
+            if raw is None:
+                continue
+            try:
+                scores.append(float(raw))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Skipping non-numeric coverage_score in batch state for %s",
+                    self.run_id,
+                )
         return {
             "run_id": self.run_id,
             "total": len(outcomes),

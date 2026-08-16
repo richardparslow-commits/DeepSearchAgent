@@ -111,6 +111,37 @@ def test_finalize_warns_when_unlink_fails(state_dir, caplog):
     assert any("Could not remove batch state" in r.message for r in caplog.records)
 
 
+def test_summary_skips_non_numeric_coverage_scores(state_dir, caplog):
+    tracker = BatchTracker("batch-1")
+    tracker.record({"event": "analysis_complete", "issue": "a", "coverage_score": 0.5})
+    tracker.record({"event": "analysis_complete", "issue": "b", "coverage_score": "high"})
+    tracker.record({"event": "analysis_complete", "issue": "c", "coverage_score": 0.9})
+
+    summary = tracker.summary()
+
+    # The non-numeric score is skipped, not fatal; the numeric ones still roll up.
+    assert summary["completed"] == 3
+    assert summary["coverage_mean"] == 0.7
+    assert summary["coverage_min"] == 0.5
+    assert summary["coverage_max"] == 0.9
+    # The exact rendered message (including the run id) is pinned verbatim.
+    assert "Skipping non-numeric coverage_score in batch state for batch-1" in [
+        r.getMessage() for r in caplog.records
+    ]
+
+
+def test_summary_missing_score_does_not_stop_later_scores(state_dir):
+    tracker = BatchTracker("batch-1")
+    tracker.record({"event": "analysis_complete", "issue": "a", "coverage_score": 0.5})
+    tracker.record({"event": "analysis_complete", "issue": "b", "coverage_score": None})
+    tracker.record({"event": "analysis_complete", "issue": "c", "coverage_score": 0.9})
+
+    summary = tracker.summary()
+
+    # A missing score is skipped, not a stop signal: the later score still counts.
+    assert summary["coverage_mean"] == 0.7
+
+
 def test_summary_skips_malformed_lines(state_dir):
     tracker = BatchTracker("batch-1")
     tracker.record({"event": "analysis_complete", "issue": "a", "coverage_score": 0.5})

@@ -1,3 +1,4 @@
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
@@ -7,6 +8,7 @@ from va_legal_agent.interpretation import InterpretiveAnalysis
 from va_legal_agent.models import CaseRecord, PrincipleFinding
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
+    _DaemonThreadPoolExecutor,
     analyze_cases_for_claim,
     build_case_queries,
     detect_court_name,
@@ -105,6 +107,111 @@ class _SyncExecutor:
 
     def shutdown(self, wait=True, cancel_futures=False):
         pass
+
+
+def _join_workers(pool, timeout=5.0):
+    """Wait for a daemon pool's workers to drain their queue and exit."""
+    for worker in pool._workers:
+        worker.join(timeout=timeout)
+
+
+def test_daemon_pool_workers_are_daemon_and_bounded():
+    pool = _DaemonThreadPoolExecutor(max_workers=3)
+    try:
+        assert len(pool._workers) == 3
+        assert all(worker.daemon for worker in pool._workers)
+    finally:
+        pool.shutdown()
+        _join_workers(pool)
+
+
+def test_daemon_pool_runs_and_resolves_submitted_fn():
+    pool = _DaemonThreadPoolExecutor(max_workers=2)
+    try:
+        future = pool.submit(lambda x, y: x + y, 2, 3)
+        assert future.result(timeout=5) == 5
+    finally:
+        pool.shutdown()
+        _join_workers(pool)
+        assert pool._futures == set()  # completed futures are discarded, not leaked
+
+
+def test_daemon_pool_forwards_kwargs_to_fn():
+    pool = _DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(lambda x=0, y=0: x + y, x=2, y=3)
+        assert future.result(timeout=5) == 5
+    finally:
+        pool.shutdown()
+        _join_workers(pool)
+
+
+def test_daemon_pool_propagates_worker_exception():
+    pool = _DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        def boom():
+            raise ValueError("kaboom")
+
+        future = pool.submit(boom)
+        with pytest.raises(ValueError, match="kaboom"):
+            future.result(timeout=5)
+    finally:
+        pool.shutdown()
+        _join_workers(pool)
+
+
+def test_daemon_pool_cancel_futures_skips_queued_work():
+    started = threading.Event()
+    release = threading.Event()
+    pool = _DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        def blocking():
+            started.set()
+            release.wait(timeout=5)
+            return "first"
+
+        first = pool.submit(blocking)
+        assert started.wait(timeout=5)  # first task is running on the lone worker
+        second = pool.submit(lambda: "second")  # queued behind it
+
+        pool.shutdown(cancel_futures=True)
+        release.set()  # let the worker drain; the queued task must be skipped
+
+        assert first.result(timeout=5) == "first"
+        assert second.cancelled()
+        _join_workers(pool)
+    finally:
+        release.set()
+        pool.shutdown()
+        _join_workers(pool)
+
+
+def test_daemon_pool_shutdown_without_cancel_runs_queued_work():
+    started = threading.Event()
+    release = threading.Event()
+    pool = _DaemonThreadPoolExecutor(max_workers=1)
+    try:
+        def blocking():
+            started.set()
+            release.wait(timeout=5)
+            return "first"
+
+        first = pool.submit(blocking)
+        assert started.wait(timeout=5)
+        second = pool.submit(lambda: "second")
+
+        # Default shutdown: cancel_futures defaults to False, so queued work
+        # still runs before the sentinels are reached.
+        pool.shutdown()
+        release.set()
+
+        assert first.result(timeout=5) == "first"
+        assert second.result(timeout=5) == "second"
+        _join_workers(pool)
+    finally:
+        release.set()
+        pool.shutdown()
+        _join_workers(pool)
 
 
 def _stub_search(monkeypatch, results=None, error=None):
@@ -446,9 +553,12 @@ def test_fetch_cases_defaults_claim_type_and_max_results(monkeypatch):
 
     fetch_cases_for_issue("tinnitus")
 
+    # Execution order is nondeterministic (worker threads), so compare as a
+    # multiset: every query uses the default claim type and max_results.
+    queries = build_case_queries("tinnitus", "Compensation")
     assert len(calls) == 8
-    assert calls[0][0] == 'site:uscourts.cavc.gov "tinnitus" "Compensation" veterans compensation'
-    assert calls[0][1] == 10
+    assert sorted(c[0] for c in calls) == sorted(queries)
+    assert all(c[1] == 10 for c in calls)
 
 
 def test_fetch_cases_budget_skips_stagger_when_none_remains(monkeypatch):
@@ -468,7 +578,7 @@ def test_fetch_cases_budget_skips_stagger_when_none_remains(monkeypatch):
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_monotonic)
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", sleeps.append)
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
     seen: list[str] = []
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
@@ -530,7 +640,7 @@ def test_fetch_cases_budget_aborts_before_first_submission_at_deadline(monkeypat
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_monotonic)
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
     seen: list[str] = []
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
@@ -560,7 +670,7 @@ def test_fetch_cases_budget_expires_before_first_query(monkeypatch):
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_monotonic)
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
     monkeypatch.setattr(
         "va_legal_agent.agent.search_all",
         lambda query, max_results=10, telemetry=None, deadline=None: [],
@@ -588,7 +698,7 @@ def test_fetch_cases_budget_zero_remaining_still_retrieves_completed_results(mon
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_monotonic)
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
     results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
     monkeypatch.setattr(
         "va_legal_agent.agent.search_all",
@@ -655,12 +765,13 @@ def test_fetch_cases_passes_max_results_and_telemetry(monkeypatch):
 
 
 def test_fetch_cases_continues_after_one_query_fails(monkeypatch, caplog):
-    state = {"n": 0}
     results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+    # Fail deterministically by query text (not by a shared counter, which
+    # races with the worker pool's scheduling) so exactly one query fails.
+    first_query = build_case_queries("service connection", "Compensation")[0]
 
     def flaky_search_all(query, max_results=10, telemetry=None, deadline=None):
-        state["n"] += 1
-        if state["n"] == 1:
+        if query == first_query:
             raise SearchError("blocked by provider")
         return [dict(r) for r in results]
 
@@ -673,7 +784,6 @@ def test_fetch_cases_continues_after_one_query_fails(monkeypatch, caplog):
 
     assert len(cases) == 1  # the failing first query did not abort later queries
     # The warning names the failing query and its error verbatim.
-    first_query = build_case_queries("service connection", "Compensation")[0]
     assert any(
         r.getMessage() == f"Search failed for query {first_query!r}: blocked by provider"
         for r in caplog.records
@@ -749,7 +859,7 @@ def test_fetch_cases_uses_configured_worker_count(monkeypatch):
         def shutdown(self, wait=True, cancel_futures=False):
             self._inner.shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", RecordingExecutor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", RecordingExecutor)
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "3")
     _stub_search(monkeypatch, results=[])
 
@@ -782,7 +892,7 @@ def test_fetch_cases_budget_returns_partial_results(monkeypatch, caplog):
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
 
     cases = fetch_cases_for_issue("tinnitus", max_wall_seconds=1.0)
 
@@ -826,7 +936,7 @@ def test_fetch_cases_budget_exhausted_no_results_raises(monkeypatch):
         def shutdown(self, wait=True, cancel_futures=False):
             recorded["shutdown"] = (wait, cancel_futures)
 
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", RecordingExecutor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", RecordingExecutor)
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
         clock["now"] = 200.0  # burns the entire budget immediately
@@ -856,7 +966,7 @@ def test_fetch_cases_budget_clamps_stagger_and_stops_submitting(monkeypatch):
         lambda s: sleeps.append(s) or clock.__setitem__("now", clock["now"] + s),
     )
     executor = _SyncExecutor()
-    monkeypatch.setattr("va_legal_agent.agent.ThreadPoolExecutor", lambda *a, **k: executor)
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: executor)
     seen: list[str] = []
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):

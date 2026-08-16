@@ -89,7 +89,18 @@ _ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
 
 
 def _build_element_library() -> tuple[ElementSpec, ...]:
-    """Join the shared topic names/phrases with the guidance text above."""
+    """Join the shared topic names/phrases with the guidance text above.
+
+    Fails loudly (at import, via ``ELEMENT_LIBRARY``) when a topic has no
+    guidance entry, naming the missing topics instead of surfacing a bare
+    ``KeyError`` from the dict lookup.
+    """
+    missing = sorted(name for name in (topic.name for topic in TOPICS) if name not in _ELEMENT_DETAILS)
+    if missing:
+        raise KeyError(
+            "Every TOPICS entry needs guidance in _ELEMENT_DETAILS; "
+            f"missing: {', '.join(missing)}"
+        )
     specs = []
     for topic in TOPICS:
         description, guidance, step = _ELEMENT_DETAILS[topic.name]

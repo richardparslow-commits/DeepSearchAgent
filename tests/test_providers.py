@@ -1183,6 +1183,9 @@ def test_bva_parse_results_data_edge_cases():
     assert len(parsed) == 1
     # A resultsData object without a "results" key yields an empty list.
     assert BVAProvider._parse_results_data(f'{key}{{"total": 3}}') == []
+    # A non-object resultsData payload (list/scalar) degrades to empty too.
+    assert BVAProvider._parse_results_data(f'{key}[1, 2, 3]') == []
+    assert BVAProvider._parse_results_data(f'{key}"just a string"') == []
 
 
 def test_resolve_search_providers_splits_comma_list():

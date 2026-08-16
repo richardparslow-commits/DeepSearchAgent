@@ -156,18 +156,26 @@ def _emit_batch_summary(summary: dict[str, object]) -> None:
     )
 
 
+def _mask_secret(value: str | None) -> str | None:
+    """Mask a secret, keeping first/last 4 characters (or ``***`` for short values)."""
+    if not isinstance(value, str) or not value:
+        return value
+    return f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
+
+
 def _redacted_settings() -> dict[str, object]:
-    """Return the resolved settings as a dict, masking the OpenAI API key.
+    """Return the resolved settings as a dict, masking every API key.
 
     ``effective_search_providers`` shows the post-validation provider list
     (typos removed), alongside the raw ``search_providers`` value, so
-    operators see both what they typed and what will actually run.
+    operators see both what they typed and what will actually run. Any field
+    that holds a credential (OpenAI, CourtListener) is masked so the dump is
+    safe to share in issues or logs.
     """
     data: dict[str, object] = asdict(get_settings())
     data["effective_search_providers"] = resolve_search_providers()
-    key = data.get("openai_api_key")
-    if isinstance(key, str) and key:
-        data["openai_api_key"] = f"{key[:4]}...{key[-4:]}" if len(key) > 8 else "***"
+    for key in ("openai_api_key", "courtlistener_api_key"):
+        data[key] = _mask_secret(data.get(key))
     return data
 
 
@@ -384,12 +392,15 @@ def main() -> None:
     telemetry: list[dict[str, object]] = []
 
     try:
+        # Always pass the telemetry sink: analyze_cases_for_claim rolls it up
+        # into the output's search_telemetry / search_flags fields, so a plain
+        # single-issue run carries the same recall picture as a batch run.
         analysis = analyze_cases_for_claim(
             args.issue,
             claim_type=args.claim_type,
             max_results=max(args.max_results, 1),
             enrich=not args.no_enrich,
-            telemetry=telemetry if tracker else None,
+            telemetry=telemetry,
             max_wall_seconds=args.max_wall_time,
         )
     except Exception as exc:  # noqa: BLE001 - emit event, then preserve original behavior

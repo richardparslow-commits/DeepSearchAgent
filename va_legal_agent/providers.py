@@ -168,6 +168,11 @@ class BVAProvider:
         except json.JSONDecodeError:
             logger.warning("Could not parse BVA resultsData JSON")
             return []
+        # ``resultsData`` is normally an object, but the embedded JSON can be
+        # any value (e.g. a list or scalar); guard before calling ``.get`` so a
+        # non-object payload degrades to an empty result instead of raising.
+        if not isinstance(data, dict):
+            return []
         results = data.get("results", [])
         return results if isinstance(results, list) else []
 
@@ -362,7 +367,8 @@ def search_all(
     canonical URL and capped at *max_results*.
 
     When *telemetry* (a list) is given, one record per provider is appended
-    with ``provider``, ``queries_issued`` (search calls made), ``results``
+    with ``provider``, ``queries_issued`` (successful search calls; failures
+    are counted separately), ``results``
     (raw results returned), ``deduped`` (dropped as URL duplicates),
     ``failures`` (search attempts that raised), and ``variants`` — a dict
     mapping each expanded query to its own ``{results, failures}`` counts so

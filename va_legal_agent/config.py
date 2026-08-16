@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,11 @@ class Settings:
     user_agent: str = DEFAULT_USER_AGENT
     max_fetch_bytes: int = MAX_FETCH_BYTES
 
+    # Batch state
+    batch_state_dir: str = field(
+        default_factory=lambda: str(Path(tempfile.gettempdir()) / "va_legal_agent_batches")
+    )
+
     # Search
     search_max_workers: int = 4
     search_delay_seconds: float = 0.5
@@ -141,7 +148,9 @@ class Settings:
         d = cls()
         return cls(
             request_timeout_seconds=env_int("REQUEST_TIMEOUT_SECONDS", d.request_timeout_seconds),
+            user_agent=os.getenv("USER_AGENT", d.user_agent),
             max_fetch_bytes=env_int("MAX_FETCH_BYTES", d.max_fetch_bytes),
+            batch_state_dir=os.getenv("BATCH_STATE_DIR", d.batch_state_dir),
             search_max_workers=env_int("SEARCH_MAX_WORKERS", d.search_max_workers),
             search_delay_seconds=env_float("SEARCH_DELAY_SECONDS", d.search_delay_seconds),
             search_retry_attempts=env_int(

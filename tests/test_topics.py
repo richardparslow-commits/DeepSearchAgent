@@ -5,6 +5,8 @@ phrases. ``interpretation.ELEMENT_LIBRARY`` and ``impact.ISSUE_TAG_PATTERNS``
 are built from it; these tests fail loudly if the three fall out of sync.
 """
 
+import pytest
+
 from va_legal_agent.impact import ISSUE_TAG_PATTERNS
 from va_legal_agent.interpretation import ELEMENT_LIBRARY
 from va_legal_agent.topics import ISSUE_TAG_ORDER, TOPICS, TOPICS_BY_NAME, authority_weight_for
@@ -15,6 +17,26 @@ def test_authority_weight_defaults_to_zero_for_unknown_court():
     # and must weigh nothing rather than crashing or defaulting to a nonzero.
     assert authority_weight_for("Some Unfamiliar Court") == 0
     assert authority_weight_for("") == 0
+
+
+def test_element_library_reports_missing_topic_guidance(monkeypatch):
+    from va_legal_agent.interpretation import _build_element_library
+    from va_legal_agent.topics import Topic
+
+    # Two missing topics so the join separator is observable (a single-item
+    # list would hide a separator mutation).
+    fake_a = Topic("zeta topic", ("zeta topic",), None, ())
+    fake_b = Topic("alpha topic", ("alpha topic",), None, ())
+    monkeypatch.setattr("va_legal_agent.interpretation.TOPICS", (fake_a, fake_b))
+
+    # Assert the exact message (not a substring) so the descriptive error —
+    # rather than a bare KeyError — is pinned verbatim.
+    with pytest.raises(KeyError) as excinfo:
+        _build_element_library()
+    assert excinfo.value.args[0] == (
+        "Every TOPICS entry needs guidance in _ELEMENT_DETAILS; "
+        "missing: alpha topic, zeta topic"
+    )
 
 
 def test_element_library_mirrors_topics():

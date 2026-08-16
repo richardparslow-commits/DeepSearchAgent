@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 from .config import get_settings
 from .fetch import fetch_case_details
@@ -23,6 +25,68 @@ from .topics import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _DaemonThreadPoolExecutor:
+    """Bounded pool of *daemon* worker threads for the search fan-out.
+
+    A minimal stand-in for ``ThreadPoolExecutor`` covering just the
+    ``submit`` / ``shutdown`` surface :func:`fetch_cases_for_issue` uses. The
+    one deliberate difference from the stdlib executor: workers are daemon
+    threads. Stdlib executor workers are non-daemon, so when a wall-time-budget
+    abort returns while an in-flight HTTP request is still running, the
+    interpreter joins that thread at exit and the CLI hangs for up to
+    ``REQUEST_TIMEOUT_SECONDS`` after it has already printed its result.
+    Daemon workers are abandoned at exit instead of blocking it.
+    """
+
+    def __init__(self, max_workers: int):
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._futures: set[Future] = set()
+        self._lock = threading.Lock()
+        self._workers = [
+            threading.Thread(target=self._run, daemon=True)
+            for _ in range(max_workers)
+        ]
+        for worker in self._workers:
+            worker.start()
+
+    def submit(self, fn, *args, **kwargs) -> Future:
+        """Queue ``fn(*args, **kwargs)`` and return a future for its result."""
+        future: Future = Future()
+        with self._lock:
+            self._futures.add(future)
+        self._queue.put((future, fn, args, kwargs))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            future, fn, args, kwargs = item
+            # Returns False when the future was cancelled while still queued,
+            # in which case the work is skipped (mirroring executor semantics).
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(fn(*args, **kwargs))
+                except BaseException as exc:  # noqa: BLE001 - executor semantics
+                    future.set_exception(exc)
+            with self._lock:
+                self._futures.discard(future)
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
+        """Stop accepting work and cancel queued futures on request.
+
+        ``wait`` is intentionally ignored: these workers are daemon and must
+        never block the caller (or interpreter exit) by being joined.
+        """
+        with self._lock:
+            if cancel_futures:
+                for future in list(self._futures):
+                    future.cancel()
+        for _ in self._workers:
+            self._queue.put(None)
 
 
 def build_case_queries(claim_issue: str, claim_type: str) -> list[str]:
@@ -134,8 +198,10 @@ def fetch_cases_for_issue(
 
     # Manual pool management (not a context manager) so an exhausted budget can
     # return without waiting for already-running queries: shutdown(wait=False)
-    # cancels pending futures and lets in-flight ones finish in the background.
-    pool = ThreadPoolExecutor(max_workers=max_workers)
+    # cancels queued futures and lets in-flight ones finish in the background.
+    # Workers are daemon threads, so an abandoned in-flight request cannot
+    # block the process at interpreter exit.
+    pool = _DaemonThreadPoolExecutor(max_workers=max_workers)
     budget_exhausted = False
     try:
         futures: list[object] = []
