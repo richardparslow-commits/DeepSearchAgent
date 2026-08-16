@@ -13,6 +13,7 @@ replacing only the current module's copy and dropping the cached
 mutant->test associations, so tests added since the last pass are picked up.
 """
 
+import json
 import re
 import shutil
 import subprocess
@@ -73,11 +74,28 @@ def main() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
     )
-    survivors = [
-        line.strip().split(":")[0]
-        for line in result.stdout.splitlines()
-        if "survived" in line
-    ]
+    # Count "suspicious" mutants (timeout / abnormal exit) as survivors too:
+    # they are just as untriaged as a plain survivor - e.g. a mutant that slips
+    # past a guard into a real network call can show up as suspicious on one
+    # platform and survived on another (see the llm.py `or` -> `and` mutant).
+    # One exclusion: on macOS, mutmut's worker fork intermittently aborts with
+    # a CoreFoundation SIGABRT (exit -6, reported as "suspicious") that has
+    # nothing to do with the mutant; skip that exact signature so the local
+    # gate is not flaky. The nightly CI gate runs on Linux, where no such
+    # crash exists, so every suspicious mutant there still fails the gate.
+    exit_codes: dict[str, int] = {}
+    meta_path = scratch_pkg / f"{stem}.py.meta"
+    if meta_path.exists():
+        exit_codes = json.loads(meta_path.read_text()).get("exit_code_by_key", {})
+    survivors = []
+    for line in result.stdout.splitlines():
+        if "survived" in line:
+            survivors.append(line.strip().split(":")[0])
+        elif "suspicious" in line:
+            name = line.strip().split(":")[0]
+            if sys.platform == "darwin" and exit_codes.get(name) == -6:
+                continue
+            survivors.append(name)
     with open(f"/tmp/mutmut_survivors_{module}.txt", "w") as f:
         f.write(f"### {module}: {len(survivors)} survivors\n\n")
         for name in survivors:

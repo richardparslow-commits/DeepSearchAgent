@@ -59,7 +59,19 @@ def _install_fake_openai(monkeypatch, **kwargs) -> _FakeOpenAI:
 
 def test_interpret_returns_none_without_api_key(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    called: list[object] = []
+
+    def should_not_run(messages):
+        called.append(messages)
+        return "must never be reached"
+
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+
     assert interpret_cases("tinnitus", "Compensation", [_case()]) is None
+    # A missing key short-circuits before any LLM call: pin that _call_openai is
+    # never invoked (otherwise the guard's `or` could become `and` and the
+    # function would fall through to a real client call with no key).
+    assert called == []
 
 
 def test_interpret_returns_none_for_empty_cases(monkeypatch):
