@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from va_legal_agent.providers import (
+    _courtlistener_query,
     _parse_retry_after,
     BVAProvider,
     CourtListenerProvider,
@@ -154,7 +155,22 @@ def test_courtlistener_maps_structured_fields(monkeypatch):
     assert result["docket"] == "19-4433"
     assert result["judge"] == "Judge Mary J. Smith"
     assert captured["url"] == CourtListenerProvider.SEARCH_URL
-    assert captured["params"]["court"] == ["cavc", "cafc", "scotus"]
+    assert captured["params"]["q"] == (
+        "(service connection) AND court_id:(cavc OR cafc OR scotus)"
+    )
+    assert "court" not in captured["params"]
+
+
+def test_courtlistener_query_embeds_court_filter_in_q():
+    """The court filter must be a fielded ``q`` clause, not a repeated ``court``
+    GET param: the search engine only honors the LAST repeated value, so
+    ``court=cavc&court=cafc&court=scotus`` silently filtered to ``scotus``
+    (zero hits for most VA issues). Pin both the normal and empty-query forms.
+    """
+    assert _courtlistener_query("tinnitus") == (
+        "(tinnitus) AND court_id:(cavc OR cafc OR scotus)"
+    )
+    assert _courtlistener_query("") == "court_id:(cavc OR cafc OR scotus)"
 
 
 def test_courtlistener_sends_api_key_when_set(monkeypatch):
@@ -1083,8 +1099,10 @@ def test_courtlistener_sends_exact_request_args(monkeypatch):
 
     CourtListenerProvider().search("tinnitus", max_results=1)
     assert captured["url"] == CourtListenerProvider.SEARCH_URL
-    assert captured["params"]["q"] == "tinnitus"  # type: ignore[index]
-    assert captured["params"]["court"] == ["cavc", "cafc", "scotus"]  # type: ignore[index]
+    assert captured["params"]["q"] == (  # type: ignore[index]
+        "(tinnitus) AND court_id:(cavc OR cafc OR scotus)"
+    )
+    assert "court" not in captured["params"]  # type: ignore[operator]
     assert captured["params"]["format"] == "json"  # type: ignore[index]
     assert "page" not in captured["params"]  # type: ignore[operator]
     assert "User-Agent" in captured["headers"]  # type: ignore[operator]

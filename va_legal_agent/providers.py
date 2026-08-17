@@ -59,6 +59,19 @@ _CL_COURT_NAMES = {
     "scotus": COURT_SUPREME,
 }
 
+
+def _courtlistener_query(query: str) -> str:
+    """Wrap *query* with the multi-court filter as a fielded ``q`` clause.
+
+    The search engine only honors the LAST repeated ``court`` GET parameter
+    (``court=cavc&court=cafc&court=scotus`` silently filters to ``scotus``
+    alone), so the court filter must live inside ``q`` instead, as
+    ``court_id:(cavc OR cafc OR scotus)``. An empty query (e.g. nothing but a
+    stripped ``site:`` token) degrades to the bare court clause.
+    """
+    clause = "court_id:(" + " OR ".join(_CL_COURT_NAMES) + ")"
+    return f"({query}) AND {clause}" if query else clause
+
 # A CourtListener opinion URL carries its numeric id as either the frontend
 # form (".../opinion/12345/", produced by _map_courtlistener_opinion) or the
 # API form (".../api/rest/v4/opinions/12345/", the opinions-cited rows);
@@ -242,8 +255,7 @@ class CourtListenerProvider:
         # numeric page N means: follow the cursor chain N-1 times, then read
         # that page's results.
         params: dict[str, object] = {
-            "q": query,
-            "court": ["cavc", "cafc", "scotus"],
+            "q": _courtlistener_query(query),
             "format": "json",
         }
         try:
