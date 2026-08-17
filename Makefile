@@ -19,6 +19,7 @@
 #   make PYTHON=python3
 #   make test ARGS="-k telemetry"
 #   make smoke QUERY="tinnitus"
+#   make smoke QUERY="service connection for tinnitus"
 
 PYTHON ?= .venv/bin/python
 PYTEST = $(PYTHON) -m pytest
@@ -86,7 +87,11 @@ mutate-check: mutate ## Full mutation pass + kill-property baseline gate (fails 
 	$(PYTHON) scripts/check_mutation_baseline.py
 
 smoke: ## One real query per configured provider (manual network sanity check)
-	$(PYTHON) scripts/smoke_search.py $(QUERY)
+	@if [ -n "$(QUERY)" ]; then \
+		$(PYTHON) scripts/smoke_search.py "$(QUERY)"; \
+	else \
+		$(PYTHON) scripts/smoke_search.py; \
+	fi
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
