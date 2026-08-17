@@ -59,23 +59,35 @@ _OPINION_ID_PATTERN = re.compile(r"/opinions?/(\d+)")
 
 
 def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
-    """Map one CourtListener opinion JSON object to a standard result dict."""
-    case_name = item.get("case_name") or "Untitled case"
+    """Map one CourtListener /search/ result (camelCase fields) to a result dict.
+
+    The v4 search endpoint returns camelCase keys (``caseName``, ``court_id``,
+    ``dateFiled``, ``docketNumber``, ``judge``) and a ``citation`` list of
+    parallel-citation strings; the older opinions endpoint shape (snake_case
+    fields on the opinion object itself) does not exist on the live API.
+    """
+    case_name = item.get("caseName") or "Untitled case"
     absolute_url = item.get("absolute_url") or ""
     url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
     if not url:
         return None
-    citations = item.get("citations") or []
-    citation = citations[0].get("cite", "") if citations else ""
+    citations = item.get("citation") or []
+    citation = ""
+    if citations:
+        first = citations[0]
+        if isinstance(first, str):
+            citation = first
+        elif isinstance(first, dict):
+            citation = str(first.get("cite", ""))
     return {
         "title": case_name,
         "url": url,
         "snippet": "",
-        "court": _CL_COURT_NAMES.get(item.get("court"), COURT_UNKNOWN),
+        "court": _CL_COURT_NAMES.get(item.get("court_id"), COURT_UNKNOWN),
         "citation": citation,
-        "decision_date": item.get("date_filed") or "",
-        "docket": item.get("docket_number") or "",
-        "judge": item.get("judges") or "",
+        "decision_date": item.get("dateFiled") or "",
+        "docket": item.get("docketNumber") or "",
+        "judge": item.get("judge") or "",
     }
 
 
@@ -105,6 +117,10 @@ class CourtListenerProvider:
     """
 
     name = "courtlistener"
+    # Full-text search lives on /search/ (the opinions list endpoint rejects
+    # ``q``/``court`` as unknown filter params). Search results carry the
+    # metadata inline (camelCase keys), so no follow-up fetches are needed.
+    SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
     API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
     CITATIONS_URL = "https://www.courtlistener.com/api/rest/v4/opinions-cited/"
 
@@ -115,25 +131,38 @@ class CourtListenerProvider:
             headers["Authorization"] = f"Token {settings.courtlistener_api_key}"
         return headers
 
+    def _get_json(self, url: str, params: dict[str, object] | None = None) -> dict:
+        """GET *url* with the auth headers and return the parsed JSON body."""
+        settings = get_settings()
+        response = requests.get(
+            url,
+            params=params,
+            headers=self._headers(),
+            timeout=settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         settings = get_settings()
         # CourtListener has its own court filter; site: tokens are noise there.
         query = strip_site_prefixes(query)
-        params = {
+        # The search endpoint returns up to 20 results per page regardless of
+        # page_size and paginates with an opaque cursor in ``next``, so a
+        # numeric page N means: follow the cursor chain N-1 times, then read
+        # that page's results.
+        params: dict[str, object] = {
             "q": query,
             "court": ["cavc", "cafc", "scotus"],
-            "page_size": min(max(max_results, 1), 100),
-            "page": page,
             "format": "json",
         }
         try:
-            response = requests.get(
-                self.API_URL,
-                params=params,
-                headers=self._headers(),
-                timeout=settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
+            data = self._get_json(self.SEARCH_URL, params)
+            for _ in range(max(page, 1) - 1):
+                next_url = data.get("next")
+                if not next_url:
+                    return []
+                data = self._get_json(str(next_url))
         except requests.RequestException as exc:
             if (
                 not settings.courtlistener_api_key
@@ -147,7 +176,7 @@ class CourtListenerProvider:
             raise SearchError(f"CourtListener search failed for query: {query}: {exc}") from exc
 
         results: list[dict[str, str]] = []
-        for item in response.json().get("results", []):
+        for item in data.get("results", []):
             mapped = _map_courtlistener_opinion(item)
             if mapped is None:
                 continue
@@ -159,21 +188,41 @@ class CourtListenerProvider:
         return results
 
     def _get_opinion(self, opinion_id: int) -> dict[str, str] | None:
-        """Fetch one opinion's detail and map it to a standard result dict."""
-        settings = get_settings()
+        """Fetch one opinion (plus its cluster and docket) into a result dict.
+
+        The opinions detail endpoint carries only the opinion text and links;
+        the case name, citations, decision date, and judges live on the
+        opinion's *cluster*, and the docket number/court on its *docket*, so
+        all three are fetched to produce the same structured fields the search
+        endpoint returns in a single call.
+        """
         try:
-            response = requests.get(
-                f"{self.API_URL}{opinion_id}/",
-                params={"format": "json"},
-                headers=self._headers(),
-                timeout=settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
+            opinion = self._get_json(f"{self.API_URL}{opinion_id}/")
+            cluster_url = opinion.get("cluster")
+            cluster = self._get_json(str(cluster_url)) if cluster_url else {}
+            docket_url = cluster.get("docket")
+            docket = self._get_json(str(docket_url)) if docket_url else {}
         except requests.RequestException as exc:
             raise SearchError(
                 f"CourtListener opinion {opinion_id} fetch failed: {exc}"
             ) from exc
-        return _map_courtlistener_opinion(response.json())
+
+        absolute_url = opinion.get("absolute_url") or ""
+        url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
+        if not url:
+            return None
+        citations = cluster.get("citations") or []
+        citation = citations[0].get("cite", "") if citations else ""
+        return {
+            "title": cluster.get("case_name") or "Untitled case",
+            "url": url,
+            "snippet": "",
+            "court": _CL_COURT_NAMES.get(docket.get("court_id"), COURT_UNKNOWN),
+            "citation": citation,
+            "decision_date": cluster.get("date_filed") or "",
+            "docket": docket.get("docket_number") or "",
+            "judge": cluster.get("judges") or "",
+        }
 
     def _related_opinions(
         self, opinion_id: int, relation: str, max_results: int

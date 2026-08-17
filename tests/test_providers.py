@@ -77,14 +77,51 @@ def test_validate_search_providers_defaults_and_raw_override(monkeypatch):
 
 
 def _cl_result(**overrides):
+    # Real v4 /search/ response shape (camelCase keys): the search endpoint is
+    # the only one that returns case metadata inline. The opinions list/detail
+    # endpoints return no case_name/court/date/docket/judge fields at all.
+    item = {
+        "caseName": "Smith v. McDonough",
+        "absolute_url": "/opinion/12345/smith-v-mcdonough/",
+        "court_id": "cavc",
+        "dateFiled": "2023-05-01",
+        "docketNumber": "19-4433",
+        "judge": "Judge Mary J. Smith",
+        "citation": ["35 Vet.App. 123"],
+    }
+    item.update(overrides)
+    return item
+
+
+def _cl_opinion_detail(**overrides):
+    """Real v4 opinions detail shape: text plus links, no case metadata."""
+    item = {
+        "absolute_url": "/opinion/12345/smith-v-mcdonough/",
+        "cluster": "https://www.courtlistener.com/api/rest/v4/clusters/98765/",
+        "plain_text": "",
+    }
+    item.update(overrides)
+    return item
+
+
+def _cl_cluster_detail(**overrides):
+    """Real v4 clusters shape: case metadata plus a docket link."""
     item = {
         "case_name": "Smith v. McDonough",
-        "absolute_url": "/opinion/12345/smith-v-mcdonough/",
-        "court": "cavc",
-        "date_filed": "2023-05-01",
-        "docket_number": "19-4433",
-        "judges": "Judge Mary J. Smith",
         "citations": [{"cite": "35 Vet.App. 123"}],
+        "date_filed": "2023-05-01",
+        "judges": "Judge Mary J. Smith",
+        "docket": "https://www.courtlistener.com/api/rest/v4/dockets/55555/",
+    }
+    item.update(overrides)
+    return item
+
+
+def _cl_docket_detail(**overrides):
+    """Real v4 dockets shape: docket number and court link."""
+    item = {
+        "docket_number": "19-4433",
+        "court_id": "cavc",
     }
     item.update(overrides)
     return item
@@ -113,6 +150,7 @@ def test_courtlistener_maps_structured_fields(monkeypatch):
     assert result["decision_date"] == "2023-05-01"
     assert result["docket"] == "19-4433"
     assert result["judge"] == "Judge Mary J. Smith"
+    assert captured["url"] == CourtListenerProvider.SEARCH_URL
     assert captured["params"]["court"] == ["cavc", "cafc", "scotus"]
 
 
@@ -1039,20 +1077,122 @@ def test_courtlistener_sends_exact_request_args(monkeypatch):
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
     CourtListenerProvider().search("tinnitus", max_results=1)
-    assert captured["url"] == CourtListenerProvider.API_URL
+    assert captured["url"] == CourtListenerProvider.SEARCH_URL
     assert captured["params"]["q"] == "tinnitus"  # type: ignore[index]
-    assert captured["params"]["page_size"] == 1  # type: ignore[index]  # clamps to >= 1
-    assert captured["params"]["page"] == 1  # type: ignore[index]
+    assert captured["params"]["court"] == ["cavc", "cafc", "scotus"]  # type: ignore[index]
     assert captured["params"]["format"] == "json"  # type: ignore[index]
+    assert "page" not in captured["params"]  # type: ignore[operator]
     assert "User-Agent" in captured["headers"]  # type: ignore[operator]
     assert captured["timeout"] is not None
 
-    # Defaults: max_results=10, page=1; page_size caps at 100.
+    # max_results is applied client-side; the search endpoint returns up to 20
+    # per page regardless, so no page_size is forwarded.
     CourtListenerProvider().search("tinnitus")
-    assert captured["params"]["page_size"] == 10  # type: ignore[index]
-    assert captured["params"]["page"] == 1  # type: ignore[index]
+    assert "page_size" not in captured["params"]  # type: ignore[operator]
     CourtListenerProvider().search("tinnitus", max_results=150)
-    assert captured["params"]["page_size"] == 100  # type: ignore[index]
+    assert "page_size" not in captured["params"]  # type: ignore[operator]
+
+
+def test_courtlistener_follows_cursor_for_page_above_one(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    calls: list[tuple[str, object]] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append((url, params))
+        if len(calls) == 1:
+            return FakeResponse(
+                {"results": [_cl_result(absolute_url="/opinion/1/")], "next": "https://cl/next"}
+            )
+        return FakeResponse({"results": [_cl_result(absolute_url="/opinion/2/")]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().search("tinnitus", page=2)
+
+    assert [r["url"] for r in results] == ["https://www.courtlistener.com/opinion/2/"]
+    assert calls[1][0] == "https://cl/next"  # cursor URL followed verbatim, no params
+    assert calls[1][1] is None
+
+
+def test_courtlistener_page_beyond_last_returns_empty(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
+    # The first response has results but no ``next`` cursor: requesting page 2
+    # must return [] (the cursor chain is exhausted), not crash.
+    def fake_get(url, params=None, headers=None, timeout=None):
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    assert CourtListenerProvider().search("tinnitus", page=2) == []
+
+
+def test_courtlistener_maps_dict_form_citation(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    # The mapper tolerates a cluster-style dict-form citation entry too, not
+    # just the string list the search endpoint normally returns.
+    items = [_cl_result(citation=[{"cite": "35 Vet.App. 123"}])]
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({"results": items}),
+    )
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert results[0]["citation"] == "35 Vet.App. 123"
+
+
+def test_courtlistener_dict_citation_missing_cite_falls_back(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    # A dict-form citation without the "cite" key must degrade to "", not to
+    # the string "None" or a sentinel.
+    items = [_cl_result(citation=[{"reporter": "x"}])]
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({"results": items}),
+    )
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert results[0]["citation"] == ""
+
+
+def test_courtlistener_search_missing_results_key_raises(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    # A 200 response that omits the "results" key entirely must degrade to
+    # "no results", not crash iterating None.
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({"count": 0}),
+    )
+
+    with pytest.raises(SearchError, match="No search results"):
+        CourtListenerProvider().search("tinnitus")
+
+
+def test_courtlistener_search_response_less_exception(monkeypatch):
+    # A transport-level failure (no .response attribute) must surface as a
+    # SearchError, not an AttributeError from the 401-detection guard.
+    def fake_get(url, params=None, headers=None, timeout=None):
+        raise requests.ConnectionError("boom")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="search failed"):
+        CourtListenerProvider().search("tinnitus")
+
+
+def test_courtlistener_default_max_results_caps_client_side(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    items = [_cl_result(absolute_url=f"/opinion/{i}/") for i in range(12)]
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda url, params=None, headers=None, timeout=None: FakeResponse({"results": items}),
+    )
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert len(results) == 10  # default max_results is applied client-side
 
 
 def test_courtlistener_fallback_fields_and_unknown_court(monkeypatch):
@@ -1060,13 +1200,13 @@ def test_courtlistener_fallback_fields_and_unknown_court(monkeypatch):
     items = [
         {  # everything missing: all fallbacks and the unknown-court mapping
             "absolute_url": "/opinion/9/",
-            "court": "not-a-court",
-            "citations": [],
+            "court_id": "not-a-court",
+            "citation": [],
         },
-        {  # citation dict present but lacking the "cite" key
+        {  # citation list present but with an unparseable entry
             "absolute_url": "/opinion/10/",
-            "court": "cavc",
-            "citations": [{"reporter": "x"}],
+            "court_id": "cavc",
+            "citation": [123],
         },
     ]
     monkeypatch.setattr(
@@ -1089,7 +1229,7 @@ def test_courtlistener_fallback_fields_and_unknown_court(monkeypatch):
 def test_courtlistener_continues_past_url_less_item(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     items = [
-        {"case_name": "No URL", "court": "cavc"},  # no absolute_url -> skipped
+        {"caseName": "No URL", "court_id": "cavc"},  # no absolute_url -> skipped
         _cl_result(),
     ]
     monkeypatch.setattr(
@@ -1467,23 +1607,83 @@ def test_extract_courtlistener_opinion_id():
 def test_courtlistener_get_opinion_success(monkeypatch):
     monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "33")
-    captured = {}
+    captured: list[tuple[str, object, object, object]] = []
 
     def fake_get(url, params=None, headers=None, timeout=None):
-        captured.update(url=url, params=params, headers=headers, timeout=timeout)
-        return FakeResponse(_cl_result())
+        captured.append((url, params, headers, timeout))
+        if url == CourtListenerProvider.API_URL + "12345/":
+            return FakeResponse(_cl_opinion_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/clusters/98765/":
+            return FakeResponse(_cl_cluster_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/dockets/55555/":
+            return FakeResponse(_cl_docket_detail())
+        raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
     result = CourtListenerProvider()._get_opinion(12345)
 
-    assert captured["url"] == CourtListenerProvider.API_URL + "12345/"
-    assert captured["params"] == {"format": "json"}
-    # The auth header and the configured timeout must actually be forwarded.
-    assert captured["headers"]["Authorization"] == "Token tok-123"
-    assert captured["timeout"] == 33
+    # opinion detail -> cluster -> docket, each with the auth header + timeout.
+    assert [c[0] for c in captured] == [
+        CourtListenerProvider.API_URL + "12345/",
+        "https://www.courtlistener.com/api/rest/v4/clusters/98765/",
+        "https://www.courtlistener.com/api/rest/v4/dockets/55555/",
+    ]
+    assert all(c[1] is None for c in captured)  # no query params on any fetch
+    assert all(c[2]["Authorization"] == "Token tok-123" for c in captured)  # type: ignore[index]
+    assert all(c[3] == 33 for c in captured)
     assert result["title"] == "Smith v. McDonough"
     assert result["url"] == "https://www.courtlistener.com/opinion/12345/smith-v-mcdonough/"
+    assert result["court"] == "Court of Appeals for Veterans Claims"
+    assert result["citation"] == "35 Vet.App. 123"
+    assert result["decision_date"] == "2023-05-01"
+    assert result["docket"] == "19-4433"
+    assert result["judge"] == "Judge Mary J. Smith"
+    assert result["snippet"] == ""
+
+
+def test_courtlistener_get_opinion_sparse_fallbacks(monkeypatch):
+    # Opinion/cluster/docket with everything missing: every fallback fires and
+    # no fetch is attempted for absent links.
+    calls: list[str] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        if url == CourtListenerProvider.API_URL + "12345/":
+            return FakeResponse({"absolute_url": "/opinion/12345/"})  # no cluster link
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    result = CourtListenerProvider()._get_opinion(12345)
+
+    assert calls == [CourtListenerProvider.API_URL + "12345/"]
+    assert result["title"] == "Untitled case"
+    assert result["court"] == COURT_UNKNOWN
+    assert result["citation"] == ""
+    assert result["decision_date"] == ""
+    assert result["docket"] == ""
+    assert result["judge"] == ""
+    assert result["snippet"] == ""
+
+
+def test_courtlistener_get_opinion_missing_cite_in_cluster(monkeypatch):
+    # Cluster citations present but lacking the "cite" key -> empty citation,
+    # not the string "None".
+    def fake_get(url, params=None, headers=None, timeout=None):
+        if url == CourtListenerProvider.API_URL + "12345/":
+            return FakeResponse(_cl_opinion_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/clusters/98765/":
+            return FakeResponse(_cl_cluster_detail(citations=[{"reporter": "x"}]))
+        if url == "https://www.courtlistener.com/api/rest/v4/dockets/55555/":
+            return FakeResponse(_cl_docket_detail())
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    result = CourtListenerProvider()._get_opinion(12345)
+
+    assert result["citation"] == ""
 
 
 def test_courtlistener_get_opinion_http_error(monkeypatch):
@@ -1533,13 +1733,23 @@ def test_courtlistener_citing_opinions_maps_forward_citations(monkeypatch):
         if url == CourtListenerProvider.CITATIONS_URL:
             assert params["cited_opinion"] == 12345
             return FakeResponse({"results": rows})
-        return FakeResponse(_cl_result(absolute_url="/opinion/200/"))
+        if url == "https://www.courtlistener.com/api/rest/v4/opinions/200/":
+            return FakeResponse(
+                _cl_opinion_detail(absolute_url="/opinion/200/")
+            )
+        if url == "https://www.courtlistener.com/api/rest/v4/clusters/98765/":
+            return FakeResponse(_cl_cluster_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/dockets/55555/":
+            return FakeResponse(_cl_docket_detail())
+        raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
     results = CourtListenerProvider().citing_opinions(12345, max_results=10)
 
     assert [r["url"] for r in results] == ["https://www.courtlistener.com/opinion/200/"]
+    assert results[0]["title"] == "Smith v. McDonough"
+    assert results[0]["citation"] == "35 Vet.App. 123"
 
 
 def test_courtlistener_related_opinions_http_error(monkeypatch):
@@ -1619,7 +1829,13 @@ def test_courtlistener_related_opinions_caps_at_max_results(monkeypatch):
         if url == CourtListenerProvider.CITATIONS_URL:
             return FakeResponse({"results": rows})
         opinion_id = int(url.rstrip("/").split("/")[-1])
-        return FakeResponse(_cl_result(absolute_url=f"/opinion/{opinion_id}/"))
+        if url == f"https://www.courtlistener.com/api/rest/v4/opinions/{opinion_id}/":
+            return FakeResponse(_cl_opinion_detail(absolute_url=f"/opinion/{opinion_id}/"))
+        if url == "https://www.courtlistener.com/api/rest/v4/clusters/98765/":
+            return FakeResponse(_cl_cluster_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/dockets/55555/":
+            return FakeResponse(_cl_docket_detail())
+        raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
@@ -1653,9 +1869,14 @@ def test_courtlistener_related_opinions_skips_detail_without_url(monkeypatch):
         if url == CourtListenerProvider.CITATIONS_URL:
             return FakeResponse({"results": rows})
         opinion_id = int(url.rstrip("/").split("/")[-1])
-        if opinion_id == 100:
-            return FakeResponse(_cl_result(absolute_url=""))  # no url -> None
-        return FakeResponse(_cl_result(absolute_url=f"/opinion/{opinion_id}/"))
+        if url == f"https://www.courtlistener.com/api/rest/v4/opinions/{opinion_id}/":
+            absolute = "" if opinion_id == 100 else f"/opinion/{opinion_id}/"
+            return FakeResponse(_cl_opinion_detail(absolute_url=absolute))
+        if url == "https://www.courtlistener.com/api/rest/v4/clusters/98765/":
+            return FakeResponse(_cl_cluster_detail())
+        if url == "https://www.courtlistener.com/api/rest/v4/dockets/55555/":
+            return FakeResponse(_cl_docket_detail())
+        raise AssertionError(f"unexpected URL: {url}")
 
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
@@ -1711,6 +1932,11 @@ def test_traverse_citations_merges_dedupes_and_forwards_args(monkeypatch):
 
     # Both relations are called with the extracted id and the default max_results.
     assert calls == [(1, 10), (1, 10)]
+
+    # A non-default max_results must be forwarded to both relations.
+    calls.clear()
+    traverse_citations(["https://www.courtlistener.com/opinion/1/"], max_results=4)
+    assert calls == [(1, 4), (1, 4)]
     # The url-less result is skipped; the duplicate across relations is deduped.
     assert [r["url"] for r in result] == [
         "https://www.courtlistener.com/opinion/100/",
