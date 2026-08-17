@@ -14,7 +14,7 @@ from pathlib import Path
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
 from .config import get_settings
-from .models import ClaimElement, LegalAnalysis, PrincipleFinding
+from .models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding
 from .providers import (
     recall_flags,
     resolve_search_providers,
@@ -196,6 +196,11 @@ def _bullets(title: str, items: list[str]) -> list[str]:
     return [f"{title}:"] + [f"- {item}" for item in items]
 
 
+def _contradiction_label(contradiction: Contradiction) -> str:
+    """Render one contradiction with both sides named, e.g. ``A v. B (Smith vs Jones)``."""
+    return f"{contradiction.statement} ({contradiction.case_a} vs {contradiction.case_b})"
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     blocks = [
@@ -205,6 +210,7 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         [f"Summary:\n{analysis.summary or '(none)'}"],
         [f"How this affects VA claims:\n{analysis.how_it_affects_va_claims or '(none)'}"],
         _bullets("Applicable principles", analysis.likely_applicable_principles),
+        _bullets("Contradictions", [_contradiction_label(c) for c in analysis.contradictions]),
         _bullets("Next steps", analysis.next_steps),
         _bullets("Strengths", analysis.strengths + _search_strengths(analysis.search_telemetry)),
         _bullets("Gaps", analysis.gaps + _search_gaps(analysis.search_telemetry)),
@@ -277,8 +283,8 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
     header = [
         "run_id", "issue", "coverage_score", "interpretation_source", "summary",
         "how_it_affects_va_claims", "top_cases", "applicable_principles",
-        "next_steps", "strengths", "gaps", "detected_elements", "principle_findings",
-        "search_telemetry",
+        "contradictions", "next_steps", "strengths", "gaps", "detected_elements",
+        "principle_findings", "search_telemetry",
     ]
     row = [
         analysis.run_id,
@@ -289,6 +295,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         analysis.how_it_affects_va_claims,
         " | ".join(analysis.top_cases),
         " | ".join(analysis.likely_applicable_principles),
+        " | ".join(_contradiction_label(c) for c in analysis.contradictions),
         " | ".join(analysis.next_steps),
         " | ".join(analysis.strengths),
         " | ".join(analysis.gaps),

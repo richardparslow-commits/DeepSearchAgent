@@ -6,7 +6,8 @@ import pytest
 
 from va_legal_agent.fetch import extract_holding_sentence, extract_statutes
 from va_legal_agent.interpretation import InterpretiveAnalysis
-from va_legal_agent.models import CaseRecord, PrincipleFinding
+from va_legal_agent.llm import ReasoningResult
+from va_legal_agent.models import CaseRecord, Contradiction, PrincipleFinding
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
@@ -381,6 +382,45 @@ def test_analyze_cases_for_claim_returns_structured_analysis(monkeypatch):
     assert analysis.coverage_score == 1.0
     assert analysis.interpretation_source == "template"  # OPENAI_API_KEY removed by stub
     assert analysis.strengths
+
+
+def test_analyze_cases_flows_llm_reasoning_contradictions(monkeypatch):
+    results = [
+        {
+            "title": "Smith v. Wilkie",
+            "url": "https://uscourts.cavc.gov/smith",
+            "snippet": "service connection evidence nexus",
+        }
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    reasoning = ReasoningResult(
+        reconciled_principles=["Service connection requires a nexus (Smith v. Wilkie)."],
+        contradictions=[
+            Contradiction(
+                statement="The two decisions split on the nexus standard.",
+                case_a="Smith v. Wilkie",
+                case_b="Jones v. McDonough",
+            )
+        ],
+        synthesis="Smith controls; Jones is distinguishable.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert analysis.interpretation_source == "llm"
+    assert analysis.how_it_affects_va_claims == "Smith controls; Jones is distinguishable."
+    assert analysis.likely_applicable_principles == [
+        "Service connection requires a nexus (Smith v. Wilkie)."
+    ]
+    assert len(analysis.contradictions) == 1
+    assert analysis.contradictions[0].statement == "The two decisions split on the nexus standard."
+    assert analysis.contradictions[0].case_a == "Smith v. Wilkie"
+    assert analysis.contradictions[0].case_b == "Jones v. McDonough"
 
 
 def test_statute_extraction_handles_va_citation_variants():

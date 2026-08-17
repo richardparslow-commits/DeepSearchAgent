@@ -194,6 +194,7 @@ Output is deterministic research support derived from public decisions, not lega
 - **Strengths, gaps, and coverage score** — the share of detected elements that retrieved authority actually covers; gaps suggest where targeted research is needed.
 - **Actionable next steps** — derived from the detected elements rather than static boilerplate.
 - **Narrative** (`how_it_affects_va_claims`) — LLM-enhanced when `OPENAI_API_KEY` is set (`interpretation_source: "llm"`), deterministic template otherwise (`"template"`). All output states it is research support, not legal advice.
+- **LLM reasoning pass** — with `OPENAI_API_KEY` set, the agent reconciles holdings across all ranked cases, flags contradictions between decisions (`contradictions` in the JSON/text/CSV output), and cites each claim; the deterministic template remains the always-on fallback.
 
 ## Configuration
 
@@ -224,6 +225,8 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `OPENAI_TIMEOUT_SECONDS` | `60` | Timeout (seconds) for each OpenAI completion request |
 | `OPENAI_MAX_TOKENS` | `700` | Maximum completion tokens for the LLM narrative |
 | `OPENAI_BASE_URL` | – | Endpoint override for Azure OpenAI / compatible APIs |
+| `LLM_REASONING` | `1` | Reconcile holdings across all ranked cases via the LLM, flag contradictions, and cite each claim (`0` keeps only the lighter single-call narrative) |
+| `LLM_REASONING_LIMIT` | `10` | Ranked cases fed into the reconciling reasoning pass |
 | `LOG_JSON` | `0` | Emit diagnostic logs as JSON on stderr (`1`/`true`/`yes`/`on`); overridden by `--log-format` |
 | `RUN_ID` | – | Correlation id attached to terminal events; a fresh id is generated per run when unset |
 | `BATCH_STATE_DIR` | temp dir | Directory for per-run_id batch state files used by `--batch-size` |

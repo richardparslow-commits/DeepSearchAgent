@@ -162,6 +162,12 @@ class Settings:
     openai_base_url: str | None = None
     openai_timeout_seconds: float = 60.0
     openai_max_tokens: int = 700
+    # LLM reasoning pass: reconciles holdings across all ranked cases, flags
+    # contradictions, and cites each claim. Disable with LLM_REASONING=0 to
+    # keep only the lighter single-call narrative.
+    llm_reasoning: bool = True
+    # How many ranked cases the reasoning pass is fed.
+    llm_reasoning_limit: int = 10
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -215,6 +221,8 @@ class Settings:
             openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
             openai_timeout_seconds=env_float("OPENAI_TIMEOUT_SECONDS", d.openai_timeout_seconds),
             openai_max_tokens=env_int("OPENAI_MAX_TOKENS", d.openai_max_tokens),
+            llm_reasoning=env_bool("LLM_REASONING", d.llm_reasoning),
+            llm_reasoning_limit=env_int("LLM_REASONING_LIMIT", d.llm_reasoning_limit),
         )
 
 

@@ -31,6 +31,8 @@ _ENV_VARS = (
     "OPENAI_BASE_URL",
     "OPENAI_TIMEOUT_SECONDS",
     "OPENAI_MAX_TOKENS",
+    "LLM_REASONING",
+    "LLM_REASONING_LIMIT",
 )
 
 
@@ -139,6 +141,8 @@ def test_settings_defaults(monkeypatch):
     assert settings.openai_base_url is None
     assert settings.openai_timeout_seconds == 60.0
     assert settings.openai_max_tokens == 700
+    assert settings.llm_reasoning is True
+    assert settings.llm_reasoning_limit == 10
 
 
 def test_settings_read_from_env(monkeypatch):
@@ -162,6 +166,8 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o")
     monkeypatch.setenv("OPENAI_TIMEOUT_SECONDS", "12.5")
     monkeypatch.setenv("OPENAI_MAX_TOKENS", "300")
+    monkeypatch.setenv("LLM_REASONING", "0")
+    monkeypatch.setenv("LLM_REASONING_LIMIT", "4")
     monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "7.5")
 
     settings = get_settings()
@@ -187,6 +193,8 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.openai_model == "gpt-4o"
     assert settings.openai_timeout_seconds == 12.5
     assert settings.openai_max_tokens == 300
+    assert settings.llm_reasoning is False
+    assert settings.llm_reasoning_limit == 4
 
 
 def test_env_provider_int_map_skips_malformed_entries(monkeypatch):

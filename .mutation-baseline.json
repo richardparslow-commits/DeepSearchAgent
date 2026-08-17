@@ -12,7 +12,7 @@
   "models.py": 0,
   "topics.py": 0,
   "interpretation.py": 0,
-  "llm.py": 12,
+  "llm.py": 27,
   "impact.py": 5,
   "ranking.py": 1
 }

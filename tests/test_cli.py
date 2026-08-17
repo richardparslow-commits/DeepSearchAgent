@@ -15,7 +15,7 @@ from va_legal_agent.__main__ import (
     main,
     render_analysis,
 )
-from va_legal_agent.models import ClaimElement, LegalAnalysis, PrincipleFinding
+from va_legal_agent.models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding
 
 
 def _sample_analysis() -> LegalAnalysis:
@@ -45,6 +45,13 @@ def _sample_analysis() -> LegalAnalysis:
         principle_findings=[
             PrincipleFinding(
                 principle="A nexus is required.", source_cases=["Smith v. Wilkie"]
+            )
+        ],
+        contradictions=[
+            Contradiction(
+                statement="The decisions split on the nexus standard.",
+                case_a="Smith v. Wilkie",
+                case_b="Jones v. McDonough",
             )
         ],
         strengths=["Retrieved authority addresses 'service connection': Smith v. Wilkie."],
@@ -161,6 +168,11 @@ def test_render_analysis_text():
     assert "How this affects VA claims:" in text
     assert "Coverage score: 1.00" in text
     assert "Interpretation source: template" in text
+    # Contradictions surface with both sides named.
+    assert (
+        "- The decisions split on the nexus standard. "
+        "(Smith v. Wilkie vs Jones v. McDonough)" in text
+    )
 
 
 def test_render_analysis_csv():
@@ -173,6 +185,10 @@ def test_render_analysis_csv():
     assert data["coverage_score"] == "1.0"
     assert "Smith v. Wilkie" in data["top_cases"]
     assert "service connection [covered by: Smith v. Wilkie]" in data["detected_elements"]
+    assert (
+        data["contradictions"]
+        == "The decisions split on the nexus standard. (Smith v. Wilkie vs Jones v. McDonough)"
+    )
 
 
 def test_render_analysis_json_default():

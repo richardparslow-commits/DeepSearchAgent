@@ -7,7 +7,8 @@ from va_legal_agent.interpretation import (
     extract_principle_findings,
     uncovered_element_names,
 )
-from va_legal_agent.models import CaseRecord
+from va_legal_agent.llm import ReasoningResult
+from va_legal_agent.models import CaseRecord, Contradiction
 from va_legal_agent.topics import TOPICS
 
 
@@ -96,6 +97,9 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
 
 def test_build_analysis_uses_llm_text_when_available(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases", lambda issue, claim_type, cases: None
+    )
     captured: dict[str, object] = {}
 
     def fake_llm(issue, claim_type, cases):
@@ -112,6 +116,7 @@ def test_build_analysis_uses_llm_text_when_available(monkeypatch):
 
     assert result.interpretation_source == "llm"
     assert result.how_it_affects_va_claims == "LLM says: Smith controls."
+    assert result.contradictions == []
     # The issue, claim type, and capped case list are passed through unchanged.
     assert captured["issue"] == "service connection"
     assert captured["claim_type"] == "Compensation"
@@ -122,6 +127,9 @@ def test_build_analysis_uses_llm_text_when_available(monkeypatch):
 
 def test_build_analysis_falls_back_to_template_when_llm_unavailable(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases", lambda issue, claim_type, cases: None
+    )
     monkeypatch.setattr(
         "va_legal_agent.interpretation.interpret_cases",
         lambda issue, claim_type, cases: None,
@@ -249,3 +257,98 @@ def test_build_analysis_limits_read_env(monkeypatch):
     assert result.principle_findings[0].source_cases == ["Case A"]
     assert "Case A" in result.how_it_affects_va_claims
     assert "Case B" not in result.how_it_affects_va_claims
+
+
+def test_build_analysis_uses_llm_reasoning_when_available(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    reasoning = ReasoningResult(
+        reconciled_principles=[
+            "Service connection requires a nexus opinion (Smith v. Wilkie)."
+        ],
+        contradictions=[
+            Contradiction(
+                statement="The two decisions split on the nexus standard.",
+                case_a="Smith v. Wilkie",
+                case_b="Jones v. McDonough",
+            )
+        ],
+        synthesis="Smith controls; Jones is distinguishable.",
+    )
+    captured: dict[str, object] = {}
+
+    def recording_reason(issue, claim_type, cases):
+        captured.update(issue=issue, claim_type=claim_type, cases=cases)
+        return reasoning
+
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases", recording_reason
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.interpret_cases",
+        lambda issue, claim_type, cases: "narrative",
+    )
+
+    result = build_interpretive_analysis(
+        "service connection", "Compensation", [_case("Smith v. Wilkie", snippet="service connection")]
+    )
+
+    assert result.interpretation_source == "llm"
+    # The reconciling synthesis replaces the lighter narrative.
+    assert result.how_it_affects_va_claims == "Smith controls; Jones is distinguishable."
+    # LLM-reconciled principles (with inline citations) back the report.
+    assert result.likely_applicable_principles == [
+        "Service connection requires a nexus opinion (Smith v. Wilkie)."
+    ]
+    assert len(result.contradictions) == 1
+    assert result.contradictions[0].statement == "The two decisions split on the nexus standard."
+    assert result.contradictions[0].case_a == "Smith v. Wilkie"
+    assert result.contradictions[0].case_b == "Jones v. McDonough"
+    # The issue, claim type, and capped case list reach the reasoning pass.
+    assert captured["issue"] == "service connection"
+    assert captured["claim_type"] == "Compensation"
+    assert [c.title for c in captured["cases"]] == ["Smith v. Wilkie"]
+
+
+def test_build_analysis_reasoning_without_synthesis_uses_narrative(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # The reasoning pass returns principles/contradictions but no synthesis;
+    # the lighter LLM narrative still supplies the prose.
+    reasoning = ReasoningResult(
+        reconciled_principles=["A principle (Smith v. Wilkie)."], synthesis=""
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.interpret_cases",
+        lambda issue, claim_type, cases: "LLM narrative.",
+    )
+
+    result = build_interpretive_analysis(
+        "service connection", "Compensation", [_case("Smith v. Wilkie", snippet="service connection")]
+    )
+
+    assert result.how_it_affects_va_claims == "LLM narrative."
+    assert result.likely_applicable_principles == ["A principle (Smith v. Wilkie)."]
+
+
+def test_build_analysis_reasoning_falls_back_to_template_principles(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # The LLM returns only a synthesis (no reconciled principles): the
+    # deterministic principle findings still back the report.
+    reasoning = ReasoningResult(reconciled_principles=[], synthesis="Only a synthesis.")
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+
+    result = build_interpretive_analysis(
+        "service connection",
+        "Compensation",
+        [_case("Smith v. Wilkie", snippet="service connection requires competent evidence")],
+    )
+
+    assert result.how_it_affects_va_claims == "Only a synthesis."
+    assert result.likely_applicable_principles  # deterministic findings kept
+    assert any("(see: Smith v. Wilkie)" in p for p in result.likely_applicable_principles)

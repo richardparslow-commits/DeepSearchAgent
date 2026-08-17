@@ -1,11 +1,18 @@
 """Tests for the optional LLM interpretation layer (va_legal_agent.llm)."""
 
+import json
 import sys
 import types
 
 import pytest
 
-from va_legal_agent.llm import _build_messages, interpret_cases
+from va_legal_agent.llm import (
+    _build_messages,
+    _build_reasoning_messages,
+    _parse_reasoning_response,
+    interpret_cases,
+    reason_cases,
+)
 from va_legal_agent.models import CaseRecord
 
 
@@ -199,3 +206,288 @@ def test_interpret_cases_passes_claim_type_through(monkeypatch):
     interpret_cases("tinnitus", "Compensation", [_case()])
 
     assert "Benefit type: Compensation" in captured["messages"][1]["content"]
+
+
+def test_build_reasoning_messages_include_every_case_and_json_instructions():
+    messages = _build_reasoning_messages("service connection", "Compensation", [_case()], 700)
+
+    assert messages[0]["role"] == "system"
+    assert "reconciled_principles" in messages[0]["content"]
+    assert "contradictions" in messages[0]["content"]
+    assert "case_a" in messages[0]["content"]
+    assert messages[1]["role"] == "user"
+    user_text = messages[1]["content"]
+    assert "Fountain v. McDonald" in user_text
+    assert "[23 Vet.App. 1]" in user_text
+    assert "The Board must provide reasons and bases." in user_text  # holding
+    assert "Benefit type: Compensation" in user_text
+    assert "Return only the JSON object" in user_text
+
+
+def test_build_reasoning_messages_include_outcome_and_statutes():
+    case = _case()
+    case.outcome = "Granted"
+    case.statutes = ["38 U.S.C. 5107"]
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Outcome: Granted" in user_text
+    assert "Statutes: 38 U.S.C. 5107" in user_text
+
+
+def test_build_reasoning_messages_number_cases_and_budget_words():
+    first, second = _case(), _case()
+    second.title = "Second v. VA"
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [first, second], 700)
+    user_text = messages[1]["content"]
+
+    assert "1. Fountain v. McDonald" in user_text
+    assert "2. Second v. VA" in user_text
+    assert "under 175 words" in user_text  # max_tokens // 4
+
+
+def test_build_reasoning_messages_system_prompt_is_exact():
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [_case()], 700)
+
+    # Pinned verbatim: the prompt is the contract for the LLM's JSON output.
+    assert messages[0]["content"] == (
+        "You are a meticulous U.S. veterans-law research analyst. Given the claim issue "
+        "and the retrieved decisions, reconcile the holdings into coherent guidance. "
+        "Respond with ONLY a JSON object with exactly these keys:\n"
+        '{"reconciled_principles": ["..."], "contradictions": [{"statement": "...", '
+        '"case_a": "...", "case_b": "..."}], "synthesis": "..."}\n'
+        "Rules:\n"
+        "- reconciled_principles: legal principles that hold across the cases, each a "
+        "complete sentence that cites the supporting case(s) inline, e.g. 'Service "
+        "connection requires a nexus opinion (Buchanan v. Nicholson).'\n"
+        "- contradictions: genuine conflicts between two decisions on the same point "
+        "(differing holdings or outcomes). Use the exact case titles for case_a and "
+        "case_b. Empty list if the cases agree.\n"
+        "- synthesis: a paragraph under 250 words reconciling the holdings into guidance "
+        "for the claim, citing the case(s) behind each claim you make.\n"
+        "Do not invent cases, holdings, citations, or statutes. Do not make any claim "
+        "the listed cases do not support."
+    )
+
+
+def test_build_reasoning_messages_user_message_is_exact():
+    """The user message pins the case-line formatting for every optional field."""
+    full = CaseRecord(
+        title="Alpha v. VA",
+        court="CAVC",
+        citation="1 Vet.App. 1",
+        decision_date="2020-01-01",
+        holding="Alpha holding.",
+        outcome="Granted",
+        statutes=["38 U.S.C. 5107", "38 C.F.R. 4.1"],
+    )
+    bare = CaseRecord(title="Beta v. VA", court="CAVC")  # every optional field empty
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [full, bare], 700)
+
+    assert messages[1]["content"] == (
+        "Claim issue: tinnitus\nBenefit type: Compensation\n\nCases:\n"
+        "1. Alpha v. VA (CAVC) [1 Vet.App. 1] -- decided 2020-01-01\n"
+        "   Holding: Alpha holding.\n"
+        "   Outcome: Granted\n"
+        "   Statutes: 38 U.S.C. 5107, 38 C.F.R. 4.1\n\n"
+        "2. Beta v. VA (CAVC)\n"
+        "   Holding: (no holding extracted)\n\n"
+        "Keep the synthesis under 175 words. Return only the JSON object."
+    )
+
+
+def test_build_reasoning_messages_word_budget_has_a_floor():
+    # A tiny token budget still yields a readable word cap (max(max_tokens // 4, 50)).
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [_case()], 100)
+
+    assert "under 50 words" in messages[1]["content"]
+
+
+def test_parse_reasoning_response_parses_full_json():
+    text = json.dumps(
+        {
+            "reconciled_principles": ["Nexus required (Fountain v. McDonald)."],
+            "contradictions": [
+                {"statement": "Split on the standard.", "case_a": "A v. VA", "case_b": "B v. VA"}
+            ],
+            "synthesis": "A controls.",
+        }
+    )
+
+    result = _parse_reasoning_response(text)
+
+    assert result is not None
+    assert result.reconciled_principles == ["Nexus required (Fountain v. McDonald)."]
+    assert result.synthesis == "A controls."
+    assert len(result.contradictions) == 1
+    assert result.contradictions[0].statement == "Split on the standard."
+    assert result.contradictions[0].case_a == "A v. VA"
+    assert result.contradictions[0].case_b == "B v. VA"
+
+def test_parse_reasoning_response_handles_code_fences_and_prose():
+    payload = '{"synthesis": "A controls."}'
+
+    fenced = f'```json\n{payload}\n```'
+    assert _parse_reasoning_response(fenced).synthesis == "A controls."
+
+    # A fence without the ``json`` language tag still parses.
+    plain_fenced = f'```\n{payload}\n```'
+    assert _parse_reasoning_response(plain_fenced).synthesis == "A controls."
+
+    prose = f'Here is the result:\n{payload}\nHope that helps.'
+    assert _parse_reasoning_response(prose).synthesis == "A controls."
+
+    # Braces that enclose broken JSON (not just trailing prose) yield None.
+    assert _parse_reasoning_response("prefix {oops not json} suffix") is None
+
+
+def test_parse_reasoning_response_skips_malformed_contradictions():
+    text = json.dumps(
+        {
+            "contradictions": [
+                "not-a-dict",  # a non-dict item must not stop later items
+                {"statement": "ok", "case_a": "A", "case_b": "B"},
+                {"statement": "missing sides"},  # no case_a/case_b -> skipped
+                {"statement": "", "case_a": "", "case_b": ""},  # empty -> skipped
+                {"case_a": "A", "case_b": "B"},  # no statement -> skipped
+                {"statement": "s", "case_b": "B"},  # no case_a -> skipped
+                {"statement": "s", "case_a": "A"},  # no case_b -> skipped
+                {"case_b": "only-b"},  # nothing but one side -> skipped
+            ]
+        }
+    )
+
+    result = _parse_reasoning_response(text)
+
+    assert result is not None
+    assert len(result.contradictions) == 1  # only the fully-populated one survives
+    assert result.contradictions[0].case_a == "A"
+    assert result.contradictions[0].case_b == "B"
+
+
+def test_parse_reasoning_response_skips_non_string_principles():
+    text = json.dumps({"reconciled_principles": ["A real principle.", 5, {"x": 1}]})
+
+    result = _parse_reasoning_response(text)
+
+    assert result.reconciled_principles == ["A real principle."]  # non-str items dropped
+
+
+def test_parse_reasoning_response_block_extraction_edge_cases():
+    # Trailing prose after a leading brace: the first-to-last brace block is used.
+    assert _parse_reasoning_response('{"synthesis": "A"} trailing').synthesis == "A"
+    # A non-whitespace char right after the closing brace must not break the block.
+    assert _parse_reasoning_response('prefix {"synthesis": "A"}x').synthesis == "A"
+    # Nested braces: the block spans to the *last* closing brace.
+    assert _parse_reasoning_response(
+        'prefix {"synthesis": "A", "nested": {"b": 1}}'
+    ).synthesis == "A"
+    # Two separate objects: only the first-to-last span is considered; if it is
+    # not valid JSON the whole thing is rejected (the earlier object wins).
+    assert _parse_reasoning_response(
+        'junk {"synthesis": "A"} trailing {"synthesis": "B"}'
+    ) is None
+
+
+def test_parse_reasoning_response_returns_none_on_garbage():
+    assert _parse_reasoning_response("") is None
+    assert _parse_reasoning_response("   ") is None
+    assert _parse_reasoning_response("not json at all") is None
+    assert _parse_reasoning_response("[1, 2, 3]") is None  # not a dict
+    assert _parse_reasoning_response('{"unrelated": true}') is None  # no usable keys
+
+
+def test_reason_cases_returns_none_without_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    called: list[object] = []
+
+    def should_not_run(messages):
+        called.append(messages)
+        return "never"
+
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+
+    assert reason_cases("tinnitus", "Compensation", [_case()]) is None
+    assert called == []
+
+
+def test_reason_cases_returns_none_for_empty_cases(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    assert reason_cases("tinnitus", "Compensation", []) is None
+
+
+def test_reason_cases_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_REASONING", "0")
+    called: list[object] = []
+
+    def should_not_run(messages):
+        called.append(messages)
+        return "never"
+
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+
+    assert reason_cases("tinnitus", "Compensation", [_case()]) is None
+    assert called == []
+
+
+def test_reason_cases_returns_parsed_result(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    payload = json.dumps({"reconciled_principles": ["P"], "synthesis": "S"})
+    captured: dict[str, object] = {}
+
+    def recording_call(messages):
+        captured["messages"] = messages
+        return payload
+
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", recording_call)
+
+    result = reason_cases("tinnitus", "Compensation", [_case()])
+
+    assert result is not None
+    assert result.reconciled_principles == ["P"]
+    assert result.synthesis == "S"
+    # The reasoning prompt (not a placeholder) is what reaches the client, and
+    # the issue/claim type are threaded through to it.
+    assert "reconciled_principles" in captured["messages"][0]["content"]
+    assert "tinnitus" in captured["messages"][1]["content"]
+    assert "Compensation" in captured["messages"][1]["content"]
+
+
+def test_reason_cases_falls_back_on_api_failure(monkeypatch, caplog):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    def failing_call(messages):
+        raise RuntimeError("API timeout")
+
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", failing_call)
+
+    assert reason_cases("tinnitus", "Compensation", [_case()]) is None
+    assert any(
+        r.getMessage() == "LLM reasoning failed; using template synthesis: API timeout"
+        for r in caplog.records
+    )
+
+
+def test_reason_cases_returns_none_on_empty_response(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("va_legal_agent.llm._call_openai", lambda messages: "")
+
+    assert reason_cases("tinnitus", "Compensation", [_case()]) is None
+
+
+def test_reason_cases_handles_missing_openai_package(monkeypatch, caplog):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "openai", None)  # openai not importable
+
+    assert reason_cases("tinnitus", "Compensation", [_case()]) is None
+    assert any(
+        r.getMessage()
+        == "OPENAI_API_KEY is set but the 'openai' package is not installed "
+        "(pip install openai). Skipping LLM reasoning."
+        for r in caplog.records
+    )

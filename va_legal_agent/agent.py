@@ -506,6 +506,7 @@ def _build_analysis(
         top_cases=top_cases,
         detected_elements=interpretive.detected_elements,
         principle_findings=interpretive.principle_findings,
+        contradictions=interpretive.contradictions,
         strengths=interpretive.strengths,
         gaps=interpretive.gaps,
         coverage_score=interpretive.coverage_score,

@@ -41,6 +41,19 @@ class PrincipleFinding(BaseModel):
     source_cases: list[str] = Field(default_factory=list)
 
 
+class Contradiction(BaseModel):
+    """A conflict between two retrieved authorities on the same point.
+
+    Raised by the LLM reasoning pass (or, in the deterministic path, absent)
+    when two decisions disagree on a holding or outcome, so the report can
+    surface the tension rather than silently picking one side.
+    """
+
+    statement: str
+    case_a: str
+    case_b: str
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -51,6 +64,7 @@ class LegalAnalysis(BaseModel):
     top_cases: list[str] = Field(default_factory=list)
     detected_elements: list[ClaimElement] = Field(default_factory=list)
     principle_findings: list[PrincipleFinding] = Field(default_factory=list)
+    contradictions: list[Contradiction] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     coverage_score: float = 0.0

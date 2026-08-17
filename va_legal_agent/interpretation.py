@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .config import get_settings
-from .llm import interpret_cases
-from .models import CaseRecord, ClaimElement, PrincipleFinding
+from .llm import interpret_cases, reason_cases
+from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding
 from .topics import PRINCIPLE_PATTERNS, TOPICS
 
 @dataclass(frozen=True)
@@ -124,6 +124,7 @@ class InterpretiveAnalysis:
     next_steps: list[str] = field(default_factory=list)
     detected_elements: list[ClaimElement] = field(default_factory=list)
     principle_findings: list[PrincipleFinding] = field(default_factory=list)
+    contradictions: list[Contradiction] = field(default_factory=list)
     strengths: list[str] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
     coverage_score: float = 0.0
@@ -254,19 +255,43 @@ def build_interpretive_analysis(
     template_text = _template_interpretation(
         claim_issue, claim_type, cases, element_specs, findings, interpret_limit
     )
-    llm_text = interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
+    reasoning = reason_cases(claim_issue, claim_type, cases[: settings.llm_reasoning_limit])
+    # When the reconciling pass provides a synthesis it replaces the lighter
+    # narrative call entirely (one LLM call instead of two); otherwise the
+    # single-call narrative is still tried.
+    llm_text = (
+        None
+        if reasoning and reasoning.synthesis
+        else interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
+    )
+
+    # The deterministic principles are the always-on baseline; the reasoning
+    # pass overrides them (its principles carry inline citations) when the LLM
+    # is available and returns content.
+    template_principles = [
+        f"{finding.principle} (see: {', '.join(finding.source_cases[:3])})"
+        for finding in findings
+    ]
+    if reasoning:
+        principles = list(reasoning.reconciled_principles) or template_principles
+        narrative = reasoning.synthesis or llm_text or template_text
+        contradictions = list(reasoning.contradictions)
+        source = "llm"
+    else:
+        principles = template_principles
+        narrative = llm_text or template_text
+        contradictions = []
+        source = "llm" if llm_text else "template"
 
     return InterpretiveAnalysis(
-        likely_applicable_principles=[
-            f"{finding.principle} (see: {', '.join(finding.source_cases[:3])})"
-            for finding in findings
-        ],
-        how_it_affects_va_claims=llm_text or template_text,
+        likely_applicable_principles=principles,
+        how_it_affects_va_claims=narrative,
         next_steps=next_steps,
         detected_elements=detected,
         principle_findings=findings,
+        contradictions=contradictions,
         strengths=strengths,
         gaps=gaps,
         coverage_score=coverage_score,
-        interpretation_source="llm" if llm_text else "template",
+        interpretation_source=source,
     )
