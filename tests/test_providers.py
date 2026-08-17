@@ -1,5 +1,6 @@
 """Tests for the search provider abstraction (va_legal_agent.providers)."""
 
+import email.utils
 import json
 import time
 
@@ -7,6 +8,7 @@ import pytest
 import requests
 
 from va_legal_agent.providers import (
+    _parse_retry_after,
     BVAProvider,
     CourtListenerProvider,
     DuckDuckGoProvider,
@@ -21,10 +23,11 @@ from va_legal_agent.topics import COURT_UNKNOWN
 
 
 class FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
         self.status_code = status_code
         self.text = payload if isinstance(payload, str) else ""
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -170,6 +173,8 @@ def test_courtlistener_sends_api_key_when_set(monkeypatch):
 
 
 def test_courtlistener_raises_on_http_error(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
     def fake_get(url, params=None, headers=None, timeout=None):
         return FakeResponse({}, status_code=500)
 
@@ -1171,6 +1176,7 @@ def test_courtlistener_search_missing_results_key_raises(monkeypatch):
 
 
 def test_courtlistener_search_response_less_exception(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     # A transport-level failure (no .response attribute) must surface as a
     # SearchError, not an AttributeError from the 401-detection guard.
     def fake_get(url, params=None, headers=None, timeout=None):
@@ -1255,6 +1261,171 @@ def test_courtlistener_401_with_token_is_generic_error(monkeypatch):
         CourtListenerProvider().search("tinnitus")
 
     assert "COURTLISTENER_API_KEY" not in str(exc.value)
+
+
+def test_parse_retry_after_forms():
+    assert _parse_retry_after(None) is None
+    assert _parse_retry_after("") is None
+    assert _parse_retry_after("5") == 5.0
+    assert _parse_retry_after("  120 ") == 120.0
+    assert _parse_retry_after("garbage") is None
+    # A past HTTP-date (aware and naive forms) clamps to zero.
+    assert _parse_retry_after("Thu, 01 Jan 1970 00:00:00 GMT") == 0.0
+    assert _parse_retry_after("Thu, 01 Jan 1970 00:00:00") == 0.0
+    # A near-future HTTP-date yields its delta seconds.
+    future = email.utils.formatdate(time.time() + 60, usegmt=True)
+    assert 55 <= _parse_retry_after(future) <= 61
+
+
+def test_courtlistener_retries_429_with_retry_after_then_succeeds(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "2")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429, headers={"Retry-After": "5"})
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2  # one throttle, then success
+    assert sleeps == [5.0]  # Retry-After (5s) beats the exponential floor
+    assert results[0]["title"] == "Smith v. McDonough"
+
+
+def test_courtlistener_retries_429_without_retry_after_header(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429)  # no Retry-After header
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2
+    assert len(sleeps) == 1
+    assert 0.75 <= sleeps[0] <= 1.25  # exponential floor with jitter
+    assert results[0]["title"] == "Smith v. McDonough"
+
+
+def test_courtlistener_retries_response_less_error_then_succeeds(monkeypatch):
+    # A transient ConnectionError has no .response attribute, so the Retry-After
+    # lookup must fall back to the exponential delay instead of dereferencing
+    # None. This pins the None-response path of _courtlistener_retry_delay.
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.ConnectionError("boom")
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2
+    assert len(sleeps) == 1
+    assert 0.75 <= sleeps[0] <= 1.25  # no response, so no Retry-After
+    assert results[0]["title"] == "Smith v. McDonough"
+
+
+def test_courtlistener_exhausts_retries_and_raises_last_error(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "2")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        return FakeResponse({}, status_code=429, headers={"Retry-After": "1"})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="search failed"):
+        CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 3  # initial attempt + SEARCH_RETRY_ATTEMPTS retries
+    assert len(sleeps) == 2
+
+
+def test_courtlistener_retry_after_capped_at_backoff_max(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("SEARCH_BACKOFF_MAX_SECONDS", "3")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429, headers={"Retry-After": "999"})
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2
+    assert sleeps == [3.0]  # server asked 999s; capped at the configured max
+
+
+def test_courtlistener_retry_after_http_date_is_honored(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("SEARCH_BACKOFF_MAX_SECONDS", "60")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+    future = email.utils.formatdate(time.time() + 30, usegmt=True)
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429, headers={"Retry-After": future})
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2
+    assert 25 <= sleeps[0] <= 31  # ~30s from the HTTP-date
+
+
+def test_courtlistener_throttles_every_attempt(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", lambda s: None)
+    throttles: list[int] = []
+    monkeypatch.setattr("va_legal_agent.providers._throttle", lambda: throttles.append(1))
+    calls = {"n": 0}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429, headers={"Retry-After": "1"})
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    CourtListenerProvider().search("tinnitus")
+
+    assert calls["n"] == 2
+    assert throttles == [1, 1]  # paced before each of the two attempts
 
 
 def test_bva_provider_sends_exact_request_args(monkeypatch):
@@ -1687,6 +1858,7 @@ def test_courtlistener_get_opinion_missing_cite_in_cluster(monkeypatch):
 
 
 def test_courtlistener_get_opinion_http_error(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     monkeypatch.setattr(
         "va_legal_agent.providers.requests.get",
         lambda url, params=None, headers=None, timeout=None: FakeResponse({}, status_code=500),
@@ -1753,6 +1925,7 @@ def test_courtlistener_citing_opinions_maps_forward_citations(monkeypatch):
 
 
 def test_courtlistener_related_opinions_http_error(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     monkeypatch.setattr(
         "va_legal_agent.providers.requests.get",
         lambda url, params=None, headers=None, timeout=None: FakeResponse({}, status_code=500),

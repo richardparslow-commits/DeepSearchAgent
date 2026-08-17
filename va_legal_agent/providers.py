@@ -12,18 +12,26 @@ Each provider returns result dicts with the standard keys ``title``/``url``/
 
 from __future__ import annotations
 
+import email.utils
 import html as html_module
 import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Protocol
 
 import requests
 
 from .config import get_settings
 from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
-from .search import DuckDuckGoProvider, SearchError
+from .search import (
+    DuckDuckGoProvider,
+    SearchError,
+    _is_transient_error,
+    _retry_delay,
+    _throttle,
+)
 from .topics import (
     COURT_BVA,
     COURT_CAVC,
@@ -97,6 +105,48 @@ def extract_courtlistener_opinion_id(url: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse a ``Retry-After`` header into seconds, or None if absent/invalid.
+
+    The header is either a delta-seconds integer or an HTTP-date; the date
+    form is converted to seconds-from-now (clamped at zero for past dates).
+    """
+    if not value:
+        return None
+    stripped = value.strip()
+    if stripped.isdigit():
+        return float(stripped)
+    try:
+        target = email.utils.parsedate_to_datetime(stripped)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=timezone.utc)
+    delay = (target - datetime.now(timezone.utc)).total_seconds()
+    return max(delay, 0.0)
+
+
+def _courtlistener_retry_delay(
+    attempt: int, exc: requests.RequestException | None
+) -> float:
+    """Backoff for a throttled CourtListener request.
+
+    Starts from the shared exponential-with-jitter delay and honors the
+    server's ``Retry-After`` header when present, capped at
+    ``SEARCH_BACKOFF_MAX_SECONDS`` so a run stays bounded even when the server
+    asks for a long wait. Never sleeps less than the exponential floor, so
+    retries stay polite without a ``Retry-After`` hint too.
+    """
+    settings = get_settings()
+    base = _retry_delay(attempt)
+    retry_after = _parse_retry_after(
+        getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After")
+    )
+    if retry_after is None:
+        return base
+    return max(base, min(retry_after, settings.search_backoff_max_seconds))
+
+
 class CourtListenerProvider:
     """Structured case search over CourtListener's REST API.
 
@@ -132,19 +182,59 @@ class CourtListenerProvider:
         return headers
 
     def _get_json(self, url: str, params: dict[str, object] | None = None) -> dict:
-        """GET *url* with the auth headers and return the parsed JSON body."""
+        """GET *url* with pacing and throttle-aware retries; return parsed JSON.
+
+        Every attempt is paced by the global ``SEARCH_MIN_INTERVAL_SECONDS``
+        throttle so concurrent workers cannot burst CourtListener, and a
+        transient throttle (429/5xx, connection/timeout errors) is retried up
+        to ``SEARCH_RETRY_ATTEMPTS`` times with a backoff that honors the
+        server's ``Retry-After`` header (capped at
+        ``SEARCH_BACKOFF_MAX_SECONDS``). A 401 without a token raises a hint to
+        set ``COURTLISTENER_API_KEY``; any other non-transient error raises
+        immediately.
+        """
         settings = get_settings()
-        response = requests.get(
-            url,
-            params=params,
-            headers=self._headers(),
-            timeout=settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        return response.json()
+        retries = settings.search_retry_attempts
+        last_error: requests.RequestException | None = None
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                delay = _courtlistener_retry_delay(attempt - 1, last_error)
+                logger.warning(
+                    "CourtListener throttled %s (retry %d/%d); backing off %.1fs.",
+                    url, attempt, retries, delay,
+                )
+                time.sleep(delay)
+            _throttle()
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=self._headers(),
+                    timeout=settings.request_timeout_seconds,
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                if not _is_transient_error(exc):
+                    if (
+                        not settings.courtlistener_api_key
+                        and getattr(exc, "response", None) is not None
+                        and getattr(exc.response, "status_code", None) == 401
+                    ):
+                        raise SearchError(
+                            "CourtListener requires an API token (401 Unauthorized); "
+                            "set COURTLISTENER_API_KEY."
+                        ) from exc
+                    raise SearchError(
+                        f"CourtListener request failed: {url}: {exc}"
+                    ) from exc
+                last_error = exc
+                continue
+            return response.json()
+        raise SearchError(
+            f"CourtListener was repeatedly unavailable for {url}: {last_error}"
+        ) from last_error
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
-        settings = get_settings()
         # CourtListener has its own court filter; site: tokens are noise there.
         query = strip_site_prefixes(query)
         # The search endpoint returns up to 20 results per page regardless of
@@ -163,17 +253,12 @@ class CourtListenerProvider:
                 if not next_url:
                     return []
                 data = self._get_json(str(next_url))
-        except requests.RequestException as exc:
-            if (
-                not settings.courtlistener_api_key
-                and getattr(exc, "response", None) is not None
-                and getattr(exc.response, "status_code", None) == 401
-            ):
-                raise SearchError(
-                    f"CourtListener requires an API token (401 Unauthorized); "
-                    f"set COURTLISTENER_API_KEY. Query: {query}"
-                ) from exc
-            raise SearchError(f"CourtListener search failed for query: {query}: {exc}") from exc
+        except SearchError as exc:
+            if "COURTLISTENER_API_KEY" in str(exc):
+                raise  # already the actionable no-token hint
+            raise SearchError(
+                f"CourtListener search failed for query: {query}: {exc}"
+            ) from exc
 
         results: list[dict[str, str]] = []
         for item in data.get("results", []):
@@ -202,7 +287,7 @@ class CourtListenerProvider:
             cluster = self._get_json(str(cluster_url)) if cluster_url else {}
             docket_url = cluster.get("docket")
             docket = self._get_json(str(docket_url)) if docket_url else {}
-        except requests.RequestException as exc:
+        except SearchError as exc:
             raise SearchError(
                 f"CourtListener opinion {opinion_id} fetch failed: {exc}"
             ) from exc
@@ -233,21 +318,14 @@ class CourtListenerProvider:
         (opinions citing this decision); each relationship row links the other
         opinion, whose detail is fetched for its metadata.
         """
-        settings = get_settings()
         params = {
             f"{relation}_opinion": opinion_id,
             "page_size": min(max(max_results, 1), 100),
             "format": "json",
         }
         try:
-            response = requests.get(
-                self.CITATIONS_URL,
-                params=params,
-                headers=self._headers(),
-                timeout=settings.request_timeout_seconds,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+            data = self._get_json(self.CITATIONS_URL, params)
+        except SearchError as exc:
             raise SearchError(
                 f"CourtListener citation traversal ({relation}) failed for "
                 f"opinion {opinion_id}: {exc}"
@@ -256,7 +334,7 @@ class CourtListenerProvider:
         other_key = "cited_opinion" if relation == "citing" else "citing_opinion"
         results: list[dict[str, str]] = []
         seen: set[int] = set()
-        for row in response.json().get("results", []):
+        for row in data.get("results", []):
             other_id = extract_courtlistener_opinion_id(row.get(other_key) or "")
             if other_id is None or other_id in seen:
                 continue
