@@ -160,7 +160,7 @@ def test_synthesize_case_uses_llm_summary_when_enabled(monkeypatch):
         captured["messages"] = messages
         return "  The deep summary.  "
 
-    monkeypatch.setattr("va_legal_agent.deep_read._call_openai", recording_call)
+    monkeypatch.setattr("va_legal_agent.deep_read.call_openai", recording_call)
 
     result = _synthesize_case("Fountain v. McDonald", "tinnitus", ["digest one"])
 
@@ -180,7 +180,7 @@ def test_synthesize_case_falls_back_on_llm_failure(monkeypatch, caplog):
     def failing_call(messages):
         raise RuntimeError("API timeout")
 
-    monkeypatch.setattr("va_legal_agent.deep_read._call_openai", failing_call)
+    monkeypatch.setattr("va_legal_agent.deep_read.call_openai", failing_call)
 
     result = _synthesize_case("Fountain v. McDonald", "tinnitus", ["digest one"])
 
@@ -196,7 +196,7 @@ def test_synthesize_case_falls_back_on_llm_failure(monkeypatch, caplog):
 
 def test_synthesize_case_falls_back_on_empty_llm_summary(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("va_legal_agent.deep_read._call_openai", lambda messages: "   ")
+    monkeypatch.setattr("va_legal_agent.deep_read.call_openai", lambda messages: "   ")
 
     result = _synthesize_case("Fountain v. McDonald", "tinnitus", ["digest one"])
 
@@ -247,7 +247,7 @@ def test_deep_read_case_synthesis_carries_title_and_issue(monkeypatch):
         captured["messages"] = messages
         return "summary"
 
-    monkeypatch.setattr("va_legal_agent.deep_read._call_openai", recording_call)
+    monkeypatch.setattr("va_legal_agent.deep_read.call_openai", recording_call)
     body = "The Court holds that the Board erred in weighing the evidence."
     monkeypatch.setattr("va_legal_agent.deep_read.fetch_full_text", lambda url, max_pages=0: body)
 

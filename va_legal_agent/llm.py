@@ -40,7 +40,7 @@ def _build_messages(issue: str, claim_type: str, cases: "list[CaseRecord]") -> l
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _call_openai(messages: list[dict[str, str]]) -> str:
+def call_openai(messages: list[dict[str, str]]) -> str:
     from openai import OpenAI  # optional dependency
 
     settings = get_settings()
@@ -191,7 +191,7 @@ def reason_cases(
     if not cases or not llm_enabled() or not settings.llm_reasoning:
         return None
     try:
-        text = _call_openai(
+        text = call_openai(
             _build_reasoning_messages(issue, claim_type, cases, settings.openai_max_tokens)
         )
     except ImportError:
@@ -213,7 +213,7 @@ def interpret_cases(issue: str, claim_type: str, cases: "list[CaseRecord]") -> s
     if not cases or not llm_enabled():
         return None
     try:
-        text = _call_openai(_build_messages(issue, claim_type, cases))
+        text = call_openai(_build_messages(issue, claim_type, cases))
     except ImportError:
         logger.warning(
             "OPENAI_API_KEY is set but the 'openai' package is not installed "

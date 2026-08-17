@@ -87,8 +87,8 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Running tests
 
-The full suite (250 tests) runs in about a second, so run it after every
-change:
+The full suite (637 tests) runs in about seven seconds, so run it after
+every change:
 
 ```bash
 make test            # full suite (or: python -m pytest -q)

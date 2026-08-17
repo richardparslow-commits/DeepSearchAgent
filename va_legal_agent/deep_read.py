@@ -22,7 +22,7 @@ from .fetch import (
     extract_statutes,
     fetch_full_text,
 )
-from .llm import _call_openai, llm_enabled
+from .llm import call_openai, llm_enabled
 from .models import CaseRecord
 
 logger = logging.getLogger(__name__)
@@ -106,7 +106,7 @@ def _synthesize_case(case_title: str, issue: str, digests: list[str]) -> str:
         return ""
     if llm_enabled():
         try:
-            text = _call_openai(_build_reduce_prompt(case_title, issue, digests))
+            text = call_openai(_build_reduce_prompt(case_title, issue, digests))
             if text and text.strip():
                 return text.strip()
         except Exception as exc:  # noqa: BLE001 - LLM is an optional enhancement

@@ -12,6 +12,9 @@ mutants/
 .coverage
 .mutmut-cache
 
+# AI tooling state
+.freebuff/
+
 # Environments
 .env
 .venv/

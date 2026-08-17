@@ -34,29 +34,30 @@ _DATE_PATTERN = re.compile(
 _DATE_HINT = re.compile(r"\b(?:decided|filed|issued|handed down)\b", re.IGNORECASE)
 
 
-def _citation_patterns() -> list[tuple[re.Pattern[str], object]]:
-    return [
-        (re.compile(r"\b(\d{1,3})\s+Vet\.?\s?App\.?\s+(\d{1,4})\b"),
-         lambda m: f"{m.group(1)} Vet.App. {m.group(2)}"),
-        (re.compile(r"\b(\d{1,4})\s+(F\.2d|F\.3d|F\.4th)\s+(\d{1,4})\b"),
-         lambda m: f"{m.group(1)} {m.group(2)} {m.group(3)}"),
-        (re.compile(r"\b(\d{1,3})\s+S\.?\s?Ct\.?\s+(\d{1,4})\b"),
-         lambda m: f"{m.group(1)} S. Ct. {m.group(2)}"),
-        (re.compile(r"\b(\d{1,3})\s+U\.S\.\s+(\d{1,4})\b"),
-         lambda m: f"{m.group(1)} U.S. {m.group(2)}"),
-        (re.compile(r"\b(\d{4})\s+WL\s+(\d+)\b"),
-         lambda m: f"{m.group(1)} WL {m.group(2)}"),
-        # BVA citation numbers look like "2100634" or "A25049742" (letter prefix).
-        # The label is usually written "Citation Nr." (with a period), but also
-        # appears as "Nr:" or bare "Nr", so the period and colon are each optional.
-        (re.compile(r"Citation\s*Nr\.?:?\s*([A-Za-z]?\d{4,})"),
-         lambda m: f"BVA Citation Nr. {m.group(1)}"),
-    ]
+# Reporter/docket citation patterns, compiled once at import and reused by
+# every fetch (extract_citation runs once per fetched page/PDF).
+_CITATION_PATTERNS: tuple[tuple[re.Pattern[str], object], ...] = (
+    (re.compile(r"\b(\d{1,3})\s+Vet\.?\s?App\.?\s+(\d{1,4})\b"),
+     lambda m: f"{m.group(1)} Vet.App. {m.group(2)}"),
+    (re.compile(r"\b(\d{1,4})\s+(F\.2d|F\.3d|F\.4th)\s+(\d{1,4})\b"),
+     lambda m: f"{m.group(1)} {m.group(2)} {m.group(3)}"),
+    (re.compile(r"\b(\d{1,3})\s+S\.?\s?Ct\.?\s+(\d{1,4})\b"),
+     lambda m: f"{m.group(1)} S. Ct. {m.group(2)}"),
+    (re.compile(r"\b(\d{1,3})\s+U\.S\.\s+(\d{1,4})\b"),
+     lambda m: f"{m.group(1)} U.S. {m.group(2)}"),
+    (re.compile(r"\b(\d{4})\s+WL\s+(\d+)\b"),
+     lambda m: f"{m.group(1)} WL {m.group(2)}"),
+    # BVA citation numbers look like "2100634" or "A25049742" (letter prefix).
+    # The label is usually written "Citation Nr." (with a period), but also
+    # appears as "Nr:" or bare "Nr", so the period and colon are each optional.
+    (re.compile(r"Citation\s*Nr\.?:?\s*([A-Za-z]?\d{4,})"),
+     lambda m: f"BVA Citation Nr. {m.group(1)}"),
+)
 
 
 def extract_citation(text: str) -> str:
     """Return the first recognized reporter/docket citation found in the text, or ''."""
-    for pattern, formatter in _citation_patterns():
+    for pattern, formatter in _CITATION_PATTERNS:
         match = pattern.search(text)
         if match:
             return formatter(match)

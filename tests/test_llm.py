@@ -58,7 +58,7 @@ class _FakeOpenAI:
 
 
 def _install_fake_openai(monkeypatch, **kwargs) -> _FakeOpenAI:
-    """Point the ``openai`` import at a fake client so _call_openai's real body runs."""
+    """Point the ``openai`` import at a fake client so call_openai's real body runs."""
     fake = _FakeOpenAI(**kwargs)
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=fake))
     return fake
@@ -72,10 +72,10 @@ def test_interpret_returns_none_without_api_key(monkeypatch):
         called.append(messages)
         return "must never be reached"
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", should_not_run)
 
     assert interpret_cases("tinnitus", "Compensation", [_case()]) is None
-    # A missing key short-circuits before any LLM call: pin that _call_openai is
+    # A missing key short-circuits before any LLM call: pin that call_openai is
     # never invoked (otherwise the guard's `or` could become `and` and the
     # function would fall through to a real client call with no key).
     assert called == []
@@ -88,7 +88,7 @@ def test_interpret_returns_none_for_empty_cases(monkeypatch):
 
 def test_interpret_returns_llm_text(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", lambda messages: "Fountain requires reasons and bases.")
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", lambda messages: "Fountain requires reasons and bases.")
 
     result = interpret_cases("tinnitus", "Compensation", [_case()])
 
@@ -101,13 +101,13 @@ def test_interpret_falls_back_on_api_failure(monkeypatch):
     def failing_call(messages):
         raise RuntimeError("API timeout")
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", failing_call)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", failing_call)
 
     assert interpret_cases("tinnitus", "Compensation", [_case()]) is None
 
 
 def test_call_openai_success_with_real_client_body(monkeypatch):
-    """Exercise _call_openai's real body: client construction + completion request."""
+    """Exercise call_openai's real body: client construction + completion request."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.example.com/v1")
     captured: dict[str, object] = {}
@@ -201,7 +201,7 @@ def test_interpret_cases_passes_claim_type_through(monkeypatch):
         captured["messages"] = messages
         return "ok"
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", recording_call)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", recording_call)
 
     interpret_cases("tinnitus", "Compensation", [_case()])
 
@@ -431,7 +431,7 @@ def test_reason_cases_returns_none_without_key(monkeypatch):
         called.append(messages)
         return "never"
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", should_not_run)
 
     assert reason_cases("tinnitus", "Compensation", [_case()]) is None
     assert called == []
@@ -452,7 +452,7 @@ def test_reason_cases_disabled_by_env(monkeypatch):
         called.append(messages)
         return "never"
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", should_not_run)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", should_not_run)
 
     assert reason_cases("tinnitus", "Compensation", [_case()]) is None
     assert called == []
@@ -467,7 +467,7 @@ def test_reason_cases_returns_parsed_result(monkeypatch):
         captured["messages"] = messages
         return payload
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", recording_call)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", recording_call)
 
     result = reason_cases("tinnitus", "Compensation", [_case()])
 
@@ -487,7 +487,7 @@ def test_reason_cases_falls_back_on_api_failure(monkeypatch, caplog):
     def failing_call(messages):
         raise RuntimeError("API timeout")
 
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", failing_call)
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", failing_call)
 
     assert reason_cases("tinnitus", "Compensation", [_case()]) is None
     assert any(
@@ -498,7 +498,7 @@ def test_reason_cases_falls_back_on_api_failure(monkeypatch, caplog):
 
 def test_reason_cases_returns_none_on_empty_response(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr("va_legal_agent.llm._call_openai", lambda messages: "")
+    monkeypatch.setattr("va_legal_agent.llm.call_openai", lambda messages: "")
 
     assert reason_cases("tinnitus", "Compensation", [_case()]) is None
 
