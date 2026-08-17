@@ -34,3 +34,44 @@ def test_classify_source_secondary_for_other_domains():
 
 def test_classify_source_is_case_insensitive():
     assert classify_source("HTTPS://WWW.COURTLISTENER.COM/OPINION/1/") == RELIABILITY_OFFICIAL
+
+
+def test_classify_source_rejects_substring_lookalikes():
+    # Domains that merely CONTAIN an official domain as a substring (typo,
+    # suffix, or third-party host) must not be stamped official.
+    for url in (
+        "https://va.gov.bad.com/x",
+        "https://evilva.gov/x",
+        "https://notva.gov/x",
+        "https://courtlistener.com.evil.net/x",
+        "https://www.supremecourt.gov.evil.com/x",
+        "https://bva.va.gov.attacker.io/x",
+    ):
+        assert classify_source(url) == RELIABILITY_SECONDARY, url
+
+
+def test_classify_source_accepts_subdomains_of_official_domains():
+    # Any subdomain of an official domain is still primary authority.
+    for url in (
+        "https://opinions.courtlistener.com/x",
+        "https://deep.sub.uscourts.cavc.gov/x",
+        "https://api.cafc.uscourts.gov/x",
+        "https://sub.va.gov/x",
+    ):
+        assert classify_source(url) == RELIABILITY_OFFICIAL, url
+
+
+def test_classify_source_handles_missing_scheme_and_ports():
+    # Scheme-less URLs (as providers may return) and explicit ports still
+    # resolve to the correct host.
+    assert classify_source("uscourts.cavc.gov/opinions/1") == RELIABILITY_OFFICIAL
+    assert classify_source("va.gov/foo") == RELIABILITY_OFFICIAL
+    assert classify_source("example.com/foo") == RELIABILITY_SECONDARY
+    assert classify_source("https://www.va.gov:8443/x") == RELIABILITY_OFFICIAL
+
+
+def test_classify_source_strips_userinfo():
+    # ``urlparse().hostname`` strips userinfo, so credentials never leak into
+    # the host comparison.
+    assert classify_source("https://user:pass@va.gov/x") == RELIABILITY_OFFICIAL
+    assert classify_source("https://user@example.com/x") == RELIABILITY_SECONDARY
