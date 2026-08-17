@@ -46,5 +46,11 @@ ignore = ["E501"]
 [tool.mutmut]
 source_paths = ["va_legal_agent/ranking.py"]
 use_coverage = true
-test_timeout = 30
+# Wall-clock budget for one mutant's test run is
+# (estimated_time + timeout_constant) * timeout_multiplier. The executor tests
+# fail a broken pool by blocking on short per-test timeouts, so under a loaded
+# full-pass they can take ~15-20s of wall time before exiting non-zero; a
+# generous constant keeps mutmut from misclassifying that slow kill as a
+# SIGXCPU "timeout" instead of a "killed" mutant.
+timeout_constant = 2.0
 pytest_add_cli_args_test_selection = ["tests/test_ranking.py"]

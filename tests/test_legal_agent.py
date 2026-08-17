@@ -106,17 +106,50 @@ class _SyncExecutor:
     def submit(self, fn, *args, **kwargs):
         self.submitted.append(args[0])
         fut = Future()
-        fut.set_result(fn(*args, **kwargs))
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException as exc:  # noqa: BLE001 - mirror executor semantics
+            fut.set_exception(exc)
+        else:
+            fut.set_result(result)
         return fut
 
     def shutdown(self, wait=True, cancel_futures=False):
         pass
 
 
+@pytest.fixture(autouse=True)
+def _fanout_runs_inline(monkeypatch):
+    """Run every pool fan-out on the inline executor unless a test opts out.
+
+    A broken-pool mutant (corrupted worker loop, submit, or thread creation)
+    makes submitted futures never resolve, so any test waiting on the real
+    pool either blocks until its wall budget (slow) or forever (mutmut then
+    reports a SIGXCPU "timeout" instead of a clean kill). Routing every
+    fan-out through ``_SyncExecutor`` makes those mutants fail fast in every
+    test; the dedicated daemon-pool tests still construct the real pool via
+    their imported name, and ``test_fetch_cases_budget_times_out_in_flight_query``
+    restores it to exercise in-flight abandonment semantics.
+    """
+    monkeypatch.setattr(
+        "va_legal_agent.agent._DaemonThreadPoolExecutor",
+        lambda *a, **k: _SyncExecutor(*a, **k),
+    )
+
+
 def _join_workers(pool, timeout=5.0):
     """Wait for a daemon pool's workers to drain their queue and exit."""
     for worker in pool._workers:
         worker.join(timeout=timeout)
+
+
+# Wait used when a submitted fn or worker must signal before an assertion can
+# proceed. A healthy pool starts a thread and runs a trivial fn in
+# milliseconds, so one second is generous; keeping it short makes a mutant
+# that turns the workers into no-ops fail these tests in ~1s each rather than
+# 5s, so the whole mutant run stays under mutmut's wall-clock limit and is
+# classified "killed" instead of a SIGXCPU "timeout".
+_RESOLVE_TIMEOUT = 1.0
 
 
 def test_daemon_pool_workers_are_daemon_and_bounded():
@@ -133,7 +166,7 @@ def test_daemon_pool_runs_and_resolves_submitted_fn():
     pool = _DaemonThreadPoolExecutor(max_workers=2)
     try:
         future = pool.submit(lambda x, y: x + y, 2, 3)
-        assert future.result(timeout=5) == 5
+        assert future.result(timeout=_RESOLVE_TIMEOUT) == 5
     finally:
         pool.shutdown()
         _join_workers(pool)
@@ -144,7 +177,7 @@ def test_daemon_pool_forwards_kwargs_to_fn():
     pool = _DaemonThreadPoolExecutor(max_workers=1)
     try:
         future = pool.submit(lambda x=0, y=0: x + y, x=2, y=3)
-        assert future.result(timeout=5) == 5
+        assert future.result(timeout=_RESOLVE_TIMEOUT) == 5
     finally:
         pool.shutdown()
         _join_workers(pool)
@@ -158,7 +191,7 @@ def test_daemon_pool_propagates_worker_exception():
 
         future = pool.submit(boom)
         with pytest.raises(ValueError, match="kaboom"):
-            future.result(timeout=5)
+            future.result(timeout=_RESOLVE_TIMEOUT)
     finally:
         pool.shutdown()
         _join_workers(pool)
@@ -175,7 +208,7 @@ def test_daemon_pool_cancel_futures_skips_queued_work():
             return "first"
 
         first = pool.submit(blocking)
-        assert started.wait(timeout=5)  # first task is running on the lone worker
+        assert started.wait(timeout=_RESOLVE_TIMEOUT)  # first task is running on the lone worker
         second = pool.submit(lambda: "second")  # queued behind it
 
         pool.shutdown(cancel_futures=True)
@@ -201,7 +234,7 @@ def test_daemon_pool_shutdown_without_cancel_runs_queued_work():
             return "first"
 
         first = pool.submit(blocking)
-        assert started.wait(timeout=5)
+        assert started.wait(timeout=_RESOLVE_TIMEOUT)
         second = pool.submit(lambda: "second")
 
         # Default shutdown: cancel_futures defaults to False, so queued work
@@ -230,6 +263,13 @@ def _stub_search(monkeypatch, results=None, error=None):
 
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    # Run the fan-out inline: these tests assert on ordering/dedup/enrichment,
+    # not thread scheduling, and a synchronous executor keeps them deterministic
+    # and lets a broken-pool mutant fail fast instead of blocking forever.
+    monkeypatch.setattr(
+        "va_legal_agent.agent._DaemonThreadPoolExecutor",
+        lambda *a, **k: _SyncExecutor(*a, **k),
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")  # keep tests fast and hermetic vs .env
     return calls
@@ -247,6 +287,10 @@ def _stub_search_recording(monkeypatch, results=None, error=None):
 
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.setattr(
+        "va_legal_agent.agent._DaemonThreadPoolExecutor",
+        lambda *a, **k: _SyncExecutor(*a, **k),
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
     return calls
@@ -1034,6 +1078,10 @@ def test_fetch_cases_budget_times_out_in_flight_query(monkeypatch):
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "1")
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Opt out of the autouse inline-executor fixture: in-flight abandonment
+    # requires real worker threads (inline execution would run the slow query
+    # on the main thread and block it instead of abandoning it at the deadline).
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", _DaemonThreadPoolExecutor)
     release = threading.Event()
 
     def slow_search_all(query, max_results=10, telemetry=None, deadline=None):
@@ -1137,10 +1185,17 @@ def test_research_issue_refines_uncovered_elements(monkeypatch, caplog):
 
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    # Run the fan-out inline so the bounded refinement loop does not spawn a
+    # fresh thread pool per iteration (which slows a re-search-loop mutant past
+    # mutmut's wall-clock limit and mislabels the kill as a timeout).
+    monkeypatch.setattr(
+        "va_legal_agent.agent._DaemonThreadPoolExecutor",
+        lambda *a, **k: _SyncExecutor(*a, **k),
+    )
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
 
-    cases = research_issue("service connection and rating", telemetry=telemetry)
+    cases = research_issue("service connection and rating", telemetry=telemetry, max_wall_seconds=1.0)
 
     # All 13 round-1/gap results collapse to the single deduped case.
     assert [c.title for c in cases] == ["Smith v. Wilkie"]
@@ -1432,10 +1487,12 @@ def test_research_issue_logs_search_flags_during_refinement(monkeypatch, caplog)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
     telemetry: list[dict[str, object]] = []
+    queries_seen: list[str] = []
     recorded = {"done": False}
     flag = "Search provider duckduckgo had 1 failed query attempt(s); results may be incomplete."
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries_seen.append(query)
         if not recorded["done"]:
             recorded["done"] = True
             telemetry.append(
@@ -1448,8 +1505,15 @@ def test_research_issue_logs_search_flags_during_refinement(monkeypatch, caplog)
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
 
-    research_issue("service connection and rating", telemetry=telemetry)
+    # The gap query still returns a case that never mentions "rating", so the
+    # loop only stops because refine_plan's done-guard yields no new tasks. A
+    # wall budget makes a mutant that breaks that guard (re-searching done
+    # tasks) fail this test in ~1s instead of hanging forever - a hang mutmut
+    # reports as a SIGXCPU "timeout" rather than a clean kill.
+    research_issue("service connection and rating", telemetry=telemetry, max_wall_seconds=1.0)
 
+    # Round 1 plus exactly one gap round: the done-guard forbids re-searching.
+    assert len(queries_seen) == len(build_case_queries("service connection and rating", "Compensation")) + 1
     assert any(
         r.getMessage() == f"Research gap detected: uncovered=['rating'] search_flags=['{flag}']; refining queries."
         for r in caplog.records
@@ -1467,11 +1531,18 @@ def test_research_issue_gap_round_budget_warning(monkeypatch, caplog):
     monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", lambda *a, **k: _SyncExecutor())
     clock = {"now": 100.0}
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["now"])
-    gap_query = '"rating" "service connection and rating" veterans law'
+    round_one = len(build_case_queries("service connection and rating", "Compensation"))
+    calls = {"n": 0}
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
-        if query == gap_query:
-            clock["now"] = 200.0  # burn the budget during the gap round
+        calls["n"] += 1
+        if calls["n"] > round_one:
+            # The gap round burns the budget. Advance on the first search after
+            # round 1 rather than on the gap query itself: a mutant that
+            # re-searches done tasks never issues the gap query, so keying on
+            # it would leave the clock frozen and the refinement loop spinning
+            # forever (mutmut reports that hang as a SIGXCPU "timeout").
+            clock["now"] = 200.0
             return []
         return [
             {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection requires a nexus"}
@@ -1540,7 +1611,11 @@ def test_analyze_cases_for_claim_refines_before_analysis(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
 
-    analysis = analyze_cases_for_claim("service connection and rating")
+    # The stub never covers "rating", so the loop only stops because the
+    # done-guard yields no new tasks. A wall budget makes a mutant that breaks
+    # that guard (re-searching done tasks) fail in ~1s instead of hanging
+    # forever with no deadline.
+    analysis = analyze_cases_for_claim("service connection and rating", max_wall_seconds=1.0)
 
     # The gap query ran, but the stub never covers "rating", so coverage stays half.
     assert '"rating" "service connection and rating" veterans law' in queries_seen
@@ -1579,9 +1654,11 @@ def test_fetch_cases_uses_configured_worker_count(monkeypatch):
         def shutdown(self, wait=True, cancel_futures=False):
             self._inner.shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", RecordingExecutor)
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "3")
     _stub_search(monkeypatch, results=[])
+    # Override the helper's synchronous pool with the recording executor so the
+    # configured worker count is observed at construction time.
+    monkeypatch.setattr("va_legal_agent.agent._DaemonThreadPoolExecutor", RecordingExecutor)
 
     fetch_cases_for_issue("tinnitus")
 
@@ -1941,6 +2018,11 @@ def test_agent_main_guard_prints_analysis(monkeypatch, capsys):
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")  # no inter-query sleeps
+    # runpy re-executes the module, which re-creates the real pool class and
+    # bypasses the autouse inline-executor fixture. A wall budget makes a
+    # broken-pool mutant terminate (~1s, budget exhausted -> SearchError)
+    # instead of hanging on futures that never resolve.
+    monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "1")
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
         return [
