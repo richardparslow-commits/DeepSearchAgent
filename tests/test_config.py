@@ -20,6 +20,7 @@ _ENV_VARS = (
     "SEARCH_PAGES_PER_QUERY_BY_PROVIDER",
     "SEARCH_QUERY_VARIANTS",
     "SEARCH_QUERY_VARIANTS_BY_PROVIDER",
+    "SEARCH_MAX_RPM_BY_PROVIDER",
     "COURTLISTENER_API_KEY",
     "CITATION_TRAVERSAL",
     "CITATION_TRAVERSE_LIMIT",
@@ -134,6 +135,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.search_pages_per_query_by_provider == {}
     assert settings.search_query_variants == 3
     assert settings.search_query_variants_by_provider == {}
+    assert settings.search_max_rpm_by_provider == {}
     assert settings.courtlistener_api_key is None
     assert settings.citation_traversal is False
     assert settings.citation_traverse_limit == 3
@@ -164,6 +166,7 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("SEARCH_PAGES_PER_QUERY_BY_PROVIDER", "bva=1,duckduckgo=4")
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "5")
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "duckduckgo=2,bva=0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=5,bva=10")
     monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
     monkeypatch.setenv("CITATION_TRAVERSAL", "1")
     monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "5")
@@ -195,6 +198,7 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.search_pages_per_query_by_provider == {"bva": 1, "duckduckgo": 4}
     assert settings.search_query_variants == 5
     assert settings.search_query_variants_by_provider == {"duckduckgo": 2, "bva": 0}
+    assert settings.search_max_rpm_by_provider == {"courtlistener": 5, "bva": 10}
     assert settings.courtlistener_api_key == "tok-123"
     assert settings.citation_traversal is True
     assert settings.citation_traverse_limit == 5
@@ -238,3 +242,4 @@ def test_settings_are_frozen_and_typed():
     assert isinstance(Settings().search_max_workers, int)
     assert isinstance(Settings().search_delay_seconds, float)
     assert Settings().search_query_variants_by_provider == {}
+    assert Settings().search_max_rpm_by_provider == {}

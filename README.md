@@ -219,7 +219,8 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_RETRY_ATTEMPTS` | `2` | Extra retries for throttled/transient DuckDuckGo responses (`0` disables) |
 | `SEARCH_BACKOFF_BASE_SECONDS` | `1.0` | Base delay (seconds) for retry backoff, doubled per attempt |
 | `SEARCH_BACKOFF_MAX_SECONDS` | `10.0` | Cap on the retry backoff delay (seconds) |
-| `SEARCH_MIN_INTERVAL_SECONDS` | `0` | Global minimum seconds between DuckDuckGo requests (`0` disables) |
+| `SEARCH_MIN_INTERVAL_SECONDS` | `0` | Global minimum seconds between any two search requests, across all providers (`0` disables) |
+| `SEARCH_MAX_RPM_BY_PROVIDER` | – | Per-provider requests-per-minute budget, e.g. `courtlistener=5,bva=10`; unlisted providers have no budget (`0` disables for that provider) |
 | `SEARCH_MAX_WALL_SECONDS` | `0` | Cap on total wall time (seconds) spent searching for one issue (`0` disables; override per run with `--max-wall-time`) |
 | `SEARCH_PROVIDERS` | `duckduckgo` | Comma-separated search providers (`duckduckgo`, `courtlistener`, `bva`) |
 | `SEARCH_PAGES_PER_QUERY` | `1` | Pages of results fetched per query per provider (`>1` deepens recall) |
@@ -259,7 +260,7 @@ Each query is expanded into up to `SEARCH_QUERY_VARIANTS` variant queries derive
 
 A single run nests three retry loops, and each is governed by its own setting. If you are tuning for wall time — e.g. to bound how long a batch takes when a provider is throttling — reason about them bottom-up:
 
-1. **Inside each provider call** (`DuckDuckGoProvider.search` / `CourtListenerProvider._get_json`). A throttled/transient response is retried up to `SEARCH_RETRY_ATTEMPTS` times, so a call makes at most `SEARCH_RETRY_ATTEMPTS + 1` HTTP requests. Before each retry the provider sleeps `min(SEARCH_BACKOFF_BASE_SECONDS × 2ⁱ × jitter, SEARCH_BACKOFF_MAX_SECONDS)` (jitter is a random 0.75–1.25 multiplier; the `i`-th retry backoff doubles the base). CourtListener additionally honors the server's `Retry-After` header (never sleeping *less* than the exponential floor, still capped at `SEARCH_BACKOFF_MAX_SECONDS`) and paces every attempt through the global `SEARCH_MIN_INTERVAL_SECONDS` throttle. If every attempt hangs to its timeout, a call's worst case is roughly `(SEARCH_RETRY_ATTEMPTS + 1) × REQUEST_TIMEOUT_SECONDS +` the sum of those backoffs. BVA (search.usa.gov) does not retry — it fails fast on the first request error (one HTTP request, no backoff).
+1. **Inside each provider call** (`DuckDuckGoProvider.search` / `CourtListenerProvider._get_json`). A throttled/transient response is retried up to `SEARCH_RETRY_ATTEMPTS` times, so a call makes at most `SEARCH_RETRY_ATTEMPTS + 1` HTTP requests. Before each retry the provider sleeps `min(SEARCH_BACKOFF_BASE_SECONDS × 2ⁱ × jitter, SEARCH_BACKOFF_MAX_SECONDS)` (jitter is a random 0.75–1.25 multiplier; the `i`-th retry backoff doubles the base). CourtListener additionally honors the server's `Retry-After` header (never sleeping *less* than the exponential floor, still capped at `SEARCH_BACKOFF_MAX_SECONDS`). Every provider paces each attempt through `_throttle`: the global `SEARCH_MIN_INTERVAL_SECONDS` gap between any two requests, plus — when set — a per-provider `SEARCH_MAX_RPM_BY_PROVIDER` budget (60/N seconds apart for that backend, e.g. `courtlistener=5` forces ≥12 s between CourtListener requests). If every attempt hangs to its timeout, a call's worst case is roughly `(SEARCH_RETRY_ATTEMPTS + 1) × REQUEST_TIMEOUT_SECONDS +` the sum of those backoffs. BVA (search.usa.gov) does not retry — it fails fast on the first request error (one HTTP request, no backoff) — but it is still paced.
 2. **Inside each query** (`search_all`). For every provider, every expanded variant runs on every page: up to `(1 + SEARCH_QUERY_VARIANTS) × SEARCH_PAGES_PER_QUERY` provider calls per query (the original query is always included; per-provider overrides `SEARCH_QUERY_VARIANTS_BY_PROVIDER` / `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` replace the globals for that backend). Each of those calls is a step-1 call, so a fully-throttled query multiplies the step-1 worst case by that count.
 3. **Inside each issue** (`fetch_cases_for_issue`). The agent builds 8 court-site queries and runs them on `SEARCH_MAX_WORKERS` threads, submitting them staggered by `SEARCH_DELAY_SECONDS`. Because the pool overlaps execution, the wall time is roughly `(8 − 1) × SEARCH_DELAY_SECONDS` plus the *slowest* query's step-2 time — not the sum of all eight.
 
@@ -312,8 +313,11 @@ SEARCH_PAGES_PER_QUERY_BY_PROVIDER=courtlistener=1  # one page per query
 SEARCH_MAX_WORKERS=1                                 # serialize queries, no overlap
 SEARCH_DELAY_SECONDS=3                               # gap between the 8 base queries
 SEARCH_MIN_INTERVAL_SECONDS=1                        # floor between raw HTTP requests
+SEARCH_MAX_RPM_BY_PROVIDER=courtlistener=5           # hard cap: <=5 CourtListener requests/min
 SEARCH_BACKOFF_MAX_SECONDS=60                        # let Retry-After wait out the penalty window
 ```
+
+`SEARCH_MAX_RPM_BY_PROVIDER` is the strongest of these levers for sustained runs: it spaces that backend's requests at least `60/N` seconds apart regardless of how many workers/variants are running, so a batch cannot burst past the limit the way the delay/stagger knobs (which only shape startup order) can.
 
 If a run still 429s after all retries, wait out the `retry-after` window (the error message and `make smoke` output show it) before retrying — or rerun with `SEARCH_MAX_WALL_SECONDS`/`--max-wall-time` so a throttled issue returns its partial results at the deadline instead of grinding through every retry.
 

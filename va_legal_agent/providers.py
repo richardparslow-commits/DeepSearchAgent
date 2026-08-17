@@ -217,7 +217,7 @@ class CourtListenerProvider:
                     url, attempt, retries, delay,
                 )
                 time.sleep(delay)
-            _throttle()
+            _throttle(self.name)
             try:
                 response = requests.get(
                     url,
@@ -449,6 +449,7 @@ class BVAProvider:
         params = {"affiliate": self.AFFILIATE, "query": query}
         if page > 1:
             params["page"] = page
+        _throttle(self.name)
         try:
             response = requests.get(
                 self.SEARCH_URL,

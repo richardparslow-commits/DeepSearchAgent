@@ -12,6 +12,19 @@ from va_legal_agent.search import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """Search tests never block on real time.
+
+    ``DuckDuckGoProvider.search`` throttles through ``_throttle``, which can
+    sleep when an RPM budget is configured; a mutant that flips the default
+    budget would otherwise hang the suite on a real 60-second sleep. Neutralize
+    the clock by default; every timing assertion re-mocks ``time.sleep`` itself
+    (the test's own setattr overrides this fixture).
+    """
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
+
+
 def test_build_url_encodes_special_characters():
     url = build_duckduckgo_url('site:uscourts.cavc.gov "service connection" & ratings')
     query = url.split("?", 1)[1]
@@ -567,7 +580,13 @@ def test_backoff_never_exceeds_max_with_jitter(monkeypatch):
 def test_search_web_throttles_before_each_request(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     order: list[str] = []
-    monkeypatch.setattr("va_legal_agent.search._throttle", lambda: order.append("throttle"))
+    throttled_providers: list[str | None] = []
+
+    def record_throttle(provider=None):
+        order.append("throttle")
+        throttled_providers.append(provider)
+
+    monkeypatch.setattr("va_legal_agent.search._throttle", record_throttle)
 
     def fake_get(url, headers=None, timeout=None):
         order.append("get")
@@ -579,6 +598,7 @@ def test_search_web_throttles_before_each_request(monkeypatch):
 
     assert len(results) == 2
     assert order == ["throttle", "get"]
+    assert throttled_providers == ["duckduckgo"]
 
 
 def test_retry_delay_jitter_scales_delay(monkeypatch):
@@ -626,6 +646,159 @@ def test_throttle_exact_interval_elapsed_skips_sleep(monkeypatch):
     _throttle()  # exactly one interval elapsed: wait == 0, nothing to sleep
 
     assert sleeps == []
+
+
+def test_throttle_enforces_provider_rpm_budget(monkeypatch):
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=30")
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    clock = {"now": 100.0}
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", fake_sleep)
+
+    _throttle("courtlistener")  # first request records the timestamp
+    _throttle("courtlistener")  # immediate follow-up waits the full budget
+    _throttle("courtlistener")  # a third call must wait again (timestamp refreshed)
+
+    assert sleeps == [2.0, 2.0]  # 60 / 30 rpm
+
+
+def test_throttle_rpm_one_is_still_paced(monkeypatch):
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=1")
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    clock = {"now": 100.0}
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", fake_sleep)
+
+    _throttle("courtlistener")
+    _throttle("courtlistener")
+
+    assert sleeps == [60.0]  # 60 / 1 rpm: the floor is still enforced
+
+
+def test_throttle_global_interval_does_not_touch_provider_state(monkeypatch):
+    import va_legal_agent.search as search_module
+
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0.5")
+    monkeypatch.delenv("SEARCH_MAX_RPM_BY_PROVIDER", raising=False)
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda s: None)
+
+    _throttle("duckduckgo")  # no RPM budget, so no per-provider state is written
+
+    assert search_module._last_request_by_provider == {}
+
+
+def test_throttle_rpm_sleeps_only_remaining_window(monkeypatch):
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=30")  # 2s budget
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    clock = {"now": 100.0}
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", fake_sleep)
+
+    _throttle("courtlistener")  # records the window at 100.0
+    clock["now"] = 100.5  # 0.5s already elapsed
+    _throttle("courtlistener")
+
+    assert sleeps == [1.5]  # only the remaining 2.0 - 0.5 is slept
+
+
+def test_throttle_rpm_exact_interval_elapsed_skips_sleep(monkeypatch):
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=30")  # 2s budget
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr(
+        "va_legal_agent.search._last_request_by_provider", {"courtlistener": 98.0}
+    )
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: 100.0)
+
+    _throttle("courtlistener")  # exactly 2.0s elapsed: wait == 0, nothing to sleep
+
+    assert sleeps == []
+
+
+def test_throttle_rpm_only_does_not_set_global_state(monkeypatch):
+    import va_legal_agent.search as search_module
+
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=30")
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda s: None)
+
+    _throttle("courtlistener")  # only provider pacing applies; no global interval
+
+    assert search_module._last_request_monotonic is None
+
+
+def test_throttle_rpm_providers_pace_independently(monkeypatch):
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=30,bva=60")
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    clock = {"now": 100.0}
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        clock["now"] += seconds
+
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", fake_sleep)
+
+    _throttle("courtlistener")  # records courtlistener's own window at 100.0
+    _throttle("bva")  # different provider: independent window, no wait
+
+    assert sleeps == []
+
+    _throttle("bva")  # within bva's 1s budget (60 rpm) -> waits the full second
+    assert sleeps == [1.0]
+
+
+def test_throttle_rpm_zero_or_unlisted_disables_pacing(monkeypatch):
+    import va_legal_agent.search as search_module
+
+    monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=0")
+    monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
+    monkeypatch.setattr("va_legal_agent.search._last_request_by_provider", {})
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: 100.0)
+
+    _throttle("courtlistener")  # rpm=0 -> disabled
+    _throttle("duckduckgo")  # unlisted -> no budget
+
+    assert sleeps == []
+    assert search_module._last_request_by_provider == {}  # early return, no state
 
 
 def test_parse_prefers_result_link_over_decoy_anchor(monkeypatch):

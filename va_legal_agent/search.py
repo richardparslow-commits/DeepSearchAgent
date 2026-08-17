@@ -47,22 +47,48 @@ def _is_transient_error(exc: "requests.RequestException") -> bool:
 # burst DuckDuckGo.
 _interval_lock = threading.Lock()
 _last_request_monotonic: float | None = None
+# Per-provider pacing: the last request time for each backend with an
+# SEARCH_MAX_RPM_BY_PROVIDER budget, so each provider independently respects
+# its own requests-per-minute cap without slowing the others.
+_last_request_by_provider: dict[str, float] = {}
 
 
-def _throttle() -> None:
-    """Sleep (if needed) so DuckDuckGo requests stay at least the configured interval apart."""
-    interval = get_settings().search_min_interval_seconds
-    if interval <= 0:
+def _throttle(provider: str | None = None) -> None:
+    """Sleep (if needed) so requests stay within pacing limits.
+
+    Two independent limits are enforced under the same lock so concurrent
+    workers can't race past them:
+
+    * the global ``SEARCH_MIN_INTERVAL_SECONDS`` — the minimum gap between
+      ANY two requests, regardless of provider;
+    * the per-provider ``SEARCH_MAX_RPM_BY_PROVIDER`` budget — at most N
+      requests per minute for *provider* (60/N seconds apart). Providers
+      without an entry have no budget.
+    """
+    settings = get_settings()
+    global_interval = settings.search_min_interval_seconds
+    rpm = settings.search_max_rpm_by_provider.get(provider or "", 0)
+    provider_interval = 60.0 / rpm if rpm > 0 else 0.0
+    if global_interval <= 0 and provider_interval <= 0:
         return
-    global _last_request_monotonic
+    global _last_request_monotonic, _last_request_by_provider
     with _interval_lock:
         now = time.monotonic()
-        if _last_request_monotonic is not None:
-            wait = interval - (now - _last_request_monotonic)
+        if global_interval > 0 and _last_request_monotonic is not None:
+            wait = global_interval - (now - _last_request_monotonic)
             if wait > 0:
                 time.sleep(wait)
                 now = time.monotonic()
-        _last_request_monotonic = now
+        if provider is not None and provider_interval > 0:
+            last = _last_request_by_provider.get(provider)
+            if last is not None:
+                wait = provider_interval - (now - last)
+                if wait > 0:
+                    time.sleep(wait)
+                    now = time.monotonic()
+            _last_request_by_provider[provider] = now
+        if global_interval > 0:
+            _last_request_monotonic = now
 
 
 def build_duckduckgo_url(query: str, page: int = 1) -> str:
@@ -159,7 +185,7 @@ class DuckDuckGoProvider:
                     query, attempt, retries,
                 )
                 time.sleep(_retry_delay(attempt - 1))
-            _throttle()
+            _throttle(self.name)
             try:
                 response = requests.get(url, headers=headers, timeout=timeout)
                 response.raise_for_status()

@@ -1429,7 +1429,13 @@ def test_courtlistener_throttles_every_attempt(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
     monkeypatch.setattr("va_legal_agent.providers.time.sleep", lambda s: None)
     throttles: list[int] = []
-    monkeypatch.setattr("va_legal_agent.providers._throttle", lambda: throttles.append(1))
+    throttled_providers: list[str | None] = []
+
+    def record_throttle(provider=None):
+        throttles.append(1)
+        throttled_providers.append(provider)
+
+    monkeypatch.setattr("va_legal_agent.providers._throttle", record_throttle)
     calls = {"n": 0}
 
     def fake_get(url, params=None, headers=None, timeout=None):
@@ -1444,6 +1450,7 @@ def test_courtlistener_throttles_every_attempt(monkeypatch):
 
     assert calls["n"] == 2
     assert throttles == [1, 1]  # paced before each of the two attempts
+    assert throttled_providers == ["courtlistener", "courtlistener"]
 
 
 def test_bva_provider_sends_exact_request_args(monkeypatch):
@@ -1465,6 +1472,19 @@ def test_bva_provider_sends_exact_request_args(monkeypatch):
 
     BVAProvider().search("tinnitus", page=2)
     assert captured["params"]["page"] == 2  # type: ignore[index]
+
+
+def test_bva_provider_throttles_before_request(monkeypatch):
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", lambda *a, **k: FakeResponse(BVA_HTML))
+    throttled_providers: list[str | None] = []
+    monkeypatch.setattr(
+        "va_legal_agent.providers._throttle",
+        lambda provider=None: throttled_providers.append(provider),
+    )
+
+    BVAProvider().search("tinnitus")
+
+    assert throttled_providers == ["bva"]
 
 
 def test_bva_provider_detects_202_challenge_without_anomaly_text(monkeypatch):
