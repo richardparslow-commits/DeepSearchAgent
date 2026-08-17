@@ -236,6 +236,95 @@ def test_detect_contradictions_falls_back_to_text_statutes():
     assert contradictions[0].case_b == "Jones v. McDonough"
 
 
+def test_detect_contradictions_continues_past_unknown_first_case():
+    # A leading unknown-direction case is skipped (not a terminal break), so a
+    # contradiction between the later cases is still reported.
+    cases = [
+        _case("Unknown", outcome="", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def test_detect_contradictions_continues_past_statuteless_first_case():
+    # A leading case with no citable statute is skipped (not a terminal break),
+    # so the later opposite-outcome pair on a shared statute still surfaces.
+    cases = [
+        _case("NoStatutes", outcome="granted", snippet="no statutory citation here"),
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def test_detect_contradictions_continues_past_unknown_second_case():
+    # An unknown-direction peer in the middle of the inner scan is skipped, so
+    # the later opposite-outcome peer on the same statute is still compared.
+    cases = [
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Unknown", outcome="", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def test_detect_contradictions_continues_past_unshared_statute():
+    # A peer that cites a different statute is skipped, so a later peer on the
+    # shared statute is still compared instead of aborting the inner scan.
+    cases = [
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("DeniedOther", outcome="denied", statutes=["38 U.S.C. § 7104(d)(1)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def test_detect_contradictions_continues_past_seen_pair():
+    # A recurring case pair is deduped, but the scan continues past it to the
+    # next distinct pair rather than aborting at the first duplicate.
+    cases = [
+        _case("Smith", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Smith", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Adams", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert {(c.case_a, c.case_b) for c in contradictions} == {
+        ("Smith", "Jones"),
+        ("Smith", "Adams"),
+    }
+
+
+def test_merge_contradictions_dedupes_within_secondary():
+    from va_legal_agent.interpretation import _merge_contradictions
+
+    primary = [Contradiction(statement="primary", case_a="X", case_b="Y")]
+    secondary = [
+        Contradiction(statement="first", case_a="A", case_b="B"),
+        Contradiction(statement="second", case_a="A", case_b="B"),
+    ]
+
+    merged = _merge_contradictions(primary, secondary)
+
+    assert [c.statement for c in merged] == ["primary", "first"]
+
+
 def test_build_analysis_template_path_reports_deterministic_contradictions(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cases = [

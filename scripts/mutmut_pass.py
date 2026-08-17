@@ -89,7 +89,14 @@ def main() -> None:
         exit_codes = json.loads(meta_path.read_text()).get("exit_code_by_key", {})
     survivors = []
     for line in result.stdout.splitlines():
-        if "survived" in line:
+        if "survived" in line or "segfault" in line:
+            # ``segfault`` (mutmut's crash status, SIGSEGV/-11) is an untriaged
+            # outcome exactly like ``survived``. On macOS the sequential worker
+            # intermittently segfaults for mutants whose tests would otherwise
+            # pass (verified: applying the mutation and running pytest directly
+            # exits 0), so silently dropping the status hides equivalent mutants
+            # that the Linux CI gate reports as survived. Counting it keeps the
+            # local and CI gates in agreement.
             survivors.append(line.strip().split(":")[0])
         elif "suspicious" in line:
             name = line.strip().split(":")[0]
