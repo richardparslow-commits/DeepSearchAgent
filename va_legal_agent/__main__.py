@@ -337,7 +337,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Search and analyze veterans compensation legal cases.")
     parser.add_argument("issue", nargs="?", help="The legal issue to research, such as service connection for tinnitus.")
     parser.add_argument("--type", dest="claim_type", default="Compensation", help="Benefit type to search for.")
-    parser.add_argument("--max-results", dest="max_results", type=int, default=10, help="Maximum case results to review.")
+    parser.add_argument(
+        "--max-results",
+        dest="max_results",
+        type=int,
+        default=None,
+        help="Maximum case results to review (default: SEARCH_MAX_RESULTS env var, else 10).",
+    )
     parser.add_argument("--no-enrich", action="store_true", help="Skip fetching case source pages for citation/date details.")
     parser.add_argument(
         "--output-format",
@@ -436,6 +442,7 @@ def main() -> None:
     if not args.issue:
         parser.error("the following arguments are required: issue")
 
+    max_results = args.max_results if args.max_results is not None else get_settings().search_max_results
     run_id = _run_id(args.run_id)
     tracker = BatchTracker(run_id) if args.batch_size else None
     telemetry: list[dict[str, object]] = []
@@ -447,7 +454,7 @@ def main() -> None:
         analysis = analyze_cases_for_claim(
             args.issue,
             claim_type=args.claim_type,
-            max_results=max(args.max_results, 1),
+            max_results=max(max_results, 1),
             enrich=not args.no_enrich,
             telemetry=telemetry,
             max_wall_seconds=args.max_wall_time,

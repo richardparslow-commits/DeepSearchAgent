@@ -157,6 +157,10 @@ class Settings:
     citation_traverse_limit: int = 3
 
     # Pipeline limits
+    # Cap on results merged per search query. The CLI's --max-results flag
+    # overrides this; raise it for multi-provider runs (SEARCH_PROVIDERS) so a
+    # backend listed first can't fill the cap alone and starve the others.
+    search_max_results: int = 10
     enrich_case_limit: int = 5
     interpret_case_limit: int = 3
     principle_scan_limit: int = 5
@@ -233,6 +237,7 @@ class Settings:
             citation_traverse_limit=env_int(
                 "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit
             ),
+            search_max_results=env_int("SEARCH_MAX_RESULTS", d.search_max_results),
             enrich_case_limit=env_int("ENRICH_CASE_LIMIT", d.enrich_case_limit),
             interpret_case_limit=env_int("INTERPRET_CASE_LIMIT", d.interpret_case_limit),
             principle_scan_limit=env_int("PRINCIPLE_SCAN_LIMIT", d.principle_scan_limit),

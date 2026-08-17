@@ -65,6 +65,9 @@ def test_show_config_prints_settings_without_issue(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "7")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Isolate from any SEARCH_PROVIDERS set in the local .env so the assertion
+    # below exercises the true default.
+    monkeypatch.delenv("SEARCH_PROVIDERS", raising=False)
 
     main()
 
@@ -158,6 +161,56 @@ def test_cli_max_wall_time_defaults_to_none(capsys, monkeypatch):
     main()
 
     assert seen["max_wall_seconds"] is None
+
+
+def test_cli_max_results_defaults_to_env(capsys, monkeypatch):
+    """Without --max-results, the SEARCH_MAX_RESULTS env var decides the cap."""
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("SEARCH_MAX_RESULTS", "25")
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["max_results"] == 25
+
+
+def test_cli_max_results_defaults_to_ten_without_env(capsys, monkeypatch):
+    seen: dict[str, object] = {}
+    monkeypatch.delenv("SEARCH_MAX_RESULTS", raising=False)
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["max_results"] == 10
+
+
+def test_cli_max_results_flag_overrides_env(capsys, monkeypatch):
+    """An explicit --max-results beats the SEARCH_MAX_RESULTS env var."""
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("SEARCH_MAX_RESULTS", "25")
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus", "--max-results", "5"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["max_results"] == 5
 
 
 def test_cli_deep_read_flag_flows_to_analysis(capsys, monkeypatch):

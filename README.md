@@ -221,6 +221,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_BACKOFF_MAX_SECONDS` | `10.0` | Cap on the retry backoff delay (seconds) |
 | `SEARCH_MIN_INTERVAL_SECONDS` | `0` | Global minimum seconds between any two search requests, across all providers (`0` disables) |
 | `SEARCH_MAX_RPM_BY_PROVIDER` | – | Per-provider requests-per-minute budget, e.g. `courtlistener=5,bva=10`; unlisted providers have no budget (`0` disables for that provider) |
+| `SEARCH_MAX_RESULTS` | `10` | Cap on results merged per search query; raise it (e.g. `30`) for multi-provider runs so a backend listed first can't fill the cap alone and starve the others (override per run with `--max-results`) |
 | `SEARCH_MAX_WALL_SECONDS` | `0` | Cap on total wall time (seconds) spent searching for one issue (`0` disables; override per run with `--max-wall-time`) |
 | `SEARCH_PROVIDERS` | `duckduckgo` | Comma-separated search providers (`duckduckgo`, `courtlistener`, `bva`) |
 | `SEARCH_PAGES_PER_QUERY` | `1` | Pages of results fetched per query per provider (`>1` deepens recall) |
