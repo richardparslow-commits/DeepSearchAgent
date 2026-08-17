@@ -47,7 +47,9 @@ def _citation_patterns() -> list[tuple[re.Pattern[str], object]]:
         (re.compile(r"\b(\d{4})\s+WL\s+(\d+)\b"),
          lambda m: f"{m.group(1)} WL {m.group(2)}"),
         # BVA citation numbers look like "2100634" or "A25049742" (letter prefix).
-        (re.compile(r"Citation\s*Nr?:?\s*([A-Za-z]?\d{4,})"),
+        # The label is usually written "Citation Nr." (with a period), but also
+        # appears as "Nr:" or bare "Nr", so the period and colon are each optional.
+        (re.compile(r"Citation\s*Nr\.?:?\s*([A-Za-z]?\d{4,})"),
          lambda m: f"BVA Citation Nr. {m.group(1)}"),
     ]
 

@@ -29,6 +29,8 @@ from va_legal_agent.fetch import (
         ("Argued in 500 U.S. 123 and related orders.", "500 U.S. 123"),
         ("Westlaw cite 2011 WL 123456 applies.", "2011 WL 123456"),
         ("Citation Nr: 2100634, Board decision.", "BVA Citation Nr. 2100634"),
+        ("Citation Nr. 2100634, Board decision.", "BVA Citation Nr. 2100634"),
+        ("Citation Nr.: A25049742, Board decision.", "BVA Citation Nr. A25049742"),
         ("No reporters here, only statutes like 38 U.S.C. 1110.", ""),
     ],
 )
