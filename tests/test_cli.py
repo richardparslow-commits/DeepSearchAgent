@@ -208,6 +208,41 @@ def test_cli_no_deep_read_flag_overrides_env(capsys, monkeypatch):
     assert seen["deep_read"] is False
 
 
+def test_cli_deep_read_limit_flag_flows_to_analysis(capsys, monkeypatch):
+    seen: dict[str, object] = {}
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr(
+        "sys.argv", ["va-legal-agent", "tinnitus", "--deep-read", "--deep-read-limit", "5"]
+    )
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["deep_read"] is True
+    assert seen["deep_read_limit"] == 5
+
+
+def test_cli_deep_read_limit_flag_defaults_to_none(capsys, monkeypatch):
+    """Without the flag, deep_read_limit is None so the env/setting decides."""
+    seen: dict[str, object] = {}
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus", "--deep-read"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["deep_read"] is True
+    assert seen["deep_read_limit"] is None
+
+
 def test_show_config_includes_deep_read_settings(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
     monkeypatch.setenv("DEEP_READ", "1")
@@ -235,6 +270,71 @@ def test_render_analysis_text():
         "- The decisions split on the nexus standard. "
         "(Smith v. Wilkie vs Jones v. McDonough)" in text
     )
+
+
+def test_render_analysis_text_deep_summaries():
+    analysis = _sample_analysis()
+    analysis.deep_summaries = [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "The Court holds the Board erred."}
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "Deep summaries:" in text
+    assert (
+        "- Smith v. Wilkie (Court of Appeals for Veterans Claims):\n"
+        "The Court holds the Board erred." in text
+    )
+
+
+def test_render_analysis_text_deep_summaries_skips_empty():
+    analysis = _sample_analysis()
+    analysis.deep_summaries = [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "   "},
+        {"case": "Jones v. VA (BVA)", "summary": "Board granted the claim."},
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "Deep summaries:" in text
+    # Only the case with content appears in the Deep summaries block; the
+    # whitespace-only summary is omitted there (its title may still appear
+    # elsewhere in the report, so scope the assertion to the block).
+    deep_block = text.split("Deep summaries:")[1].split("How this affects VA claims:")[0]
+    assert "Jones v. VA (BVA):\nBoard granted the claim." in deep_block
+    assert "Smith v. Wilkie" not in deep_block
+
+
+def test_render_analysis_text_no_deep_summaries_block_when_empty():
+    text = render_analysis(_sample_analysis(), "text")  # deep_summaries defaults to []
+
+    assert "Deep summaries:" not in text
+
+
+def test_render_analysis_csv_deep_summaries_column():
+    analysis = _sample_analysis()
+    analysis.deep_summaries = [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "The Court holds the Board erred."}
+    ]
+
+    csv_text = render_analysis(analysis, "csv")
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    header, row = rows[0], rows[1]
+    data = dict(zip(header, row))
+
+    assert "deep_summaries" in data
+    assert json.loads(data["deep_summaries"]) == analysis.deep_summaries
+
+
+def test_render_analysis_json_includes_deep_summaries():
+    analysis = _sample_analysis()
+    analysis.deep_summaries = [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "The Court holds the Board erred."}
+    ]
+
+    data = json.loads(render_analysis(analysis, "json"))
+
+    assert data["deep_summaries"] == analysis.deep_summaries
 
 
 def test_render_analysis_csv():

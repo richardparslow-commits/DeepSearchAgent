@@ -2,8 +2,10 @@
 
 from va_legal_agent.interpretation import (
     _build_element_library,
+    _outcome_direction,
     build_interpretive_analysis,
     detect_claim_elements,
+    detect_contradictions,
     extract_principle_findings,
     uncovered_element_names,
 )
@@ -12,13 +14,21 @@ from va_legal_agent.models import CaseRecord, Contradiction
 from va_legal_agent.topics import TOPICS
 
 
-def _case(title: str, snippet: str = "", holding: str = "") -> CaseRecord:
+def _case(
+    title: str,
+    snippet: str = "",
+    holding: str = "",
+    outcome: str = "",
+    statutes: list[str] | None = None,
+) -> CaseRecord:
     return CaseRecord(
         title=title,
         court="Court of Appeals for Veterans Claims",
         url=f"https://example.com/{title.lower().replace(' ', '-')}",
         snippet=snippet,
         holding=holding,
+        outcome=outcome,
+        statutes=statutes or [],
     )
 
 
@@ -70,6 +80,204 @@ def test_extract_principle_findings_attributes_source_cases():
     assert benefit.source_cases == ["Smith v. Wilkie"]
     reasons = next(f for f in findings if "7104" in f.principle)
     assert reasons.source_cases == ["Jones v. McDonough"]
+
+
+def test_outcome_direction_classifies_favorable_unfavorable_unknown():
+    assert _outcome_direction("granted") == 1
+    assert _outcome_direction("vacated") == 1
+    assert _outcome_direction("remanded") == 1
+    assert _outcome_direction("vacated and remanded") == 1
+    assert _outcome_direction("denied") == -1
+    assert _outcome_direction("affirmed") == -1
+    assert _outcome_direction("dismissed") == -1
+    # Mixed-direction compounds and unknown signals are never guessed.
+    assert _outcome_direction("granted and denied") == 0
+    assert _outcome_direction("reversed") == 0
+    assert _outcome_direction("") == 0
+
+
+def test_detect_contradictions_flags_opposite_outcomes_on_shared_statute():
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 1
+    assert contradictions[0].case_a == "Smith v. Wilkie"
+    assert contradictions[0].case_b == "Jones v. McDonough"
+    assert "38 U.S.C. § 5107(b)" in contradictions[0].statement
+    assert "granted" in contradictions[0].statement and "denied" in contradictions[0].statement
+
+
+def test_detect_contradictions_ignores_same_direction_outcomes():
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="vacated", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_requires_shared_statute():
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 7104(d)(1)"]),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_skips_first_case_without_statutes():
+    # A case with an explicit outcome but no statute (enriched or in text)
+    # cannot anchor a contradiction and is skipped, not guessed.
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", snippet="no statutory citation here"),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_dedupes_duplicate_titles():
+    # Three distinct case records share the title "Smith v. Wilkie"; the same
+    # title pair recurs across index pairs, so the detector reports each pair
+    # only once (the seen-set branch).
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Smith v. Wilkie", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 1
+    assert contradictions[0].case_a == "Smith v. Wilkie"
+    assert contradictions[0].case_b == "Smith v. Wilkie"
+
+
+def test_detect_contradictions_ignores_unknown_outcomes():
+    cases = [
+        _case("Smith v. Wilkie", outcome="", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_dedupes_case_pair():
+    # Three cases sharing a statute: one favorable, two unfavorable. Only one
+    # contradiction per pair is reported (Smith/Jones and Smith/Adams).
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Adams v. Shulkin", outcome="affirmed", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 2
+    pairs = {(c.case_a, c.case_b) for c in contradictions}
+    assert pairs == {
+        ("Smith v. Wilkie", "Jones v. McDonough"),
+        ("Smith v. Wilkie", "Adams v. Shulkin"),
+    }
+
+
+def test_detect_contradictions_falls_back_to_text_statutes():
+    # Unenriched cases: statutes are pulled from the case text.
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", snippet="under 38 U.S.C. § 5107(b)"),
+        _case("Jones v. McDonough", outcome="denied", snippet="under 38 U.S.C. § 5107(b)"),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 1
+    assert contradictions[0].case_a == "Smith v. Wilkie"
+    assert contradictions[0].case_b == "Jones v. McDonough"
+
+
+def test_build_analysis_template_path_reports_deterministic_contradictions(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    result = build_interpretive_analysis("benefit of the doubt", "Compensation", cases)
+
+    # The always-on detector surfaces the conflict even on the template path.
+    assert result.interpretation_source == "template"
+    assert len(result.contradictions) == 1
+    assert result.contradictions[0].case_a == "Smith v. Wilkie"
+    assert result.contradictions[0].case_b == "Jones v. McDonough"
+
+
+def test_build_analysis_merges_llm_and_deterministic_contradictions(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    llm_contradiction = Contradiction(
+        statement="The two decisions split on the nexus standard.",
+        case_a="Smith v. Wilkie",
+        case_b="Jones v. McDonough",
+    )
+    reasoning = ReasoningResult(
+        reconciled_principles=[],
+        contradictions=[llm_contradiction],
+        synthesis="Smith controls.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+    # A second deterministic-only pair the LLM did not report.
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Adams v. Shulkin", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    result = build_interpretive_analysis("benefit of the doubt", "Compensation", cases)
+
+    # LLM contradiction wins for the shared pair; deterministic fills in Adams.
+    assert len(result.contradictions) == 2
+    by_pair = {(c.case_a, c.case_b): c for c in result.contradictions}
+    assert by_pair[("Smith v. Wilkie", "Jones v. McDonough")].statement == (
+        "The two decisions split on the nexus standard."
+    )
+    assert by_pair[("Smith v. Wilkie", "Adams v. Shulkin")].case_b == "Adams v. Shulkin"
+
+
+def test_build_analysis_deterministic_contradictions_dedup_with_llm(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    # The LLM and the deterministic detector both flag the same pair: only the
+    # LLM's richer statement survives.
+    llm_contradiction = Contradiction(
+        statement="Granted for Smith, denied for Jones on the same statute.",
+        case_a="Smith v. Wilkie",
+        case_b="Jones v. McDonough",
+    )
+    reasoning = ReasoningResult(
+        reconciled_principles=[],
+        contradictions=[llm_contradiction],
+        synthesis="",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    result = build_interpretive_analysis("benefit of the doubt", "Compensation", cases)
+
+    assert len(result.contradictions) == 1
+    assert result.contradictions[0].statement == (
+        "Granted for Smith, denied for Jones on the same statute."
+    )
 
 
 def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):

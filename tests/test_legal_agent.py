@@ -475,6 +475,68 @@ def test_deep_read_flag_none_falls_back_to_env(monkeypatch):
     assert calls == [True]
 
 
+def test_deep_read_limit_flag_forwards_to_deep_read_cases(monkeypatch):
+    """deep_read_limit arg caps how many cases are deep-read (overrides env)."""
+    results = [
+        {"title": f"Case {i}", "url": f"https://uscourts.cavc.gov/{i}", "snippet": "service connection"}
+        for i in range(5)
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "3")  # env says 3; the explicit arg must win
+    seen: dict[str, object] = {}
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen["limit"] = limit
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    fetch_cases_for_issue("service connection", max_results=5, deep_read_limit=2)
+
+    assert seen["limit"] == 2
+
+
+def test_deep_read_limit_flag_none_falls_back_to_env(monkeypatch):
+    """deep_read_limit=None reads the DEEP_READ_LIMIT setting as before."""
+    results = [
+        {"title": f"Case {i}", "url": f"https://uscourts.cavc.gov/{i}", "snippet": "service connection"}
+        for i in range(5)
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "2")
+    seen: dict[str, object] = {}
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen["limit"] = limit
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    fetch_cases_for_issue("service connection", max_results=5)  # deep_read_limit defaults to None
+
+    assert seen["limit"] == 2
+
+def test_research_issue_deep_read_limit_forwards(monkeypatch):
+    """research_issue forwards an explicit deep_read_limit to the deep-read pass."""
+    results = [
+        {"title": f"Case {i}", "url": f"https://uscourts.cavc.gov/{i}", "snippet": "service connection rating"}
+        for i in range(5)
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "3")  # env says 3; the explicit 1 must win
+    seen: dict[str, object] = {}
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen["limit"] = limit
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    research_issue("service connection and rating", deep_read_limit=1)
+
+    assert seen["limit"] == 1
+
+
 def test_research_issue_deep_read_flag_overrides_env(monkeypatch):
     """research_issue forwards an explicit deep_read arg to the deep-read pass."""
     results = [
@@ -492,6 +554,40 @@ def test_research_issue_deep_read_flag_overrides_env(monkeypatch):
     research_issue("service connection and rating", deep_read=True)
 
     assert calls == [True]
+
+
+def test_analyze_cases_deep_summaries_in_output(monkeypatch):
+    """Deep-read summaries ride along with the top cases in the analysis."""
+    results = [
+        {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection evidence nexus"}
+    ]
+    _stub_search(monkeypatch, results=results)
+
+    def recording_deep_read(cases, issue, limit=None):
+        for case in cases:
+            case.deep_summary = f"Deep summary of {case.title}."
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    analysis = analyze_cases_for_claim("service connection", deep_read=True)
+
+    assert analysis.deep_summaries == [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "Deep summary of Smith v. Wilkie."}
+    ]
+
+
+def test_analyze_cases_deep_summaries_empty_when_off(monkeypatch):
+    """Without deep-read, every summary is empty but the entries still align."""
+    results = [
+        {"title": "Smith v. Wilkie", "url": "https://uscourts.cavc.gov/smith", "snippet": "service connection evidence nexus"}
+    ]
+    _stub_search(monkeypatch, results=results)
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert analysis.deep_summaries == [
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": ""}
+    ]
 
 
 def test_fetch_cases_staggers_query_submissions(monkeypatch):
@@ -1689,7 +1785,8 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     seen: dict[str, object] = {}
 
     def recording_research(
-        issue, claim_type, max_results=10, enrich=True, telemetry=None, max_wall_seconds=None, deep_read=None
+        issue, claim_type, max_results=10, enrich=True, telemetry=None,
+        max_wall_seconds=None, deep_read=None, deep_read_limit=None,
     ):
         seen.update(
             issue=issue,
@@ -1699,6 +1796,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
             telemetry=telemetry,
             max_wall_seconds=max_wall_seconds,
             deep_read=deep_read,
+            deep_read_limit=deep_read_limit,
         )
         return [
             CaseRecord(
@@ -1719,6 +1817,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
         telemetry=telemetry,
         max_wall_seconds=2.5,
         deep_read=True,
+        deep_read_limit=4,
     )
 
     assert seen["issue"] == "service connection"
@@ -1728,6 +1827,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     assert seen["telemetry"] is telemetry
     assert seen["max_wall_seconds"] == 2.5
     assert seen["deep_read"] is True
+    assert seen["deep_read_limit"] == 4
     assert analysis.top_cases == ["Smith v. Wilkie (Court of Appeals for Veterans Claims)"]
 
 

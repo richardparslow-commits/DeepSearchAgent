@@ -48,7 +48,9 @@ This project is designed to search widely for relevant court and board decisions
    in the environment (or `.env`) to default to JSON logs without a flag.
    Pass `--deep-read` to ingest the full opinion text of the top cases for a
    run (overriding `DEEP_READ=0`), or `--no-deep-read` to force it off when
-   `DEEP_READ=1` is set in the environment; `--show-config` prints the
+   `DEEP_READ=1` is set in the environment; `--deep-read-limit N` tunes how
+   many top cases are ingested for that run (overriding `DEEP_READ_LIMIT`,
+   still capped by the number of cases found). `--show-config` prints the
    resolved `deep_read` / `deep_read_limit` / `deep_read_pages` /
    `deep_chunk_chars` values so operators can see the effective deep-read
    configuration.
@@ -201,7 +203,8 @@ Output is deterministic research support derived from public decisions, not lega
 - **Actionable next steps** — derived from the detected elements rather than static boilerplate.
 - **Narrative** (`how_it_affects_va_claims`) — LLM-enhanced when `OPENAI_API_KEY` is set (`interpretation_source: "llm"`), deterministic template otherwise (`"template"`). All output states it is research support, not legal advice.
 - **LLM reasoning pass** — with `OPENAI_API_KEY` set, the agent reconciles holdings across all ranked cases, flags contradictions between decisions (`contradictions` in the JSON/text/CSV output), and cites each claim; the deterministic template remains the always-on fallback.
-- **Deep-read mode** — with `DEEP_READ=1`, the agent ingests the full body of the top cases (every PDF page, the whole HTML page, or the verbatim plain-text decision) instead of the snippet and the first few pages, splits it into chunks, digests each chunk deterministically (holding / outcome / statutes), and synthesizes the digests into one per-case summary (LLM when `OPENAI_API_KEY` is set, a plain join otherwise). The reasoning pass then cross-references these full-text summaries across the whole corpus. Off by default because it fetches the entire body of every top case; a case whose body cannot be fetched keeps its snippet-based path.
+- **Deterministic contradiction detection** — always on, even without the LLM: pairs of retrieved authorities that cite the same statute but reach opposite outcomes (favorable vs. unfavorable to the claimant, e.g. `granted` vs. `denied` on the same 38 U.S.C. §) are surfaced as `contradictions` on the template path too. Only explicit, single-direction outcomes trigger a flag; unknown or mixed postures never do. When the LLM reasoning pass is active, its contradictions are merged with the deterministic ones (deduped by case pair, LLM wins on a tie).
+- **Deep-read mode** — with `DEEP_READ=1`, the agent ingests the full body of the top cases (every PDF page, the whole HTML page, or the verbatim plain-text decision) instead of the snippet and the first few pages, splits it into chunks, digests each chunk deterministically (holding / outcome / statutes), and synthesizes the digests into one per-case summary (LLM when `OPENAI_API_KEY` is set, a plain join otherwise). The reasoning pass then cross-references these full-text summaries across the whole corpus. Off by default because it fetches the entire body of every top case; a case whose body cannot be fetched keeps its snippet-based path. Each top case's summary is surfaced in the output as `deep_summaries` (a list of `{"case": ..., "summary": ...}` entries in JSON, a `Deep summaries` block in text, and a `deep_summaries` column in CSV), so you can see exactly what full-text ingestion produced.
 
 ## Configuration
 

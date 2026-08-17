@@ -45,9 +45,10 @@ class PrincipleFinding(BaseModel):
 class Contradiction(BaseModel):
     """A conflict between two retrieved authorities on the same point.
 
-    Raised by the LLM reasoning pass (or, in the deterministic path, absent)
-    when two decisions disagree on a holding or outcome, so the report can
-    surface the tension rather than silently picking one side.
+    Raised by the always-on deterministic detector (opposite outcomes on a
+    shared statute) and/or the LLM reasoning pass when two decisions disagree
+    on a holding or outcome, so the report can surface the tension rather than
+    silently picking one side.
     """
 
     statement: str
@@ -63,6 +64,10 @@ class LegalAnalysis(BaseModel):
     how_it_affects_va_claims: str
     next_steps: list[str] = Field(default_factory=list)
     top_cases: list[str] = Field(default_factory=list)
+    # Per-case full-text summaries from deep-read mode, aligned with top_cases:
+    # each entry is {"case": "Title (court)", "summary": "..."} (empty summary
+    # when deep-read was off or a body could not be fetched).
+    deep_summaries: list[dict[str, str]] = Field(default_factory=list)
     detected_elements: list[ClaimElement] = Field(default_factory=list)
     principle_findings: list[PrincipleFinding] = Field(default_factory=list)
     contradictions: list[Contradiction] = Field(default_factory=list)

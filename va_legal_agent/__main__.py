@@ -201,13 +201,26 @@ def _contradiction_label(contradiction: Contradiction) -> str:
     return f"{contradiction.statement} ({contradiction.case_a} vs {contradiction.case_b})"
 
 
+def _deep_summary_blocks(summaries: list[dict[str, str]]) -> list[str]:
+    """Render deep-read summaries as a labeled block per case with content."""
+    blocks: list[str] = []
+    for entry in summaries:
+        label = entry.get("case") or "(unknown case)"
+        summary = (entry.get("summary") or "").strip()
+        if summary:
+            blocks.append(f"{label}:\n{summary}")
+    return blocks
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
+    deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
     blocks = [
         [f"Issue: {analysis.issue}"],
         [f"Run id: {analysis.run_id or '(none)'}"],
         _bullets("Top cases", analysis.top_cases),
         [f"Summary:\n{analysis.summary or '(none)'}"],
+        _bullets("Deep summaries", deep_blocks) if deep_blocks else [],
         [f"How this affects VA claims:\n{analysis.how_it_affects_va_claims or '(none)'}"],
         _bullets("Applicable principles", analysis.likely_applicable_principles),
         _bullets("Contradictions", [_contradiction_label(c) for c in analysis.contradictions]),
@@ -282,9 +295,9 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a single-row CSV with a header."""
     header = [
         "run_id", "issue", "coverage_score", "interpretation_source", "summary",
-        "how_it_affects_va_claims", "top_cases", "applicable_principles",
-        "contradictions", "next_steps", "strengths", "gaps", "detected_elements",
-        "principle_findings", "search_telemetry",
+        "how_it_affects_va_claims", "top_cases", "deep_summaries",
+        "applicable_principles", "contradictions", "next_steps", "strengths",
+        "gaps", "detected_elements", "principle_findings", "search_telemetry",
     ]
     row = [
         analysis.run_id,
@@ -294,6 +307,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         analysis.summary,
         analysis.how_it_affects_va_claims,
         " | ".join(analysis.top_cases),
+        json.dumps(analysis.deep_summaries, sort_keys=True),
         " | ".join(analysis.likely_applicable_principles),
         " | ".join(_contradiction_label(c) for c in analysis.contradictions),
         " | ".join(analysis.next_steps),
@@ -381,6 +395,16 @@ def main() -> None:
         help="Disable deep-read mode for this run (overrides the DEEP_READ env var).",
     )
     parser.add_argument(
+        "--deep-read-limit",
+        dest="deep_read_limit",
+        type=int,
+        default=None,
+        help=(
+            "Top cases ingested in deep-read mode for this run (overrides the "
+            "DEEP_READ_LIMIT env var; capped by the number of cases found)."
+        ),
+    )
+    parser.add_argument(
         "--log-level",
         dest="log_level",
         choices=_LOG_LEVELS,
@@ -428,6 +452,7 @@ def main() -> None:
             telemetry=telemetry,
             max_wall_seconds=args.max_wall_time,
             deep_read=args.deep_read,
+            deep_read_limit=args.deep_read_limit,
         )
     except Exception as exc:  # noqa: BLE001 - emit event, then preserve original behavior
         _emit_failure_event(args.issue, exc, run_id)

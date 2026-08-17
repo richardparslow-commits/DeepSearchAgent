@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .config import get_settings
+from .fetch import extract_statutes
 from .llm import interpret_cases, reason_cases
 from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding
 from .topics import PRINCIPLE_PATTERNS, TOPICS
@@ -133,6 +134,105 @@ class InterpretiveAnalysis:
 
 def _case_text(case: CaseRecord) -> str:
     return f"{case.title} {case.snippet} {case.holding} {case.impact}".lower()
+
+
+# Dispositions that favor the claimant position vs. go against it, used by the
+# always-on deterministic contradiction detector. ``vacated``/``remanded``
+# reopen a denial and ``granted`` awards relief; ``affirmed``/``dismissed``/
+# ``denied`` uphold or reject it. This is deliberately conservative: only
+# explicit, single-direction outcomes trigger a flag.
+_FAVORABLE_OUTCOMES = frozenset({"granted", "vacated", "remanded"})
+_UNFAVORABLE_OUTCOMES = frozenset({"denied", "affirmed", "dismissed"})
+
+
+def _outcome_direction(outcome: str) -> int:
+    """Classify an outcome as favorable (+1), unfavorable (-1), or unknown (0).
+
+    ``extract_outcome`` joins multiple signals with " and " (e.g. "vacated and
+    remanded"). A compound that mixes directions ("granted and denied") or an
+    unrecognized signal resolves to 0 rather than guessing, so the deterministic
+    detector never flags on ambiguous postures.
+    """
+    signals = outcome.lower().split(" and ")
+    if not signals or any(not signal for signal in signals):
+        return 0
+    directions: set[int] = set()
+    for signal in signals:
+        if signal in _FAVORABLE_OUTCOMES:
+            directions.add(1)
+        elif signal in _UNFAVORABLE_OUTCOMES:
+            directions.add(-1)
+        else:
+            return 0
+    if len(directions) == 1:
+        return directions.pop()
+    return 0
+
+
+def _case_statutes(case: CaseRecord) -> list[str]:
+    """Return the case's cited statutes, scanning text when unenriched."""
+    return list(case.statutes) or extract_statutes(_case_text(case))
+
+
+def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
+    """Deterministically flag opposite outcomes on a shared statute.
+
+    The always-on complement to the LLM reasoning pass: pairs of retrieved
+    authorities that cite the same statute but reach opposite outcomes
+    (favorable vs. unfavorable to the claimant) are surfaced as contradictions
+    so the report never silently picks one side. Only explicit outcomes are
+    used; unknown or mixed postures never trigger a flag.
+    """
+    contradictions: list[Contradiction] = []
+    seen: set[tuple[str, str]] = set()
+    for i, first in enumerate(cases):
+        first_direction = _outcome_direction(first.outcome)
+        if first_direction == 0:
+            continue
+        first_statutes = set(_case_statutes(first))
+        if not first_statutes:
+            continue
+        for second in cases[i + 1 :]:
+            second_direction = _outcome_direction(second.outcome)
+            if second_direction == 0 or second_direction == first_direction:
+                continue
+            shared = first_statutes & set(_case_statutes(second))
+            if not shared:
+                continue
+            key = tuple(sorted((first.title, second.title)))
+            if key in seen:
+                continue
+            seen.add(key)
+            statute = sorted(shared)[0]
+            contradictions.append(
+                Contradiction(
+                    statement=(
+                        f"{first.title} and {second.title} reach opposite outcomes on "
+                        f"{statute}: {first.outcome} versus {second.outcome}."
+                    ),
+                    case_a=first.title,
+                    case_b=second.title,
+                )
+            )
+    return contradictions
+
+
+def _merge_contradictions(
+    primary: list[Contradiction], secondary: list[Contradiction]
+) -> list[Contradiction]:
+    """Combine two contradiction lists, deduping by the case pair.
+
+    ``primary`` (the LLM reasoning pass) wins on a collision; deterministic
+    findings fill in any pair the LLM did not report.
+    """
+    merged = list(primary)
+    seen = {tuple(sorted((c.case_a, c.case_b))) for c in primary}
+    for contradiction in secondary:
+        key = tuple(sorted((contradiction.case_a, contradiction.case_b)))
+        if key not in seen:
+            seen.add(key)
+            merged.append(contradiction)
+    return merged
 
 
 def detect_claim_elements(issue: str) -> list[ElementSpec]:
@@ -255,6 +355,10 @@ def build_interpretive_analysis(
     template_text = _template_interpretation(
         claim_issue, claim_type, cases, element_specs, findings, interpret_limit
     )
+    # Always-on deterministic conflict detection: opposite outcomes on a shared
+    # statute surface even without the LLM, so the report flags tension between
+    # authorities on the template path too.
+    deterministic_contradictions = detect_contradictions(cases)
     reasoning = reason_cases(claim_issue, claim_type, cases[: settings.llm_reasoning_limit])
     # When the reconciling pass provides a synthesis it replaces the lighter
     # narrative call entirely (one LLM call instead of two); otherwise the
@@ -275,12 +379,14 @@ def build_interpretive_analysis(
     if reasoning:
         principles = list(reasoning.reconciled_principles) or template_principles
         narrative = reasoning.synthesis or llm_text or template_text
-        contradictions = list(reasoning.contradictions)
+        contradictions = _merge_contradictions(
+            list(reasoning.contradictions), deterministic_contradictions
+        )
         source = "llm"
     else:
         principles = template_principles
         narrative = llm_text or template_text
-        contradictions = []
+        contradictions = deterministic_contradictions
         source = "llm" if llm_text else "template"
 
     return InterpretiveAnalysis(
