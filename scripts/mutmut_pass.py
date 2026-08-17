@@ -21,6 +21,42 @@ import sys
 from pathlib import Path
 
 
+def _reverify_segfault(name: str, tests: list[str], target: str) -> bool:
+    """Recover the true verdict for a mutant mutmut reported as ``segfault``.
+
+    ``segfault`` (SIGSEGV) means mutmut's worker process crashed while running
+    the mutant's tests, which tells us nothing about whether those tests would
+    have passed or failed. On macOS the sequential worker intermittently
+    crashes regardless of the mutation, so a segfault masks an equivalent
+    survivor and a cleanly killable mutant alike. Apply the mutation to the
+    real source, run the test slice directly (outside the worker), restore the
+    file, and return True only when the tests still pass.
+    """
+    original = Path(target).read_bytes()
+    try:
+        applied = subprocess.run(
+            [sys.executable, "-m", "mutmut", "apply", name],
+            capture_output=True,
+        )
+        if applied.returncode != 0:
+            # The mutation could not be reproduced for re-verification. Keep it
+            # flagged as untriaged rather than silently dropping an unknown
+            # outcome.
+            return True
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q", *tests],
+                capture_output=True,
+                timeout=180,
+            )
+        except subprocess.TimeoutExpired:
+            # The direct run hangs, so the mutant is genuinely untriaged.
+            return True
+        return proc.returncode == 0
+    finally:
+        Path(target).write_bytes(original)
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         print(__doc__)
@@ -74,33 +110,35 @@ def main() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
     )
-    # Count "suspicious" mutants (timeout / abnormal exit) as survivors too:
-    # they are just as untriaged as a plain survivor - e.g. a mutant that slips
-    # past a guard into a real network call can show up as suspicious on one
-    # platform and survived on another (see the llm.py `or` -> `and` mutant).
-    # One exclusion: on macOS, mutmut's worker fork intermittently aborts with
-    # a CoreFoundation SIGABRT (exit -6, reported as "suspicious") that has
-    # nothing to do with the mutant; skip that exact signature so the local
-    # gate is not flaky. The nightly CI gate runs on Linux, where no such
-    # crash exists, so every suspicious mutant there still fails the gate.
     exit_codes: dict[str, int] = {}
     meta_path = scratch_pkg / f"{stem}.py.meta"
     if meta_path.exists():
         exit_codes = json.loads(meta_path.read_text()).get("exit_code_by_key", {})
-    survivors = []
+
+    # Classify each mutant by status. ``survived`` and ``timeout`` are plainly
+    # untriaged (a hung mutant is just as untriaged as a passing one), and
+    # ``suspicious`` (any abnormal exit) is untriaged too, with one exclusion:
+    # on macOS mutmut's worker fork intermittently aborts with a CoreFoundation
+    # SIGABRT (exit -6) that has nothing to do with the mutant, so skip that
+    # exact signature locally. The nightly CI gate runs on Linux, where no such
+    # crash exists and every suspicious mutant still fails the gate. A
+    # ``segfault`` (SIGSEGV) is re-verified by running the mutant's tests
+    # directly, because the macOS worker crash masks the true killed/survived
+    # verdict (see :func:`_reverify_segfault`).
+    survivors: list[str] = []
     for line in result.stdout.splitlines():
-        if "survived" in line or "segfault" in line or "timeout" in line:
-            # ``segfault`` (SIGSEGV/-11) and ``timeout`` (SIGXCPU) are untriaged
-            # outcomes exactly like ``survived``: the tests did not cleanly kill
-            # the mutant. On macOS the sequential worker intermittently crashes
-            # for mutants whose tests would otherwise pass (verified: applying
-            # the mutation and running pytest directly exits 0), so silently
-            # dropping the status hides mutants that the Linux CI gate reports as
-            # survived. Counting all three keeps the local and CI gates in
-            # agreement and forces triage of any hung or crashing mutant.
-            survivors.append(line.strip().split(":")[0])
-        elif "suspicious" in line:
-            name = line.strip().split(":")[0]
+        line = line.strip()
+        if ":" not in line:
+            continue
+        name, status = (part.strip() for part in line.split(":", 1))
+        if status == "survived":
+            survivors.append(name)
+        elif status == "timeout":
+            survivors.append(name)
+        elif status == "segfault":
+            if _reverify_segfault(name, tests, target):
+                survivors.append(name)
+        elif status == "suspicious":
             if sys.platform == "darwin" and exit_codes.get(name) == -6:
                 continue
             survivors.append(name)
