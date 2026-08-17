@@ -393,14 +393,29 @@ def test_derive_variants_issue_parsed_from_quoted_query():
     assert "\"5107\"" in joined  # statute fragment
 
 
-def test_derive_variants_unmatched_issue_adds_statutes_only():
+def test_derive_variants_unmatched_issue_adds_no_statutes():
     from va_legal_agent.queries import derive_variants
 
-    # An issue matching no topic keyword still gets statute-fragment variants.
+    # An issue matching no topic implicates no statute fragments, so no
+    # unrelated 5107/7104 variants are tacked on.
     variants = derive_variants('site:bva.va.gov "tinnitus"', limit=2)
 
-    assert len(variants) == 3
-    assert all("5107" in v or "7104" in v for v in variants[1:])
+    assert variants == ['site:bva.va.gov "tinnitus"']
+
+
+def test_expansion_statutes_are_issue_aware():
+    from va_legal_agent.queries import _expansion_phrases
+
+    # A service-connection issue pulls its own statutes but not another
+    # topic's (benefit-of-the-doubt 5107, rating 4.1).
+    service = _expansion_phrases("service connection")
+    assert "1110" in service and "1131" in service and "3.303" in service
+    assert "5107" not in service and "4.1" not in service
+
+    # A rating issue pulls only its own statute.
+    rating = _expansion_phrases("rating")
+    assert "4.1" in rating
+    assert "5107" not in rating and "1110" not in rating and "3.303" not in rating
 
 
 def test_derive_variants_limit_zero_returns_original():
@@ -441,7 +456,7 @@ def test_expansion_dedupes_duplicate_statute_fragments(monkeypatch):
     # Two identical fragments: only the first is added, even though neither is
     # already a topic synonym (so the dedup must happen inside the statute loop).
     monkeypatch.setattr(
-        "va_legal_agent.queries.STATUTE_HINTS", (("5107", "hint one"), ("5107", "hint two"))
+        "va_legal_agent.queries.relevant_statutes", lambda topics: ("5107", "5107")
     )
 
     phrases = _expansion_phrases("rating")
@@ -453,8 +468,18 @@ def test_derive_variants_default_limit_bounds_variant_count():
     from va_legal_agent.queries import derive_variants
 
     # Default limit is 3: base query plus at most three variants. A rating issue
-    # yields well over three expansion phrases, so the count is pinned by limit.
+    # yields at least three expansion phrases, so the count is pinned by limit.
     variants = derive_variants('site:bva.va.gov "rating" "Compensation"')
+
+    assert len(variants) == 4
+
+
+def test_derive_variants_default_limit_caps_high_phrase_issues():
+    from va_legal_agent.queries import derive_variants
+
+    # "service connection" yields six expansion phrases (synonyms + 1110/1131/
+    # 3.303), so the default limit of 3 is what actually caps the variant count.
+    variants = derive_variants('site:uscourts.cavc.gov "service connection"')
 
     assert len(variants) == 4
 
@@ -635,7 +660,7 @@ def test_search_all_telemetry_counts_variants_and_pages(monkeypatch):
     monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
 
     telemetry: list[dict[str, object]] = []
-    search_all("tinnitus", max_results=10, telemetry=telemetry)
+    search_all("rating", max_results=10, telemetry=telemetry)
 
     assert telemetry[0]["queries_issued"] == 6  # 3 variants x 2 pages
     assert telemetry[0]["results"] == 6
@@ -669,7 +694,7 @@ def test_search_all_per_provider_variant_override(monkeypatch):
     monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: fakes[name])
 
     telemetry: list[dict[str, object]] = []
-    search_all("tinnitus", max_results=10, telemetry=telemetry)
+    search_all("rating", max_results=10, telemetry=telemetry)
 
     by_provider = {t["provider"]: t for t in telemetry}
     assert by_provider["duckduckgo"]["queries_issued"] == 1  # base query only
@@ -682,7 +707,9 @@ def test_expansion_skips_statute_fragment_already_used_as_synonym(monkeypatch):
 
     # "evaluation" is both a rating-topic synonym and (via the patch) a
     # statute fragment; the fragment must be deduped against the synonym.
-    monkeypatch.setattr("va_legal_agent.queries.STATUTE_HINTS", (("evaluation", "hint"),))
+    monkeypatch.setattr(
+        "va_legal_agent.queries.relevant_statutes", lambda topics: ("evaluation",)
+    )
 
     phrases = _expansion_phrases("rating")
 
@@ -690,13 +717,11 @@ def test_expansion_skips_statute_fragment_already_used_as_synonym(monkeypatch):
     assert phrases.count("evaluation") == 1
 
 
-def test_derive_variants_with_no_phrases_returns_original_only(monkeypatch):
+def test_derive_variants_with_no_phrases_returns_original_only():
     from va_legal_agent.queries import derive_variants
 
-    # No topic matches "tinnitus" and no statute fragments remain: the
-    # expansion loop runs zero times.
-    monkeypatch.setattr("va_legal_agent.queries.STATUTE_HINTS", ())
-
+    # "tinnitus" matches no topic and implicates no statute fragments: the
+    # expansion loop runs zero times and only the original query is returned.
     assert derive_variants("tinnitus", limit=3) == ["tinnitus"]
 
 
@@ -733,28 +758,28 @@ def test_search_all_per_provider_pages_override(monkeypatch):
 
 def test_search_all_telemetry_variants_report_failures_and_results(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
-    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "2")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "3")
     monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "1")
 
     class _FakeDDG:
         name = "duckduckgo"
 
         def search(self, query, max_results=10, page=1):
-            if "5107" in query:
+            if "4.1" in query:
                 raise SearchError("rate limited")
             return [{"title": "Hit", "url": f"https://example.com/{len(query)}", "snippet": ""}]
 
     monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
 
     telemetry: list[dict[str, object]] = []
-    search_all("tinnitus", max_results=10, telemetry=telemetry)
+    search_all("rating", max_results=10, telemetry=telemetry)
 
     variants = telemetry[0]["variants"]
     assert isinstance(variants, dict)
     # Per-variant results/failures reconcile with the provider-level counters.
     assert sum(v["results"] for v in variants.values()) == telemetry[0]["results"]
     assert sum(v["failures"] for v in variants.values()) == telemetry[0]["failures"]
-    # The 5107-anchored variant was throttled; the others surfaced cases.
+    # The 4.1-anchored variant was throttled; the others surfaced cases.
     assert any(v["failures"] > 0 for v in variants.values())
     assert any(v["results"] > 0 for v in variants.values())
 
@@ -1239,10 +1264,10 @@ def test_search_all_exhausts_every_query_and_propagates_last_error(monkeypatch):
 
     telemetry: list[dict[str, object]] = []
     with pytest.raises(SearchError) as excinfo:
-        search_all("tinnitus", telemetry=telemetry)
+        search_all("rating", telemetry=telemetry)
 
     # Exhaustion: every variant is attempted on every page - no early return.
-    variants = derive_variants("tinnitus", limit=2)
+    variants = derive_variants("rating", limit=2)
     assert len(received) == len(variants) * 2
     # The error that propagates is the LAST one, not the first.
     assert str(excinfo.value) == f"down for: {received[-1]}"

@@ -6,17 +6,19 @@ search would treat `site:` tokens as noise. This module derives variant
 queries from the shared topic vocabulary (TOPICS synonyms) and the
 statute/doctrine table (STATUTE_HINTS), and adapts queries per provider.
 
-Expansion is issue-aware: only topics whose keyword appears in the issue
-contribute synonyms, so unrelated topics don't pollute the search. The issue
-is read from the first quoted phrase of the query (the format produced by
-``build_case_queries``).
+Expansion is issue-aware: only topics implicated by the issue contribute
+synonyms, and only the statute fragments anchored to those topics are
+appended, so unrelated topics and statutes don't pollute the search. The
+issue is read from the first quoted phrase of the query (the format produced
+by ``build_case_queries``).
 """
 
 from __future__ import annotations
 
 import re
 
-from .topics import STATUTE_HINTS, TOPICS
+from .planning import detect_issue_topics, relevant_statutes
+from .topics import TOPICS_BY_NAME
 
 # A `site:` token (e.g. `site:uscourts.cavc.gov`). CourtListener can't use it.
 _SITE_PATTERN = re.compile(r"\bsite:[^\s]+")
@@ -43,27 +45,29 @@ def _issue_from_query(query: str) -> str:
 
 
 def _expansion_phrases(issue: str) -> list[str]:
-    """Topic synonyms and statute fragments, deduped, for building variant queries.
+    """Topic synonyms and relevant statute fragments, deduped, for variant queries.
 
-    Only topics whose ``keyword`` appears in *issue* contribute synonyms, so
-    an issue about rating doesn't pull in service-connection phrasing. Topics
-    without a keyword never match and are skipped. Statute/doctrine fragments
-    follow the synonyms (only the fragment is used, not the prose hint).
+    Only topics implicated by *issue* contribute synonyms (via
+    :func:`planning.detect_issue_topics`), so an issue about rating doesn't
+    pull in service-connection phrasing; topics without a keyword never match
+    and are skipped. Statute/doctrine fragments are likewise limited to those
+    anchored to the detected topics (via :func:`planning.relevant_statutes`),
+    so an unrelated issue like ``tinnitus`` no longer tacks on ``5107``/
+    ``7104``. Only the fragment is used, not the prose hint.
     """
     issue_lower = (issue or "").lower()
+    topics = detect_issue_topics(issue)
     phrases: list[str] = []
     seen: set[str] = set()
-    for topic in TOPICS:
-        if not topic.keyword or topic.keyword not in issue_lower:
-            continue
-        for synonym in topic.synonyms:
-            # Skip phrases already present in the issue (e.g. keyword == synonym)
-            # so we only add genuinely new terms.
+    for name in topics:
+        for synonym in TOPICS_BY_NAME[name].synonyms:
+            # Skip phrases already present in the issue (e.g. keyword ==
+            # synonym) so we only add genuinely new terms.
             if not synonym or synonym in issue_lower or synonym in seen:
                 continue
             seen.add(synonym)
             phrases.append(synonym)
-    for fragment, _ in STATUTE_HINTS:
+    for fragment in relevant_statutes(topics):
         if fragment not in seen:
             seen.add(fragment)
             phrases.append(fragment)
