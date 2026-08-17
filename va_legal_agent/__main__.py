@@ -362,6 +362,24 @@ def main() -> None:
             "Defaults to the SEARCH_MAX_WALL_SECONDS env var."
         ),
     )
+    deep_read_group = parser.add_mutually_exclusive_group()
+    deep_read_group.add_argument(
+        "--deep-read",
+        dest="deep_read",
+        action="store_true",
+        default=None,
+        help=(
+            "Enable deep-read mode for this run: ingest the full opinion text of "
+            "the top cases and summarize it via map-reduce (overrides the "
+            "DEEP_READ env var)."
+        ),
+    )
+    deep_read_group.add_argument(
+        "--no-deep-read",
+        dest="deep_read",
+        action="store_false",
+        help="Disable deep-read mode for this run (overrides the DEEP_READ env var).",
+    )
     parser.add_argument(
         "--log-level",
         dest="log_level",
@@ -409,6 +427,7 @@ def main() -> None:
             enrich=not args.no_enrich,
             telemetry=telemetry,
             max_wall_seconds=args.max_wall_time,
+            deep_read=args.deep_read,
         )
     except Exception as exc:  # noqa: BLE001 - emit event, then preserve original behavior
         _emit_failure_event(args.issue, exc, run_id)

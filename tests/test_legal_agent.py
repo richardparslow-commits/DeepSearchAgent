@@ -429,6 +429,71 @@ def test_research_issue_deep_read_receives_issue(monkeypatch):
     assert issues == ["service connection and rating"]
 
 
+def test_deep_read_flag_overrides_env(monkeypatch):
+    """An explicit deep_read arg beats the DEEP_READ env setting (both ways)."""
+    results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+    _stub_search(monkeypatch, results=results)
+    calls: list[bool] = []
+
+    def recording_deep_read(cases, issue, limit=None):
+        calls.append(True)
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    # env off, arg on -> deep-read runs
+    monkeypatch.setenv("DEEP_READ", "0")
+    fetch_cases_for_issue("service connection", max_results=5, deep_read=True)
+    assert calls == [True]
+
+    # env on, arg off -> deep-read is skipped
+    calls.clear()
+    monkeypatch.setenv("DEEP_READ", "1")
+
+    def should_not_run(cases, issue, limit=None):
+        calls.append(True)
+        raise AssertionError("deep_read=False must override DEEP_READ=1")
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", should_not_run)
+    fetch_cases_for_issue("service connection", max_results=5, deep_read=False)
+    assert calls == []
+
+
+def test_deep_read_flag_none_falls_back_to_env(monkeypatch):
+    """deep_read=None reads the DEEP_READ setting as before."""
+    results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    calls: list[bool] = []
+
+    def recording_deep_read(cases, issue, limit=None):
+        calls.append(True)
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    fetch_cases_for_issue("service connection", max_results=5)  # deep_read defaults to None
+
+    assert calls == [True]
+
+
+def test_research_issue_deep_read_flag_overrides_env(monkeypatch):
+    """research_issue forwards an explicit deep_read arg to the deep-read pass."""
+    results = [
+        {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "0")  # env off; the explicit arg must win
+    calls: list[bool] = []
+
+    def recording_deep_read(cases, issue, limit=None):
+        calls.append(True)
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    research_issue("service connection and rating", deep_read=True)
+
+    assert calls == [True]
+
+
 def test_fetch_cases_staggers_query_submissions(monkeypatch):
     sleeps: list[float] = []
     _stub_search(monkeypatch, results=[])
@@ -1623,7 +1688,9 @@ def test_enrich_continues_after_fetch_failure(monkeypatch, caplog):
 def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     seen: dict[str, object] = {}
 
-    def recording_research(issue, claim_type, max_results=10, enrich=True, telemetry=None, max_wall_seconds=None):
+    def recording_research(
+        issue, claim_type, max_results=10, enrich=True, telemetry=None, max_wall_seconds=None, deep_read=None
+    ):
         seen.update(
             issue=issue,
             claim_type=claim_type,
@@ -1631,6 +1698,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
             enrich=enrich,
             telemetry=telemetry,
             max_wall_seconds=max_wall_seconds,
+            deep_read=deep_read,
         )
         return [
             CaseRecord(
@@ -1650,6 +1718,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
         max_results=3,
         telemetry=telemetry,
         max_wall_seconds=2.5,
+        deep_read=True,
     )
 
     assert seen["issue"] == "service connection"
@@ -1658,6 +1727,7 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     assert seen["enrich"] is True
     assert seen["telemetry"] is telemetry
     assert seen["max_wall_seconds"] == 2.5
+    assert seen["deep_read"] is True
     assert analysis.top_cases == ["Smith v. Wilkie (Court of Appeals for Veterans Claims)"]
 
 

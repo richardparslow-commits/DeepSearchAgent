@@ -160,6 +160,68 @@ def test_cli_max_wall_time_defaults_to_none(capsys, monkeypatch):
     assert seen["max_wall_seconds"] is None
 
 
+def test_cli_deep_read_flag_flows_to_analysis(capsys, monkeypatch):
+    seen: dict[str, object] = {}
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus", "--deep-read"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["deep_read"] is True
+
+
+def test_cli_deep_read_flag_defaults_to_none(capsys, monkeypatch):
+    """Without the flag, deep_read is None so the env/setting decides."""
+    seen: dict[str, object] = {}
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["deep_read"] is None
+
+
+def test_cli_no_deep_read_flag_overrides_env(capsys, monkeypatch):
+    """--no-deep-read beats a DEEP_READ=1 env var."""
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("DEEP_READ", "1")
+
+    def recording_analyze(issue, **kwargs):
+        seen.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus", "--no-deep-read"])
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", recording_analyze)
+
+    main()
+
+    assert seen["deep_read"] is False
+
+
+def test_show_config_includes_deep_read_settings(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "5")
+
+    main()
+
+    data = json.loads(capsys.readouterr().out)
+    assert data["deep_read"] is True
+    assert data["deep_read_limit"] == 5
+    assert data["deep_read_pages"] == 0
+    assert data["deep_chunk_chars"] == 6000
+
+
 def test_render_analysis_text():
     text = render_analysis(_sample_analysis(), "text")
 

@@ -298,17 +298,28 @@ def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
 
 
 def _dedupe_rank_and_enrich(
-    cases: list[CaseRecord], max_results: int, enrich: bool, claim_issue: str
+    cases: list[CaseRecord],
+    max_results: int,
+    enrich: bool,
+    claim_issue: str,
+    deep_read: bool | None = None,
 ) -> list[CaseRecord]:
-    """Dedupe, enrich, deep-read (opt-in), rank, and attach impact summaries."""
+    """Dedupe, enrich, deep-read (opt-in), rank, and attach impact summaries.
+
+    ``deep_read`` of ``None`` falls back to the ``DEEP_READ`` setting, so
+    callers can force it on/off per run (e.g. from a CLI flag) without editing
+    the environment.
+    """
     settings = get_settings()
+    if deep_read is None:
+        deep_read = settings.deep_read
     deduped = _dedupe(cases)
 
     if enrich:
         enrich_top_cases(deduped, limit=min(settings.enrich_case_limit, max(max_results, 1)))
     # Deep-read mode fetches the full body of the top cases and summarizes it
     # so the reasoning pass cross-references holdings across the whole corpus.
-    if settings.deep_read:
+    if deep_read:
         deep_read_cases(deduped, claim_issue, limit=min(settings.deep_read_limit, len(deduped)))
 
     # Final ordering comes from the ranking layer (authority tiers strictly
@@ -341,6 +352,7 @@ def research_issue(
     enrich: bool = True,
     telemetry: list[dict[str, object]] | None = None,
     max_wall_seconds: float | None = None,
+    deep_read: bool | None = None,
 ) -> list[CaseRecord]:
     """Run the adaptive research loop and return the merged, ranked cases.
 
@@ -413,7 +425,7 @@ def research_issue(
             found.relevance_score = score_case_relevance(found, claim_issue)
             cases.append(found)
 
-    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue)
+    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read)
 
 
 def fetch_cases_for_issue(
@@ -423,6 +435,7 @@ def fetch_cases_for_issue(
     enrich: bool = True,
     telemetry: list[dict[str, object]] | None = None,
     max_wall_seconds: float | None = None,
+    deep_read: bool | None = None,
 ) -> list[CaseRecord]:
     """Search every planned query once and return the merged, enriched cases.
 
@@ -440,7 +453,7 @@ def fetch_cases_for_issue(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
     )
     _raise_if_no_results(cases, errors, budget_exhausted, claim_issue, max_wall_seconds)
-    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue)
+    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read)
 
 
 def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[CaseRecord]:
@@ -528,6 +541,7 @@ def analyze_cases_for_claim(
     enrich: bool = True,
     telemetry: list[dict[str, object]] | None = None,
     max_wall_seconds: float | None = None,
+    deep_read: bool | None = None,
 ) -> LegalAnalysis:
     """Run the adaptive research loop and build structured VA-claims guidance."""
     cases = research_issue(
@@ -537,6 +551,7 @@ def analyze_cases_for_claim(
         enrich=enrich,
         telemetry=telemetry,
         max_wall_seconds=max_wall_seconds,
+        deep_read=deep_read,
     )
     return _build_analysis(claim_issue, claim_type, cases, telemetry)
 

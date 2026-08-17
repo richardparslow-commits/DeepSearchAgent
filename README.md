@@ -46,6 +46,12 @@ This project is designed to search widely for relevant court and board decisions
    one JSON object per line (handy for machine parsing). Log output always goes
    to stderr, so stdout stays clean for the analysis result. Set `LOG_JSON=1`
    in the environment (or `.env`) to default to JSON logs without a flag.
+   Pass `--deep-read` to ingest the full opinion text of the top cases for a
+   run (overriding `DEEP_READ=0`), or `--no-deep-read` to force it off when
+   `DEEP_READ=1` is set in the environment; `--show-config` prints the
+   resolved `deep_read` / `deep_read_limit` / `deep_read_pages` /
+   `deep_chunk_chars` values so operators can see the effective deep-read
+   configuration.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
