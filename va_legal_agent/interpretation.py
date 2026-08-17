@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from .config import get_settings
 from .fetch import extract_statutes
+from .impact import detect_outcome
 from .llm import interpret_cases, reason_cases
 from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding
 from .topics import PRINCIPLE_PATTERNS, TOPICS
@@ -180,20 +181,24 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
     The always-on complement to the LLM reasoning pass: pairs of retrieved
     authorities that cite the same statute but reach opposite outcomes
     (favorable vs. unfavorable to the claimant) are surfaced as contradictions
-    so the report never silently picks one side. Only explicit outcomes are
-    used; unknown or mixed postures never trigger a flag.
+    so the report never silently picks one side. The outcome prefers the
+    enriched field and falls back to the title/holding text (mirroring
+    :func:`impact.detect_outcome`), matching the statute fallback; unknown or
+    mixed postures never trigger a flag.
     """
+    outcomes = [detect_outcome(case) for case in cases]
+    directions = [_outcome_direction(outcome) for outcome in outcomes]
     contradictions: list[Contradiction] = []
     seen: set[tuple[str, str]] = set()
     for i, first in enumerate(cases):
-        first_direction = _outcome_direction(first.outcome)
+        first_direction = directions[i]
         if first_direction == 0:
             continue
         first_statutes = set(_case_statutes(first))
         if not first_statutes:
             continue
-        for second in cases[i + 1 :]:
-            second_direction = _outcome_direction(second.outcome)
+        for j, second in enumerate(cases[i + 1 :], start=i + 1):
+            second_direction = directions[j]
             if second_direction == 0 or second_direction == first_direction:
                 continue
             shared = first_statutes & set(_case_statutes(second))
@@ -208,7 +213,7 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
                 Contradiction(
                     statement=(
                         f"{first.title} and {second.title} reach opposite outcomes on "
-                        f"{statute}: {first.outcome} versus {second.outcome}."
+                        f"{statute}: {outcomes[i]} versus {outcomes[j]}."
                     ),
                     case_a=first.title,
                     case_b=second.title,

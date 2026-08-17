@@ -157,6 +157,43 @@ def test_detect_contradictions_dedupes_duplicate_titles():
     assert contradictions[0].case_b == "Smith v. Wilkie"
 
 
+def test_detect_contradictions_flags_outcomes_in_holding_text():
+    # Outcomes that only appear in the holding text (no enriched outcome field)
+    # are still detected via impact.detect_outcome's title/holding fallback.
+    cases = [
+        _case(
+            "Smith v. Wilkie",
+            holding="The Court denied the claim.",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+        _case(
+            "Jones v. McDonough",
+            holding="The Court granted the claim.",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 1
+    assert contradictions[0].case_a == "Smith v. Wilkie"
+    assert contradictions[0].case_b == "Jones v. McDonough"
+    # The statement names the resolved outcomes, not the empty fields.
+    assert "denied" in contradictions[0].statement
+    assert "granted" in contradictions[0].statement
+
+
+def test_detect_contradictions_ignores_outcomes_only_in_snippet():
+    # detect_outcome deliberately scans title/holding only (snippets often
+    # describe lower-level actions), so a snippet-only signal stays unflagged.
+    cases = [
+        _case("Smith v. Wilkie", snippet="the Court denied the claim", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", snippet="the Court granted the claim", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
 def test_detect_contradictions_ignores_unknown_outcomes():
     cases = [
         _case("Smith v. Wilkie", outcome="", statutes=["38 U.S.C. § 5107(b)"]),
