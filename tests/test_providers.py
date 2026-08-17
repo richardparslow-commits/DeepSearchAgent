@@ -92,6 +92,8 @@ def _cl_result(**overrides):
         "docketNumber": "19-4433",
         "judge": "Judge Mary J. Smith",
         "citation": ["35 Vet.App. 123"],
+        # The search endpoint nests up to 500 chars of opinion text here.
+        "opinions": [{"snippet": "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS"}],
     }
     item.update(overrides)
     return item
@@ -154,6 +156,7 @@ def test_courtlistener_maps_structured_fields(monkeypatch):
     assert result["decision_date"] == "2023-05-01"
     assert result["docket"] == "19-4433"
     assert result["judge"] == "Judge Mary J. Smith"
+    assert result["snippet"] == "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS"
     assert captured["url"] == CourtListenerProvider.SEARCH_URL
     assert captured["params"]["q"] == (
         "(service connection) AND court_id:(cavc OR cafc OR scotus)"
@@ -171,6 +174,27 @@ def test_courtlistener_query_embeds_court_filter_in_q():
         "(tinnitus) AND court_id:(cavc OR cafc OR scotus)"
     )
     assert _courtlistener_query("") == "court_id:(cavc OR cafc OR scotus)"
+
+
+def test_courtlistener_maps_nested_opinion_snippet(monkeypatch):
+    """The opinion text nested under opinions[0].snippet becomes the snippet.
+
+    Without it, CourtListener cases carry empty text and the LLM/holding
+    extraction gets nothing to synthesize (verified live: the field holds up
+    to 500 chars of the opinion's opening). Missing or empty opinions degrade
+    to an empty snippet rather than raising.
+    """
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import _map_courtlistener_opinion
+
+    assert _map_courtlistener_opinion(
+        _cl_result(opinions=[{"snippet": "  We hold that service connection requires a nexus.  "}])
+    )["snippet"] == "We hold that service connection requires a nexus."
+    assert _map_courtlistener_opinion(_cl_result(opinions=[]))["snippet"] == ""
+    assert _map_courtlistener_opinion(_cl_result(opinions=[{"snippet": None}]))["snippet"] == ""
+    assert _map_courtlistener_opinion(_cl_result())["snippet"] == (
+        "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS"
+    )
 
 
 def test_courtlistener_sends_api_key_when_set(monkeypatch):

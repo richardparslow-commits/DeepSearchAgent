@@ -100,10 +100,17 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
             citation = first
         elif isinstance(first, dict):
             citation = str(first.get("cite", ""))
+    # The opinion text lives on the nested opinions[].snippet field (the search
+    # endpoint carries up to 500 characters there); without it the LLM and
+    # holding extraction get empty text. Sane into the standard snippet slot.
+    opinions = item.get("opinions") or []
+    snippet = ""
+    if opinions and isinstance(opinions[0], dict):
+        snippet = str(opinions[0].get("snippet") or "").strip()
     return {
         "title": case_name,
         "url": url,
-        "snippet": "",
+        "snippet": snippet,
         "court": _CL_COURT_NAMES.get(item.get("court_id"), COURT_UNKNOWN),
         "citation": citation,
         "decision_date": item.get("dateFiled") or "",

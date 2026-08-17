@@ -90,6 +90,17 @@ def main() -> None:
     for source in Path("va_legal_agent").glob("*.py"):
         shutil.copy2(source, scratch_pkg / source.name)
 
+    # The scratch dir lives INSIDE the project, so dotenv's find_dotenv walks
+    # up from mutants/va_legal_agent to the real .env, and mutmut's copy step
+    # skips files already present — so a sandbox created before conftest.py
+    # existed never gets it. Without the hermetic-env fixture, the sandbox
+    # inherits the user's real settings (RPM budgets, provider list) and the
+    # baseline test run sleeps/throttles for minutes and fails. Copy it
+    # explicitly every pass.
+    conftest = Path("conftest.py")
+    if conftest.exists():
+        shutil.copy2(conftest, Path("mutants") / "conftest.py")
+
     # Drop the current module's copy and the cached test associations so this
     # pass re-collects stats against the tests as they exist right now.
     stem = Path(module).stem
