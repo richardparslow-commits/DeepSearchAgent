@@ -14,6 +14,10 @@ from va_legal_agent.providers import (
     CourtListenerProvider,
     DuckDuckGoProvider,
     SearchError,
+    USAGE_URL,
+    check_courtlistener_daily_budget,
+    courtlistener_daily_budget,
+    fetch_courtlistener_usage,
     get_provider,
     resolve_search_providers,
     rollup_search_telemetry,
@@ -1303,6 +1307,210 @@ def test_courtlistener_401_with_token_is_generic_error(monkeypatch):
         CourtListenerProvider().search("tinnitus")
 
     assert "COURTLISTENER_API_KEY" not in str(exc.value)
+
+
+def _usage_payload(daily_used=0, daily_limit=125, daily_reset="2026-08-18T05:12:28+00:00"):
+    """A realistic api-usage payload: one row per scope/rate pair."""
+    return {
+        "current_usage": [
+            {
+                "scope": "user",
+                "rate": "125/day",
+                "used": daily_used,
+                "limit": daily_limit,
+                "remaining": max(daily_limit - daily_used, 0),
+                "window_seconds": 86400,
+                "reset_at": daily_reset,
+                "blocked": False,
+            },
+            {
+                "scope": "user",
+                "rate": "5/min",
+                "used": 0,
+                "limit": 5,
+                "remaining": 5,
+                "window_seconds": 60,
+                "reset_at": None,
+                "blocked": False,
+            },
+            {
+                "scope": "user",
+                "rate": "50/hour",
+                "used": 28,
+                "limit": 50,
+                "remaining": 22,
+                "window_seconds": 3600,
+                "reset_at": None,
+                "blocked": False,
+            },
+        ],
+        "historical_usage": {"2026-08-17": 75, "total": 123},
+        "membership": None,
+    }
+
+
+def test_fetch_courtlistener_usage_returns_payload(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    seen: list[str] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        seen.append(url)
+        return FakeResponse(_usage_payload())
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    payload = fetch_courtlistener_usage()
+
+    assert payload["membership"] is None
+    assert len(payload["current_usage"]) == 3
+    # The usage endpoint URL is the one queried (never a None/different host).
+    assert seen == [USAGE_URL]
+
+
+def test_fetch_courtlistener_usage_without_token_gets_actionable_hint(monkeypatch):
+    monkeypatch.delenv("COURTLISTENER_API_KEY", raising=False)
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        raise requests.HTTPError("401 Unauthorized", response=FakeResponse({}, status_code=401))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError) as exc:
+        fetch_courtlistener_usage()
+    # The actionable no-token hint is re-raised verbatim, not wrapped by the
+    # usage wrapper (the wrapper must not obscure the "set the key" message).
+    assert "COURTLISTENER_API_KEY" in str(exc.value)
+    assert "Could not check CourtListener API usage" not in str(exc.value)
+
+
+def test_fetch_courtlistener_usage_wraps_other_failures(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        raise requests.HTTPError("500", response=FakeResponse({}, status_code=500))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="Could not check CourtListener API usage"):
+        fetch_courtlistener_usage()
+
+
+def test_courtlistener_daily_budget_picks_user_day_row():
+    budget = courtlistener_daily_budget(_usage_payload(daily_used=63))
+
+    assert budget["used"] == 63
+    assert budget["limit"] == 125
+    assert budget["remaining"] == 62
+    assert budget["reset_at"] == "2026-08-18T05:12:28+00:00"
+
+
+def test_courtlistener_daily_budget_skips_non_user_and_non_dict_rows():
+    # The payload can mix non-dict entries (defensive skip) and other scopes
+    # (e.g. the citation-lookup or api-usage rows); only the user /day row
+    # counts as the daily budget.
+    payload = {
+        "current_usage": [
+            "not-a-dict",
+            {"scope": "citations", "rate": "60/min", "used": 12, "limit": 60},
+            {"scope": "user", "rate": "5/min", "used": 2, "limit": 5},
+            {"scope": "user", "rate": "125/day", "used": 63, "limit": 125,
+             "remaining": 62, "reset_at": "2026-08-18T05:12:28+00:00"},
+        ]
+    }
+
+    budget = courtlistener_daily_budget(payload)
+
+    assert budget["used"] == 63
+    assert budget["remaining"] == 62
+
+
+def test_courtlistener_daily_budget_missing_rows_raises():
+    with pytest.raises(SearchError) as exc:
+        courtlistener_daily_budget({"current_usage": []})
+    assert str(exc.value) == (
+        "Could not find the CourtListener daily request budget in the api-usage response."
+    )
+    with pytest.raises(SearchError) as exc:
+        courtlistener_daily_budget({})
+    assert str(exc.value) == "CourtListener api-usage response had no current_usage list."
+
+
+def test_courtlistener_daily_budget_missing_keys_default_to_zero():
+    # A day row that omits the counters degrades to 0/0/0 rather than to a
+    # wrong non-zero figure (a `1` fallback would overstate usage/limits and
+    # abort a healthy run, or understate remaining headroom).
+    payload = {
+        "current_usage": [
+            {"scope": "user", "rate": "125/day", "reset_at": "2026-08-18T05:12:28+00:00"}
+        ]
+    }
+
+    budget = courtlistener_daily_budget(payload)
+
+    assert budget == {
+        "used": 0,
+        "limit": 0,
+        "remaining": 0,
+        "reset_at": "2026-08-18T05:12:28+00:00",
+    }
+
+
+def test_check_courtlistener_daily_budget_aborts_when_exhausted(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=125),  # 0 remaining
+    )
+
+    with pytest.raises(SearchError) as exc:
+        check_courtlistener_daily_budget(8)
+
+    message = str(exc.value)
+    assert "0 remaining" in message
+    assert "need 8" in message
+    assert "used 125/125" in message
+    assert "2026-08-18T05:12:28+00:00" in message
+    # Exact tails (not substrings) so message-wrapping/uppercasing mutants die.
+    assert message.endswith("COURTLISTENER_USAGE_GUARD=0.")
+    assert "today, or disable this guard" in message
+
+
+def test_check_courtlistener_daily_budget_abort_reports_unknown_reset(monkeypatch):
+    # When the API omits reset_at, the message says so instead of a bare None.
+    payload = _usage_payload(daily_used=125, daily_reset=None)
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage", lambda: payload
+    )
+
+    with pytest.raises(SearchError) as exc:
+        check_courtlistener_daily_budget(1)
+
+    # The exact phrase (not just "unknown time") so XX-wrapping or
+    # uppercasing the fallback dies.
+    assert "resets at unknown time." in str(exc.value)
+
+
+def test_check_courtlistener_daily_budget_passes_with_headroom(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=50),  # 75 remaining
+    )
+
+    budget = check_courtlistener_daily_budget(8)
+
+    assert budget["remaining"] == 75
+
+
+def test_check_courtlistener_daily_budget_boundary_remaining_equals_need(monkeypatch):
+    # remaining == need is enough (the guard is about covering the run, not
+    # leaving spare quota); a would-be off-by-one abort is pinned here.
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=117),  # 8 remaining
+    )
+
+    budget = check_courtlistener_daily_budget(8)
+
+    assert budget["remaining"] == 8
 
 
 def test_parse_retry_after_forms():

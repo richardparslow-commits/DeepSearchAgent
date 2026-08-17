@@ -148,6 +148,12 @@ class Settings:
     # SEARCH_MIN_INTERVAL_SECONDS. Providers not listed have no budget.
     search_max_rpm_by_provider: dict[str, int] = field(default_factory=dict)
     courtlistener_api_key: str | None = None
+    # Pre-flight check against CourtListener's /api/rest/v4/api-usage/ before a
+    # run: when the free-tier daily budget (125 requests) can't cover the
+    # estimated per-issue request cost, abort with the window reset time
+    # instead of grinding through 429s. The api-usage endpoint has its own
+    # throttle, so the check itself doesn't burn the search budget.
+    courtlistener_usage_guard: bool = True
 
     # Multi-hop citation traversal over CourtListener's citation graph.
     # Off by default: it makes extra authenticated API calls per run, so
@@ -233,6 +239,9 @@ class Settings:
                 os.getenv("SEARCH_MAX_RPM_BY_PROVIDER", ""), min_value=0
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,
+            courtlistener_usage_guard=env_bool(
+                "COURTLISTENER_USAGE_GUARD", d.courtlistener_usage_guard
+            ),
             citation_traversal=env_bool("CITATION_TRAVERSAL", d.citation_traversal),
             citation_traverse_limit=env_int(
                 "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit

@@ -896,6 +896,158 @@ def test_fetch_cases_defaults_claim_type_and_max_results(monkeypatch):
     assert all(c[1] == 10 for c in calls)
 
 
+def test_fetch_cases_usage_guard_aborts_when_budget_exhausted(monkeypatch, caplog):
+    """A failed pre-flight abort prevents any search from starting."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    searched: list[str] = []
+    original_error = (
+        "CourtListener daily request budget too low: 0 remaining, need 8 "
+        "for this run (used 125/125). Daily window resets at "
+        "2026-08-18T05:12:28+00:00."
+    )
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        searched.append(query)
+        return []
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: (_ for _ in ()).throw(SearchError(original_error)),
+    )
+
+    with pytest.raises(SearchError, match="resets at 2026-08-18T05:12:28"):
+        fetch_cases_for_issue("tinnitus")
+
+    assert searched == []  # the guard fired before the first query
+    # The abort warning is logged verbatim (not None'd, wrapped, or lowered).
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any(
+        "CourtListener usage guard aborted run: " + original_error == r.message
+        for r in warnings
+    )
+
+
+def test_fetch_cases_usage_guard_floor_when_variants_disabled(monkeypatch, caplog):
+    """Variants=0 and the default 1 page still cost queries x 1 x 1."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "1")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")
+
+    expected = len(build_case_queries("tinnitus", "Compensation"))
+    assert demands == [expected]  # max(variants, 1) and max(pages, 1) floors apply
+    assert len(calls) == expected
+
+
+def test_fetch_cases_usage_guard_passes_settings_value_to_resolver(monkeypatch):
+    """The resolver is given the raw SEARCH_PROVIDERS string, not None."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    seen: list[object] = []
+
+    def recording_resolver(raw):
+        seen.append(raw)
+        return ["courtlistener"]
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.resolve_search_providers", recording_resolver
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
+    )
+    _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")
+
+    assert seen == ["courtlistener"]
+
+
+def test_fetch_cases_usage_guard_estimates_run_cost(monkeypatch, caplog):
+    """The guard asks for queries x variants x pages of daily headroom."""
+    caplog.set_level("INFO")
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    # Provider override beats the global variant count, including a global 0.
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "courtlistener=4")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "1")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY_BY_PROVIDER", "courtlistener=3")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")
+
+    expected = len(build_case_queries("tinnitus", "Compensation")) * 4 * 3
+    assert demands == [expected]
+    # The run proceeded normally after the guard passed.
+    assert len(calls) == expected // (4 * 3)
+    # The success log carries the exact numbers (kills arg/message mutants).
+    infos = [r for r in caplog.records if r.levelname == "INFO"]
+    assert any(
+        f"CourtListener daily budget OK for run (need {expected}, 125 remaining)."
+        == r.message
+        for r in infos
+    )
+
+
+def test_fetch_cases_usage_guard_skipped_without_courtlistener(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,bva")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")
+
+    assert demands == []  # no CourtListener -> no pre-flight check
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
+
+
+def test_fetch_cases_usage_guard_skipped_when_disabled(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")
+
+    assert demands == []  # COURTLISTENER_USAGE_GUARD=0 opts out
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
+
+
 def test_fetch_cases_budget_skips_stagger_when_none_remains(monkeypatch):
     """When the stagger would start at exactly the deadline, no sleep happens."""
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "4")

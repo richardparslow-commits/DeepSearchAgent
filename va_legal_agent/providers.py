@@ -376,6 +376,84 @@ class CourtListenerProvider:
         return self._related_opinions(opinion_id, "citing", max_results)
 
 
+USAGE_URL = "https://www.courtlistener.com/api/rest/v4/api-usage/"
+
+
+def fetch_courtlistener_usage() -> dict[str, object]:
+    """Query CourtListener's API-usage endpoint and return its payload.
+
+    The endpoint reports live used/remaining for every rate window (minute,
+    hour, day) and has its *own* throttle (10/min, 120/hour), so calling it
+    does not consume the search budget — which is exactly why it can be used
+    to pace a run before hitting the wall. It requires authentication
+    (``COURTLISTENER_API_KEY``); anonymous requests get a 401 and raise the
+    same actionable hint as the search endpoint.
+    """
+    provider = CourtListenerProvider()
+    try:
+        return provider._get_json(USAGE_URL)
+    except SearchError as exc:
+        if "COURTLISTENER_API_KEY" in str(exc):
+            raise  # already the actionable no-token hint
+        raise SearchError(
+            f"Could not check CourtListener API usage: {exc}"
+        ) from exc
+
+
+_DAILY_RATE_PATTERN = re.compile(r"^\d+/day$")
+
+
+def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
+    """Extract the user-scope daily-window row from an api-usage payload.
+
+    The response lists one row per scope/rate pair (e.g. ``5/min``,
+    ``50/hour``, ``125/day``); the daily row is the user-scope entry whose
+    rate ends in ``/day``, regardless of the exact limit (membership accounts
+    have higher limits). A missing day row means the payload shape changed,
+    which should raise rather than silently pass a wrong budget.
+    """
+    rows = usage.get("current_usage")
+    if not isinstance(rows, list):
+        raise SearchError("CourtListener api-usage response had no current_usage list.")
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("scope") != "user":
+            continue
+        rate = str(row.get("rate", ""))
+        if _DAILY_RATE_PATTERN.match(rate):
+            return {
+                "used": int(row.get("used", 0) or 0),
+                "limit": int(row.get("limit", 0) or 0),
+                "remaining": int(row.get("remaining", 0) or 0),
+                "reset_at": row.get("reset_at"),
+            }
+    raise SearchError(
+        "Could not find the CourtListener daily request budget in the api-usage response."
+    )
+
+
+def check_courtlistener_daily_budget(min_remaining: int) -> dict[str, object]:
+    """Abort when CourtListener's daily budget can't cover the planned run.
+
+    Fetches live usage, then raises :class:`SearchError` — with the numbers
+    and the window reset time — when fewer than *min_remaining* daily requests
+    remain. Returns the budget dict (``used``/``limit``/``remaining``/
+    ``reset_at``) when there is enough headroom, so callers can surface it.
+    """
+    budget = courtlistener_daily_budget(fetch_courtlistener_usage())
+    remaining = int(budget["remaining"])
+    if remaining < min_remaining:
+        reset = budget.get("reset_at") or "unknown time"
+        raise SearchError(
+            f"CourtListener daily request budget too low: {remaining} remaining, "
+            f"need {min_remaining} for this run (used {budget['used']}/{budget['limit']}). "
+            f"Daily window resets at {reset}. Wait for the reset, run fewer issues "
+            "today, or disable this guard with COURTLISTENER_USAGE_GUARD=0."
+        )
+    return budget
+
+
 def traverse_citations(urls: list[str], max_results: int = 10) -> list[dict[str, str]]:
     """Follow one hop of the CourtListener citation graph from *urls*.
 

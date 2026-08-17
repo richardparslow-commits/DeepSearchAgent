@@ -30,6 +30,7 @@ _CONFIG_ENV_VARS = (
     "SEARCH_MAX_RPM_BY_PROVIDER",
     "SEARCH_MAX_RESULTS",
     "COURTLISTENER_API_KEY",
+    "COURTLISTENER_USAGE_GUARD",
     "CITATION_TRAVERSAL",
     "CITATION_TRAVERSE_LIMIT",
     "ENRICH_CASE_LIMIT",
@@ -56,3 +57,16 @@ def _hermetic_env(monkeypatch):
     """Start every test from a clean environment (no .env leakage)."""
     for var in _CONFIG_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
+    # The CourtListener usage guard queries the live api-usage endpoint from
+    # fetch_cases_for_issue; stub it to a full budget so the suite never makes
+    # that network call. Tests exercising the guard re-patch this name in
+    # their own body, which replaces the stub.
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {
+            "used": 0,
+            "limit": 125,
+            "remaining": 125,
+            "reset_at": None,
+        },
+    )

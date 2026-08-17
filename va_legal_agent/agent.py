@@ -13,7 +13,14 @@ from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis, uncovered_element_names
 from .models import CaseRecord, LegalAnalysis
 from .planning import decompose_issue, plan_queries, refine_plan
-from .providers import recall_flags, rollup_search_telemetry, search_all, traverse_citations
+from .providers import (
+    check_courtlistener_daily_budget,
+    recall_flags,
+    resolve_search_providers,
+    rollup_search_telemetry,
+    search_all,
+    traverse_citations,
+)
 from .ranking import rank_cases
 from .reliability import classify_source
 from .search import SearchError
@@ -432,6 +439,48 @@ def research_issue(
     return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read, deep_read_limit)
 
 
+def _check_courtlistener_budget_before_run(queries: list[str]) -> None:
+    """Abort early when CourtListener's daily budget can't cover *queries*.
+
+    The free tier applies three rolling windows concurrently (5/min, 50/hour,
+    125/day) and the daily one is what drains on sustained use, but the
+    per-minute pacing in ``_throttle`` cannot see it. Estimate the nominal
+    request cost of this run (base queries x variants x pages) and require
+    that much headroom, raising :class:`SearchError` with the window reset
+    time otherwise. Uses the api-usage endpoint's own throttle, so the check
+    itself never burns the search budget. Skips when CourtListener is not a
+    configured provider or the guard is disabled.
+    """
+    settings = get_settings()
+    if not settings.courtlistener_usage_guard:
+        return
+    if "courtlistener" not in resolve_search_providers(settings.search_providers):
+        return
+    variants = max(
+        settings.search_query_variants_by_provider.get(
+            "courtlistener", settings.search_query_variants
+        ),
+        1,
+    )
+    pages = max(
+        settings.search_pages_per_query_by_provider.get(
+            "courtlistener", settings.search_pages_per_query
+        ),
+        1,
+    )
+    estimated = len(queries) * variants * pages
+    try:
+        budget = check_courtlistener_daily_budget(estimated)
+    except SearchError as exc:
+        logger.warning("CourtListener usage guard aborted run: %s", exc)
+        raise
+    logger.info(
+        "CourtListener daily budget OK for run (need %d, %d remaining).",
+        estimated,
+        int(budget["remaining"]),
+    )
+
+
 def fetch_cases_for_issue(
     claim_issue: str,
     claim_type: str = "Compensation",
@@ -454,6 +503,7 @@ def fetch_cases_for_issue(
     deadline = _deadline_for(max_wall_seconds)
 
     queries = build_case_queries(claim_issue, claim_type)
+    _check_courtlistener_budget_before_run(queries)
     cases, errors, budget_exhausted = _fanout_search(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
     )

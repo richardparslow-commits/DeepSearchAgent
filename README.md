@@ -229,6 +229,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_QUERY_VARIANTS` | `3` | Additional variant queries derived from topic synonyms and statute hints (`0` disables) |
 | `SEARCH_QUERY_VARIANTS_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=0,courtlistener=5`; unlisted providers fall back to the global (`0` disables expansion for that provider) |
 | `COURTLISTENER_API_KEY` | – | CourtListener API token (free account; now required — v4 returns 401 for anonymous requests) |
+| `COURTLISTENER_USAGE_GUARD` | `1` | Pre-flight check against CourtListener's `api-usage` endpoint before each run; aborts with the daily-window reset time when the remaining budget can't cover the run (`0` disables) |
 | `ENRICH_CASE_LIMIT` | `5` | Top cases enriched with full source-page details |
 | `INTERPRET_CASE_LIMIT` | `3` | Top cases fed into the interpretation narrative / LLM |
 | `PRINCIPLE_SCAN_LIMIT` | `5` | Cases scanned for case-backed principle findings |
@@ -297,6 +298,8 @@ Its v4 API now requires a token. Set `COURTLISTENER_API_KEY` to a free account t
 ### CourtListener keeps returning 429 Too Many Requests
 
 The free tier rate-limits the search endpoint aggressively — bursts of a few requests per minute trigger a `retry-after` window, and sustained probing can raise a multi-minute penalty. Unlike DuckDuckGo, CourtListener did not retry at all in earlier versions; it now backs off on its own, so a 429 does not immediately fail the run.
+
+The free tier applies **three rolling windows concurrently** — 5 requests/minute, 50/hour, and 125/day — and the most restrictive one wins. The per-minute pacing (`SEARCH_MAX_RPM_BY_PROVIDER`) can't see the hourly/daily windows, which is why repeated runs within a day can still 429 even at 5 RPM (one issue run costs 8 base queries). By default the app now runs a **pre-flight check** (`COURTLISTENER_USAGE_GUARD=1`) against `/api/rest/v4/api-usage/` before each run: it estimates the run's request cost (queries × variants × pages) and aborts with the daily-window reset time when the budget can't cover it. The check uses the usage endpoint's own throttle, so it never burns the search budget — call it manually with `curl -H "Authorization: Token $COURTLISTENER_API_KEY" https://www.courtlistener.com/api/rest/v4/api-usage/`.
 
 **The CourtListener retry/backoff chain** (inside every `CourtListenerProvider` HTTP call — search, cursor pagination, and the citation-traversal fetches all share one `_get_json` path):
 
