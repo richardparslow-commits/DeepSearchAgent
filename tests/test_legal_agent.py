@@ -344,6 +344,91 @@ def test_fetch_cases_skips_enrichment_when_disabled(monkeypatch):
     assert cases[0].citation == ""
 
 
+def test_deep_read_triggered_when_enabled(monkeypatch):
+    """DEEP_READ=1 routes the top cases through deep_read_cases in place."""
+    results = [
+        {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"},
+        {"title": "Case B", "url": "https://uscourts.cavc.gov/b", "snippet": "rating evidence"},
+        {"title": "Case C", "url": "https://uscourts.cavc.gov/c", "snippet": "nexus opinion"},
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    seen: dict[str, object] = {}
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen["cases"] = list(cases)
+        seen["issue"] = issue
+        seen["limit"] = limit
+        for case in cases:
+            case.deep_summary = f"Deep summary of {case.title}."
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    cases = fetch_cases_for_issue("service connection", max_results=5)
+
+    assert seen["issue"] == "service connection"
+    assert seen["limit"] == min(3, len(cases))  # DEEP_READ_LIMIT default, capped by case count
+    assert [c.title for c in seen["cases"]] == [c.title for c in cases]
+    assert all(c.deep_summary for c in cases)
+
+
+def test_deep_read_skipped_when_disabled(monkeypatch):
+    """Deep-read is off by default: deep_read_cases is never invoked."""
+    results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
+    _stub_search(monkeypatch, results=results)
+    called: list[object] = []
+
+    def should_not_run(cases, issue, limit=None):
+        called.append((cases, issue, limit))
+        raise AssertionError("deep_read_cases must not run when DEEP_READ is off")
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", should_not_run)
+
+    fetch_cases_for_issue("service connection", max_results=5)
+
+    assert called == []
+
+
+def test_deep_read_limit_respected(monkeypatch):
+    """DEEP_READ_LIMIT caps how many top cases are deep-read."""
+    results = [
+        {"title": f"Case {i}", "url": f"https://uscourts.cavc.gov/{i}", "snippet": "service connection"}
+        for i in range(5)
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "2")
+    seen: dict[str, object] = {}
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen["limit"] = limit
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    fetch_cases_for_issue("service connection", max_results=5)
+
+    assert seen["limit"] == 2
+
+
+def test_research_issue_deep_read_receives_issue(monkeypatch):
+    """The loop forwards the claim issue to the deep-read pass (None mutant)."""
+    results = [
+        {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    issues: list[str] = []
+
+    def recording_deep_read(cases, issue, limit=None):
+        issues.append(issue)
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    research_issue("service connection and rating")
+
+    assert issues == ["service connection and rating"]
+
+
 def test_fetch_cases_staggers_query_submissions(monkeypatch):
     sleeps: list[float] = []
     _stub_search(monkeypatch, results=[])

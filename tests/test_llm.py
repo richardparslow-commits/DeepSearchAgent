@@ -236,6 +236,29 @@ def test_build_reasoning_messages_include_outcome_and_statutes():
     assert "Statutes: 38 U.S.C. 5107" in user_text
 
 
+def test_build_reasoning_messages_prefers_deep_summary():
+    """A deep-read summary replaces the holding/snippet in the reasoning prompt."""
+    case = _case()
+    case.deep_summary = "Deep full-text summary of the decision."
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Holding: Deep full-text summary of the decision." in user_text
+    assert "reasons and bases" not in user_text  # the snippet/holding are shadowed
+
+
+def test_build_reasoning_messages_falls_back_without_deep_summary():
+    """Without a deep summary the holding, then the snippet, is used."""
+    case = _case()
+    case.holding = ""
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Holding: Service connection requires competent evidence." in user_text  # snippet
+
+
 def test_build_reasoning_messages_number_cases_and_budget_words():
     first, second = _case(), _case()
     second.title = "Second v. VA"

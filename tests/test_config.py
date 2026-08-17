@@ -33,6 +33,10 @@ _ENV_VARS = (
     "OPENAI_MAX_TOKENS",
     "LLM_REASONING",
     "LLM_REASONING_LIMIT",
+    "DEEP_READ",
+    "DEEP_READ_LIMIT",
+    "DEEP_READ_PAGES",
+    "DEEP_CHUNK_CHARS",
 )
 
 
@@ -143,6 +147,10 @@ def test_settings_defaults(monkeypatch):
     assert settings.openai_max_tokens == 700
     assert settings.llm_reasoning is True
     assert settings.llm_reasoning_limit == 10
+    assert settings.deep_read is False
+    assert settings.deep_read_limit == 3
+    assert settings.deep_read_pages == 0
+    assert settings.deep_chunk_chars == 6000
 
 
 def test_settings_read_from_env(monkeypatch):
@@ -168,6 +176,10 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("OPENAI_MAX_TOKENS", "300")
     monkeypatch.setenv("LLM_REASONING", "0")
     monkeypatch.setenv("LLM_REASONING_LIMIT", "4")
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "5")
+    monkeypatch.setenv("DEEP_READ_PAGES", "0")
+    monkeypatch.setenv("DEEP_CHUNK_CHARS", "4000")
     monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "7.5")
 
     settings = get_settings()
@@ -195,6 +207,10 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.openai_max_tokens == 300
     assert settings.llm_reasoning is False
     assert settings.llm_reasoning_limit == 4
+    assert settings.deep_read is True
+    assert settings.deep_read_limit == 5
+    assert settings.deep_read_pages == 0
+    assert settings.deep_chunk_chars == 4000
 
 
 def test_env_provider_int_map_skips_malformed_entries(monkeypatch):

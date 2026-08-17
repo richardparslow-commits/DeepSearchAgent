@@ -16,6 +16,7 @@ from va_legal_agent.fetch import (
     extract_outcome,
     extract_statutes,
     fetch_case_details,
+    fetch_full_text,
 )
 
 
@@ -970,3 +971,430 @@ def test_fetch_case_details_rejects_undeclared_oversized_body(monkeypatch):
 
     with pytest.raises(FetchError, match="cap"):
         fetch_case_details("https://uscourts.cavc.gov/huge.pdf")
+
+
+def test_fetch_full_text_from_html_returns_whole_body(monkeypatch):
+    html = (
+        "<html><head><title>Fountain v. McDonald</title></head>"
+        "<body><p>First paragraph of the decision.</p>"
+        "<p>Second paragraph, far beyond the snippet.</p></body></html>"
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text=html, headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/fountain.html")
+
+    assert "First paragraph of the decision." in text
+    assert "Second paragraph, far beyond the snippet." in text
+
+
+def test_fetch_full_text_from_plain_text_returns_verbatim(monkeypatch):
+    bva_text = (
+        "Citation Nr: A25049742\n\nORDER\n\nEntitlement to service connection "
+        "for tinnitus is granted.\n"
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text=bva_text, headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/vetapp25/Files6/A25049742.txt")
+
+    assert text == bva_text
+
+
+def test_fetch_full_text_from_pdf_reads_all_pages(monkeypatch):
+    monkeypatch.setattr(
+        "pypdf.PdfReader",
+        lambda stream: _FakePdfReader([_FakePdfPage("Page one"), _FakePdfPage("Page two")]),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/full.pdf")
+
+    assert text == "Page one Page two"
+
+
+def test_fetch_full_text_pdf_respects_max_pages(monkeypatch):
+    monkeypatch.setattr(
+        "pypdf.PdfReader",
+        lambda stream: _FakePdfReader([_FakePdfPage(str(i)) for i in range(4)]),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/full.pdf", max_pages=2)
+
+    assert text == "0 1"
+
+
+def test_fetch_full_text_raises_on_network_failure(monkeypatch):
+    def failing_get(url, headers=None, timeout=None, stream=None):
+        raise requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr("va_legal_agent.fetch.requests.get", failing_get)
+
+    with pytest.raises(FetchError, match="Failed to fetch"):
+        fetch_full_text("https://uscourts.cavc.gov/unreachable")
+
+
+def test_fetch_full_text_rejects_oversized_body(monkeypatch):
+    monkeypatch.setenv("MAX_FETCH_BYTES", "10")
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"x" * 11,
+            headers={"Content-Type": "text/plain"},
+        ),
+    )
+
+    with pytest.raises(FetchError, match="cap"):
+        fetch_full_text("https://uscourts.cavc.gov/huge.txt")
+
+
+def test_fetch_full_text_requests_exact_args(monkeypatch):
+    """The request carries url, User-Agent, timeout, and stream=True."""
+    seen: dict[str, object] = {}
+
+    def recording_get(url, headers=None, timeout=None, stream=None):
+        seen["url"] = url
+        seen["headers"] = headers
+        seen["timeout"] = timeout
+        seen["stream"] = stream
+        return FakePageResponse(
+            text="<html><body><p>No holding sentence here.</p></body></html>",
+            headers={"Content-Type": "text/html"},
+        )
+
+    monkeypatch.setattr("va_legal_agent.fetch.requests.get", recording_get)
+
+    fetch_full_text("https://uscourts.cavc.gov/exact.html", timeout=42)
+
+    assert seen["url"] == "https://uscourts.cavc.gov/exact.html"
+    assert seen["headers"] == {"User-Agent": get_settings().user_agent}
+    assert seen["timeout"] == 42
+    assert seen["stream"] is True
+
+
+def test_fetch_full_text_timeout_defaults_from_settings(monkeypatch):
+    """Without an explicit timeout, REQUEST_TIMEOUT_SECONDS supplies it."""
+    seen: dict[str, object] = {}
+
+    def recording_get(url, headers=None, timeout=None, stream=None):
+        seen["timeout"] = timeout
+        return FakePageResponse(
+            text="<html><body><p>x</p></body></html>", headers={"Content-Type": "text/html"}
+        )
+
+    monkeypatch.setattr("va_legal_agent.fetch.requests.get", recording_get)
+
+    fetch_full_text("https://uscourts.cavc.gov/default-timeout.html")
+
+    assert seen["timeout"] == 20
+
+
+def test_fetch_full_text_pdf_by_content_type_without_extension(monkeypatch):
+    """PDF content-type alone routes to PDF extraction (or/and + string mutants)."""
+    seen: dict[str, object] = {}
+
+    def recording_reader(stream):
+        seen["stream"] = stream
+        return _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+
+    monkeypatch.setattr("pypdf.PdfReader", recording_reader)
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/no-ext")
+
+    assert text == "Cite as 23 Vet.App. 1"
+    assert seen["stream"].getvalue() == b"pdf-bytes"  # real body passed to the reader
+
+
+def test_fetch_full_text_content_type_key_exact(monkeypatch):
+    """The header is read with the exact 'Content-Type' key (key mutants)."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/key.html")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_without_content_type_header_takes_html_path(monkeypatch):
+    """No Content-Type header: the default must be '' so HTML parsing still runs."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="<html><body><p>First paragraph.</p></body></html>", headers={}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/no-content-type.html")
+
+    assert "First paragraph." in text
+
+
+def test_fetch_full_text_query_string_pdf(monkeypatch):
+    """A query string after the .pdf suffix does not defeat PDF detection."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/case.pdf?download=1")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_lowercases_url_for_pdf_detection(monkeypatch):
+    """A .PDF uppercase extension is detected after lowercasing the URL path."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/case.PDF")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_uses_response_encoding(monkeypatch):
+    """A response's encoding attribute is honored (not always utf-8)."""
+    class Latin1Response(FakePageResponse):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.encoding = "latin-1"
+            self.content = "caf\u00e9 decision text".encode("latin-1")
+
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: Latin1Response(
+            headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/latin1.txt")
+
+    assert "caf\u00e9 decision text" in text  # decoded with the response's encoding
+
+
+def test_fetch_full_text_encoding_falls_back_to_utf8(monkeypatch):
+    """A response without an encoding attribute uses utf-8."""
+    class NoEncodingResponse(FakePageResponse):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            del self.encoding
+
+        def iter_content(self, chunk_size=8192):
+            yield "plain text body".encode("utf-8")
+
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: NoEncodingResponse(
+            headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/no-encoding.txt")
+    assert "plain text body" in text
+
+
+def test_fetch_full_text_decode_replaces_bad_bytes(monkeypatch):
+    class BadBytesResponse(FakePageResponse):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.content = b"plain body \xff\xfe"
+
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: BadBytesResponse(
+            headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/bad-bytes.txt")
+    assert "plain body" in text  # bad bytes replaced, not fatal
+
+
+def test_fetch_full_text_plain_text_without_txt_extension(monkeypatch):
+    """Content-Type text/plain alone takes the text path (or/and mutant)."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="Citation Nr: 2100634", headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/decision/2100634")
+    assert text == "Citation Nr: 2100634"
+
+
+def test_fetch_full_text_plain_text_without_content_type_via_txt_extension(monkeypatch):
+    """A .txt URL takes the text path even without a text/plain content-type."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="Citation Nr: 2100634", headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/decision/2100634.txt")
+    assert text == "Citation Nr: 2100634"
+
+
+def test_fetch_full_text_html_joins_blocks_with_single_space_stripped(monkeypatch):
+    html = "<html><body><p>  First paragraph.  </p><p>Second paragraph.</p></body></html>"
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text=html, headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/joined.html")
+
+    assert "First paragraph." in text
+    assert "Second paragraph." in text
+    assert "  " not in text  # strip=True and single-space separator
+
+
+def test_fetch_full_text_html_multiple_blocks_single_space_separator(monkeypatch):
+    """get_text uses a single space separator (not XX XX or a dropped one)."""
+    html = "<html><body><p>A</p><p>B</p></body></html>"
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text=html, headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/blocks.html")
+    assert text == "A B"
+
+
+def test_fetch_full_text_pdf_detected_by_url_query_string_only(monkeypatch):
+    """A .pdf URL with a query string is PDF even without a PDF content-type."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/case.pdf?download=1")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_pdf_detected_by_url_extension_only(monkeypatch):
+    """A .pdf URL alone is PDF (endswith .pdf, not a decorated variant)."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/case.pdf")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_pdf_detected_by_uppercase_url_extension(monkeypatch):
+    """A .PDF URL is detected after lowercasing (upper() would miss it)."""
+    monkeypatch.setattr(
+        "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
+        ),
+    )
+
+    text = fetch_full_text("https://uscourts.cavc.gov/case.PDF")
+    assert text == "Cite as 23 Vet.App. 1"
+
+
+def test_fetch_full_text_text_plain_path_keeps_raw_tags(monkeypatch):
+    """The text/plain path returns the body verbatim, not HTML-parsed."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
+            headers={"Content-Type": "text/plain"},
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/decision/2100634")
+
+    # The raw text (with the literal <b> tags) is returned, not the parsed
+    # text -- so the or/and, key-case, and content-type-string mutants that
+    # fall through to HTML parsing produce a different result.
+    assert text == "DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634"
+
+
+def test_fetch_full_text_txt_extension_path_keeps_raw_tags(monkeypatch):
+    """A .txt URL takes the text path even with a non-text/plain content-type."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
+            headers={"Content-Type": "text/html"},
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/decision/2100634.txt")
+
+    assert text == "DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634"
+
+
+def test_fetch_full_text_uppercase_txt_extension(monkeypatch):
+    """A .TXT URL is detected after lowercasing (the .TXT mutant would miss it)."""
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.requests.get",
+        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+            text="Citation Nr: 2100634", headers={"Content-Type": "text/html"}
+        ),
+    )
+
+    text = fetch_full_text("https://www.va.gov/decision/2100634.TXT")
+    assert text == "Citation Nr: 2100634"

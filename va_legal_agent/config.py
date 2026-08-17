@@ -169,6 +169,18 @@ class Settings:
     # How many ranked cases the reasoning pass is fed.
     llm_reasoning_limit: int = 10
 
+    # Deep-read mode: ingest full opinion text (instead of snippets) and
+    # summarize it via chunked map-reduce, so the reasoning pass cross-
+    # references holdings across the whole corpus. Off by default because it
+    # fetches the full body of every top case.
+    deep_read: bool = False
+    # How many top cases are deep-read.
+    deep_read_limit: int = 3
+    # PDF page cap for deep-read fetches (0 reads every page).
+    deep_read_pages: int = 0
+    # Approximate character size of each chunk in the map-reduce pass.
+    deep_chunk_chars: int = 6000
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Build settings from the environment, using the field defaults as fallbacks."""
@@ -223,6 +235,10 @@ class Settings:
             openai_max_tokens=env_int("OPENAI_MAX_TOKENS", d.openai_max_tokens),
             llm_reasoning=env_bool("LLM_REASONING", d.llm_reasoning),
             llm_reasoning_limit=env_int("LLM_REASONING_LIMIT", d.llm_reasoning_limit),
+            deep_read=env_bool("DEEP_READ", d.deep_read),
+            deep_read_limit=env_int("DEEP_READ_LIMIT", d.deep_read_limit),
+            deep_read_pages=env_int("DEEP_READ_PAGES", d.deep_read_pages, min_value=0),
+            deep_chunk_chars=env_int("DEEP_CHUNK_CHARS", d.deep_chunk_chars),
         )
 
 

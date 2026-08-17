@@ -15,6 +15,7 @@ class CaseRecord(BaseModel):
     impact: str = ""
     docket: str = ""
     judge: str = ""
+    deep_summary: str = ""
     statutes: list[str] = Field(default_factory=list)
     outcome: str = ""
     authority_rank: int = 0

@@ -195,6 +195,7 @@ Output is deterministic research support derived from public decisions, not lega
 - **Actionable next steps** — derived from the detected elements rather than static boilerplate.
 - **Narrative** (`how_it_affects_va_claims`) — LLM-enhanced when `OPENAI_API_KEY` is set (`interpretation_source: "llm"`), deterministic template otherwise (`"template"`). All output states it is research support, not legal advice.
 - **LLM reasoning pass** — with `OPENAI_API_KEY` set, the agent reconciles holdings across all ranked cases, flags contradictions between decisions (`contradictions` in the JSON/text/CSV output), and cites each claim; the deterministic template remains the always-on fallback.
+- **Deep-read mode** — with `DEEP_READ=1`, the agent ingests the full body of the top cases (every PDF page, the whole HTML page, or the verbatim plain-text decision) instead of the snippet and the first few pages, splits it into chunks, digests each chunk deterministically (holding / outcome / statutes), and synthesizes the digests into one per-case summary (LLM when `OPENAI_API_KEY` is set, a plain join otherwise). The reasoning pass then cross-references these full-text summaries across the whole corpus. Off by default because it fetches the entire body of every top case; a case whose body cannot be fetched keeps its snippet-based path.
 
 ## Configuration
 
@@ -227,6 +228,10 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `OPENAI_BASE_URL` | – | Endpoint override for Azure OpenAI / compatible APIs |
 | `LLM_REASONING` | `1` | Reconcile holdings across all ranked cases via the LLM, flag contradictions, and cite each claim (`0` keeps only the lighter single-call narrative) |
 | `LLM_REASONING_LIMIT` | `10` | Ranked cases fed into the reconciling reasoning pass |
+| `DEEP_READ` | `0` | Deep-read mode: fetch the full opinion text of the top cases and summarize it via chunked map-reduce, so the reasoning pass cross-references holdings across the whole corpus instead of truncated snippets (`1`/`true`/`yes`/`on` enables) |
+| `DEEP_READ_LIMIT` | `3` | Top cases ingested in deep-read mode |
+| `DEEP_READ_PAGES` | `0` | PDF page cap for deep-read fetches (`0` reads every page) |
+| `DEEP_CHUNK_CHARS` | `6000` | Approximate character size of each chunk in the map-reduce pass |
 | `LOG_JSON` | `0` | Emit diagnostic logs as JSON on stderr (`1`/`true`/`yes`/`on`); overridden by `--log-format` |
 | `RUN_ID` | – | Correlation id attached to terminal events; a fresh id is generated per run when unset |
 | `BATCH_STATE_DIR` | temp dir | Directory for per-run_id batch state files used by `--batch-size` |

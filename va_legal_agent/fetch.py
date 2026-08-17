@@ -197,13 +197,15 @@ def extract_holding_sentence(text: str) -> str:
     return ""
 
 
-def _extract_pdf_text(content: bytes) -> str:
+def _extract_pdf_text(content: bytes, max_pages: int = 4) -> str:
+    """Extract text from a PDF, reading up to *max_pages* pages (0 = all)."""
     try:
         from pypdf import PdfReader  # required dependency; lazy import keeps failure local
 
         reader = PdfReader(io.BytesIO(content))
+        pages = reader.pages if not max_pages else reader.pages[:max_pages]
         chunks: list[str] = []
-        for page in reader.pages[:4]:
+        for page in pages:
             try:
                 chunks.append(page.extract_text() or "")
             except Exception:  # noqa: BLE001 - skip unreadable pages
@@ -237,6 +239,38 @@ def _read_response_body(response: "requests.Response", max_bytes: int) -> bytes:
             raise FetchError(f"Response from {response.url} exceeds the {max_bytes}-byte cap.")
         chunks.append(chunk)
     return b"".join(chunks)
+
+
+def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) -> str:
+    """Fetch a case page and return its full readable text (deep-read mode).
+
+    Unlike :func:`fetch_case_details`, which extracts a handful of structured
+    fields and discards the body, this returns the whole opinion text: every
+    PDF page (subject to *max_pages*, 0 = all pages), the full HTML page text,
+    or a plain-text decision verbatim. Raises :class:`FetchError` on network
+    or size-cap failure.
+    """
+    settings = get_settings()
+    timeout = timeout or settings.request_timeout_seconds
+    headers = {"User-Agent": settings.user_agent}
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        response.raise_for_status()
+        content = _read_response_body(response, settings.max_fetch_bytes)
+    except requests.RequestException as exc:
+        raise FetchError(f"Failed to fetch {url}: {exc}") from exc
+
+    content_type = response.headers.get("Content-Type", "")
+    url_path = url.lower().split("?")[0]
+    looks_pdf = "pdf" in content_type.lower() or url_path.endswith(".pdf")
+    if looks_pdf:
+        return _extract_pdf_text(content, max_pages=max_pages)
+    encoding = getattr(response, "encoding", None) or "utf-8"
+    text = content.decode(encoding, errors="replace")
+    if "text/plain" in content_type.lower() or url_path.endswith(".txt"):
+        return text
+    soup = BeautifulSoup(text, "html.parser")
+    return soup.get_text(" ", strip=True)
 
 
 def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | list[str]]:

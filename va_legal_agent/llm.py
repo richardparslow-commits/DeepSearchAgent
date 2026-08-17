@@ -87,7 +87,9 @@ def _build_reasoning_messages(
             + (f" [{case.citation}]" if case.citation else "")
             + (f" -- decided {case.decision_date}" if case.decision_date else "")
             + "\n"
-            + f"   Holding: {case.holding or case.snippet or '(no holding extracted)'}"
+            # Deep-read mode replaces the snippet with a full-text-derived
+            # summary; otherwise fall back to the holding, then the snippet.
+            + f"   Holding: {case.deep_summary or case.holding or case.snippet or '(no holding extracted)'}"
             + (f"\n   Outcome: {case.outcome}" if case.outcome else "")
             + (f"\n   Statutes: {', '.join(case.statutes)}" if case.statutes else "")
         )

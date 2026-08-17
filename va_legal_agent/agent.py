@@ -7,6 +7,7 @@ import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 from .config import get_settings
+from .deep_read import deep_read_cases
 from .fetch import fetch_case_details
 from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis, uncovered_element_names
@@ -297,14 +298,18 @@ def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
 
 
 def _dedupe_rank_and_enrich(
-    cases: list[CaseRecord], max_results: int, enrich: bool
+    cases: list[CaseRecord], max_results: int, enrich: bool, claim_issue: str
 ) -> list[CaseRecord]:
-    """Dedupe, enrich, rank, and attach impact summaries to *cases*."""
+    """Dedupe, enrich, deep-read (opt-in), rank, and attach impact summaries."""
     settings = get_settings()
     deduped = _dedupe(cases)
 
     if enrich:
         enrich_top_cases(deduped, limit=min(settings.enrich_case_limit, max(max_results, 1)))
+    # Deep-read mode fetches the full body of the top cases and summarizes it
+    # so the reasoning pass cross-references holdings across the whole corpus.
+    if settings.deep_read:
+        deep_read_cases(deduped, claim_issue, limit=min(settings.deep_read_limit, len(deduped)))
 
     # Final ordering comes from the ranking layer (authority tiers strictly
     # dominant; within a tier: relevance, recency, and completeness).
@@ -408,7 +413,7 @@ def research_issue(
             found.relevance_score = score_case_relevance(found, claim_issue)
             cases.append(found)
 
-    return _dedupe_rank_and_enrich(cases, max_results, enrich)
+    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue)
 
 
 def fetch_cases_for_issue(
@@ -435,7 +440,7 @@ def fetch_cases_for_issue(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
     )
     _raise_if_no_results(cases, errors, budget_exhausted, claim_issue, max_wall_seconds)
-    return _dedupe_rank_and_enrich(cases, max_results, enrich)
+    return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue)
 
 
 def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[CaseRecord]:
