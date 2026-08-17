@@ -385,6 +385,10 @@ def research_issue(
     cases: list[CaseRecord] = []
 
     initial = [task for task in plan.search_subtasks() if task.query]
+    # Pre-flight the CourtListener daily budget before the first search round
+    # (this is the entry point the CLI and batch runner use, so the guard must
+    # live here, not only in the single-pass fetch_cases_for_issue primitive).
+    _check_courtlistener_budget_before_run([task.query for task in initial])
     done.update(task.id for task in initial)
     round_cases, errors, budget_exhausted = _fanout_search(
         [task.query for task in initial if task.query],
@@ -403,6 +407,9 @@ def research_issue(
         ready = [task for task in plan.search_subtasks() if task.id not in done and task.query]
         if not ready:
             break
+        # Re-check per round: an earlier round may have drained the daily
+        # window, and a gap round would otherwise grind through 429s.
+        _check_courtlistener_budget_before_run([task.query for task in ready])
         logger.info(
             "Research gap detected: uncovered=%s search_flags=%s; refining queries.",
             list(uncovered),
@@ -445,11 +452,13 @@ def _check_courtlistener_budget_before_run(queries: list[str]) -> None:
     The free tier applies three rolling windows concurrently (5/min, 50/hour,
     125/day) and the daily one is what drains on sustained use, but the
     per-minute pacing in ``_throttle`` cannot see it. Estimate the nominal
-    request cost of this run (base queries x variants x pages) and require
-    that much headroom, raising :class:`SearchError` with the window reset
-    time otherwise. Uses the api-usage endpoint's own throttle, so the check
+    request cost of the round (queries x variants x pages) and require that
+    much headroom, raising :class:`SearchError` with the window reset time
+    otherwise. Uses the api-usage endpoint's own throttle, so the check
     itself never burns the search budget. Skips when CourtListener is not a
-    configured provider or the guard is disabled.
+    configured provider or the guard is disabled. Called from both
+    :func:`research_issue` (per round, the CLI/batch path) and
+    :func:`fetch_cases_for_issue` (the single-pass primitive).
     """
     settings = get_settings()
     if not settings.courtlistener_usage_guard:

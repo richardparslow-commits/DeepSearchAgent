@@ -454,6 +454,64 @@ def test_deep_read_limit_respected(monkeypatch):
     assert seen["limit"] == 2
 
 
+def test_research_issue_usage_guard_aborts_before_search(monkeypatch):
+    """The CLI/batch entry pre-flights the budget before the first round."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    searched: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        searched.append(query)
+        return []
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: (_ for _ in ()).throw(
+            SearchError(
+                "CourtListener daily request budget too low: 0 remaining, need 8 "
+                "for this run (used 125/125). Daily window resets at "
+                "2026-08-18T05:12:28+00:00."
+            )
+        ),
+    )
+    _stub_search(monkeypatch, results=[])
+
+    with pytest.raises(SearchError, match="resets at 2026-08-18T05:12:28"):
+        research_issue("tinnitus")
+
+    assert searched == []  # round 1 never started
+
+
+def test_research_issue_usage_guard_rechecks_gap_rounds(monkeypatch):
+    """With headroom, the loop proceeds and re-checks the budget per gap round."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    states = iter([({"rating"}, []), (set(), [])])  # one uncovered gap, then done
+    monkeypatch.setattr(
+        "va_legal_agent.agent._observe",
+        lambda issue, cases, telemetry: next(states),
+    )
+    _stub_search(
+        monkeypatch,
+        results=[{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}],
+    )
+
+    research_issue("service connection and rating", max_wall_seconds=1.0)
+
+    # Round 1 and the gap round were each pre-flighted with a real query list
+    # (a None argument would crash the estimate, killing the mutant).
+    assert len(demands) == 2
+    assert demands[0] > 0 and demands[1] > 0
+
+
 def test_research_issue_deep_read_receives_issue(monkeypatch):
     """The loop forwards the claim issue to the deep-read pass (None mutant)."""
     results = [
