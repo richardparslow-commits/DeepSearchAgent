@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 
-def _reverify_segfault(name: str, tests: list[str], target: str) -> bool:
+def _reverify_segfault(name: str, tests: list[str], target: str) -> str:
     """Recover the true verdict for a mutant mutmut reported as ``segfault``.
 
     ``segfault`` (SIGSEGV) means mutmut's worker process crashed while running
@@ -30,7 +30,9 @@ def _reverify_segfault(name: str, tests: list[str], target: str) -> bool:
     crashes regardless of the mutation, so a segfault masks an equivalent
     survivor and a cleanly killable mutant alike. Apply the mutation to the
     real source, run the test slice directly (outside the worker), restore the
-    file, and return True only when the tests still pass.
+    file, and return ``killed`` when the tests fail, ``survived`` when they
+    still pass, or ``timeout`` when the direct run hangs -- a hang is a real
+    defect and must surface as a timeout so the gate cannot absorb it.
     """
     original = Path(target).read_bytes()
     try:
@@ -42,7 +44,7 @@ def _reverify_segfault(name: str, tests: list[str], target: str) -> bool:
             # The mutation could not be reproduced for re-verification. Keep it
             # flagged as untriaged rather than silently dropping an unknown
             # outcome.
-            return True
+            return "survived"
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "pytest", "-q", *tests],
@@ -50,9 +52,10 @@ def _reverify_segfault(name: str, tests: list[str], target: str) -> bool:
                 timeout=180,
             )
         except subprocess.TimeoutExpired:
-            # The direct run hangs, so the mutant is genuinely untriaged.
-            return True
-        return proc.returncode == 0
+            # The direct run hangs, so the mutant is genuinely untriaged -- and
+            # the hang itself is a test-suite defect worth failing the gate on.
+            return "timeout"
+        return "killed" if proc.returncode != 0 else "survived"
     finally:
         Path(target).write_bytes(original)
 
@@ -136,6 +139,10 @@ def main() -> None:
     # ``segfault`` (SIGSEGV) is re-verified by running the mutant's tests
     # directly, because the macOS worker crash masks the true killed/survived
     # verdict (see :func:`_reverify_segfault`).
+    #
+    # Timeouts are recorded in the survivor header separately from genuine
+    # survivors: a hang is never a triaged equivalent, so the baseline gate
+    # fails on any timeout even when a module sits below its count baseline.
     survivors: list[tuple[str, str]] = []
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -147,14 +154,17 @@ def main() -> None:
         elif status == "timeout":
             survivors.append((name, status))
         elif status == "segfault":
-            if _reverify_segfault(name, tests, target):
-                survivors.append((name, status))
+            verdict = _reverify_segfault(name, tests, target)
+            if verdict != "killed":
+                survivors.append((name, verdict))
         elif status == "suspicious":
             if sys.platform == "darwin" and exit_codes.get(name) == -6:
                 continue
             survivors.append((name, status))
+    timeout_count = sum(1 for _, status in survivors if status == "timeout")
+    suffix = f" ({timeout_count} timeout)" if timeout_count else ""
     with open(f"/tmp/mutmut_survivors_{module}.txt", "w") as f:
-        f.write(f"### {module}: {len(survivors)} survivors\n\n")
+        f.write(f"### {module}: {len(survivors)} survivors{suffix}\n\n")
         for name, _status in survivors:
             show = subprocess.run(
                 [sys.executable, "-m", "mutmut", "show", name],
@@ -163,7 +173,11 @@ def main() -> None:
             )
             f.write(show.stdout or show.stderr)
             f.write("\n" + "=" * 60 + "\n\n")
-    print(f"{module}: {len(survivors)} survivors -> /tmp/mutmut_survivors_{module}.txt")
+    print(
+        f"{module}: {len(survivors)} survivors"
+        + (f" ({timeout_count} timeout)" if timeout_count else "")
+        + f" -> /tmp/mutmut_survivors_{module}.txt"
+    )
     # Echo the survivor names, their mutmut verdict, and how many tests are
     # associated with their function to stdout so a CI failure is actionable
     # without shelling into the runner: /tmp files do not survive the job, but
