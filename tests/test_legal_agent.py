@@ -504,12 +504,18 @@ def test_research_issue_usage_guard_rechecks_gap_rounds(monkeypatch):
         results=[{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}],
     )
 
-    research_issue("service connection and rating", max_wall_seconds=1.0)
+    telemetry: list[dict[str, object]] = []
+    research_issue("service connection and rating", max_wall_seconds=1.0, telemetry=telemetry)
 
     # Round 1 and the gap round were each pre-flighted with a real query list
     # (a None argument would crash the estimate, killing the mutant).
     assert len(demands) == 2
     assert demands[0] > 0 and demands[1] > 0
+    # Each passing check records a quota snapshot for the run output.
+    assert [record.get("courtlistener_quota") for record in telemetry] == [
+        {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
+        {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
+    ]
 
 
 def test_research_issue_deep_read_receives_issue(monkeypatch):
@@ -1067,6 +1073,24 @@ def test_fetch_cases_usage_guard_estimates_run_cost(monkeypatch, caplog):
     )
 
 
+def test_fetch_cases_usage_guard_records_quota_snapshot(monkeypatch):
+    """A passing pre-flight records the live daily-window snapshot in telemetry."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    budget = {
+        "used": 8, "limit": 125, "remaining": 117, "reset_at": "2026-08-18T05:12:28+00:00"
+    }
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: dict(budget),
+    )
+    _stub_search_recording(monkeypatch, results=[])
+
+    telemetry: list[dict[str, object]] = []
+    fetch_cases_for_issue("tinnitus", telemetry=telemetry)
+
+    assert telemetry == [{"courtlistener_quota": budget}]
+
+
 def test_fetch_cases_usage_guard_skipped_without_courtlistener(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,bva")
     demands: list[int] = []
@@ -1080,9 +1104,11 @@ def test_fetch_cases_usage_guard_skipped_without_courtlistener(monkeypatch):
     )
     calls = _stub_search_recording(monkeypatch, results=[])
 
-    fetch_cases_for_issue("tinnitus")
+    telemetry: list[dict[str, object]] = []
+    fetch_cases_for_issue("tinnitus", telemetry=telemetry)
 
     assert demands == []  # no CourtListener -> no pre-flight check
+    assert telemetry == []  # ...and therefore no quota snapshot either
     assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
 
 
@@ -1100,9 +1126,11 @@ def test_fetch_cases_usage_guard_skipped_when_disabled(monkeypatch):
     )
     calls = _stub_search_recording(monkeypatch, results=[])
 
-    fetch_cases_for_issue("tinnitus")
+    telemetry: list[dict[str, object]] = []
+    fetch_cases_for_issue("tinnitus", telemetry=telemetry)
 
     assert demands == []  # COURTLISTENER_USAGE_GUARD=0 opts out
+    assert telemetry == []  # ...so no quota snapshot is recorded either
     assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
 
 
@@ -2219,6 +2247,73 @@ def test_analyze_cases_carries_search_telemetry_and_flags(monkeypatch):
     assert analysis.search_telemetry  # rolled from the pipeline telemetry
     assert analysis.search_telemetry["duckduckgo"]["failures"] > 0
     assert analysis.search_flags  # the failure surfaces as a low-recall flag
+
+
+def test_analyze_cases_surfaces_last_courtlistener_quota(monkeypatch):
+    """The output carries the freshest usage-guard snapshot of the daily window."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    budgets = iter(
+        [
+            {"used": 8, "limit": 125, "remaining": 117, "reset_at": "2026-08-18T05:12:28+00:00"},
+            {"used": 16, "limit": 125, "remaining": 109, "reset_at": "2026-08-18T05:12:28+00:00"},
+        ]
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: next(budgets),
+    )
+    states = iter([({"rating"}, []), (set(), [])])  # force exactly one gap round
+    monkeypatch.setattr(
+        "va_legal_agent.agent._observe",
+        lambda issue, cases, telemetry: next(states),
+    )
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        if telemetry is not None:
+            telemetry.append(
+                {
+                    "provider": "courtlistener",
+                    "queries_issued": 1,
+                    "results": 1,
+                    "deduped": 0,
+                    "failures": 0,
+                }
+            )
+        return [
+            {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+
+    analysis = analyze_cases_for_claim("service connection and rating", max_wall_seconds=1.0)
+
+    # Two pre-flight checks ran (round 1 + gap round); the last snapshot wins,
+    # and the provider telemetry records in between do not disturb it.
+    assert analysis.courtlistener_quota == {
+        "used": 16,
+        "limit": 125,
+        "remaining": 109,
+        "reset_at": "2026-08-18T05:12:28+00:00",
+    }
+    assert analysis.search_telemetry["courtlistener"]["queries_issued"] > 0
+
+
+def test_analyze_cases_quota_none_without_courtlistener(monkeypatch):
+    """No quota snapshot when CourtListener is not a configured provider."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    _stub_search(
+        monkeypatch,
+        results=[
+            {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}
+        ],
+    )
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert analysis.courtlistener_quota is None
 
 
 def test_agent_main_guard_prints_analysis(monkeypatch, capsys):

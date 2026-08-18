@@ -763,6 +763,53 @@ def test_cli_completion_event_in_text_log(capsys, monkeypatch):
     assert "analysis complete" not in captured.out
 
 
+def test_cli_completion_event_includes_courtlistener_quota(capsys, monkeypatch):
+    quota = {
+        "used": 8, "limit": 125, "remaining": 117, "reset_at": "2026-08-18T05:12:28+00:00"
+    }
+
+    def _analyze(issue, **kwargs):
+        analysis = _sample_analysis()
+        analysis.courtlistener_quota = quota
+        return analysis
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", _analyze)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "tinnitus", "--log-format", "json"],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    json.loads(captured.out)  # stdout stays clean JSON
+    events = [json.loads(line) for line in captured.err.splitlines() if line.strip()]
+    completion = [e for e in events if e.get("event") == "analysis_complete"]
+    assert len(completion) == 1
+    assert completion[0]["courtlistener_quota"] == quota
+    assert (
+        "courtlistener=117/125 remaining, resets 2026-08-18T05:12:28+00:00"
+        in completion[0]["message"]
+    )
+
+
+def test_cli_completion_event_quota_without_reset_time(capsys, monkeypatch):
+    def _analyze(issue, **kwargs):
+        analysis = _sample_analysis()
+        analysis.courtlistener_quota = {
+            "used": 8, "limit": 125, "remaining": 117, "reset_at": None
+        }
+        return analysis
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", _analyze)
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "tinnitus"])  # text log format
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "courtlistener=117/125 remaining, resets unknown" in captured.err
+
+
 def test_cli_failure_event_in_json_log(capsys, monkeypatch):
     monkeypatch.setattr(
         "sys.argv",
@@ -1131,6 +1178,51 @@ def test_render_analysis_csv_telemetry_column():
     data = dict(zip(header, row))
 
     assert json.loads(data["search_telemetry"])["duckduckgo"]["queries_issued"] == 8
+
+
+def test_render_analysis_json_courtlistener_quota():
+    analysis = _sample_analysis()
+    assert analysis.courtlistener_quota is None  # absent unless the guard recorded one
+
+    analysis.courtlistener_quota = {
+        "used": 8, "limit": 125, "remaining": 117, "reset_at": "2026-08-18T05:12:28+00:00"
+    }
+
+    data = json.loads(render_analysis(analysis, "json"))
+
+    assert data["courtlistener_quota"] == analysis.courtlistener_quota
+
+
+def test_render_analysis_text_courtlistener_quota():
+    analysis = _sample_analysis()
+    assert "CourtListener daily quota" not in render_analysis(analysis, "text")
+
+    analysis.courtlistener_quota = {
+        "used": 8, "limit": 125, "remaining": 117, "reset_at": "2026-08-18T05:12:28+00:00"
+    }
+    text = render_analysis(analysis, "text")
+    assert (
+        "CourtListener daily quota: 117/125 remaining (used 8; resets 2026-08-18T05:12:28+00:00)."
+        in text
+    )
+
+    # A missing reset time renders as "unknown" instead of crashing the report.
+    analysis.courtlistener_quota = {"used": 8, "limit": 125, "remaining": 117, "reset_at": None}
+    assert "resets unknown" in render_analysis(analysis, "text")
+
+
+def test_render_analysis_csv_courtlistener_quota_column():
+    analysis = _sample_analysis()
+    analysis.courtlistener_quota = {"used": 8, "limit": 125, "remaining": 117, "reset_at": None}
+
+    csv_text = render_analysis(analysis, "csv")
+    rows = list(csv.reader(io.StringIO(csv_text)))
+    data = dict(zip(rows[0], rows[1]))
+
+    assert json.loads(data["courtlistener_quota"]) == analysis.courtlistener_quota
+    # An absent quota renders as JSON null in the column.
+    rows = list(csv.reader(io.StringIO(render_analysis(_sample_analysis(), "csv"))))
+    assert dict(zip(rows[0], rows[1]))["courtlistener_quota"] == "null"
 
 
 def test_cli_without_batch_size_does_not_emit_batch_summary(capsys, tmp_path, monkeypatch):

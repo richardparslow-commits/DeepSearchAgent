@@ -58,6 +58,7 @@ class _JsonFormatter(logging.Formatter):
             "run_id",
             "coverage_score",
             "interpretation_source",
+            "courtlistener_quota",
             "issue",
             "error",
         ):
@@ -94,20 +95,27 @@ def _emit_completion_event(analysis: LegalAnalysis, run_id: str) -> None:
     INFO regardless of the configured ``--log-level``, and carries
     ``coverage_score`` / ``interpretation_source`` as structured fields so
     JSON log consumers can parse them without touching the analysis output.
-    ``run_id`` correlates this event with the run that produced it.
+    ``run_id`` correlates this event with the run that produced it. When the
+    run pre-flighted CourtListener's daily window, the remaining quota and
+    its reset time ride along so schedulers can pace the next batch without
+    a separate api-usage call.
     """
-    _EVENTS_LOGGER.info(
-        "analysis complete (run=%s, coverage=%.2f, source=%s)",
-        run_id,
-        analysis.coverage_score,
-        analysis.interpretation_source,
-        extra={
-            "event": "analysis_complete",
-            "run_id": run_id,
-            "coverage_score": analysis.coverage_score,
-            "interpretation_source": analysis.interpretation_source,
-        },
-    )
+    quota = analysis.courtlistener_quota
+    message = "analysis complete (run=%s, coverage=%.2f, source=%s)"
+    args: list[object] = [run_id, analysis.coverage_score, analysis.interpretation_source]
+    extra: dict[str, object] = {
+        "event": "analysis_complete",
+        "run_id": run_id,
+        "coverage_score": analysis.coverage_score,
+        "interpretation_source": analysis.interpretation_source,
+    }
+    if quota:
+        message += ", courtlistener=%s/%s remaining, resets %s"
+        args.extend(
+            [quota.get("remaining"), quota.get("limit"), quota.get("reset_at") or "unknown"]
+        )
+        extra["courtlistener_quota"] = quota
+    _EVENTS_LOGGER.info(message, *args, extra=extra)
 
 
 def _emit_failure_event(issue: str, error: BaseException, run_id: str) -> None:
@@ -212,6 +220,15 @@ def _deep_summary_blocks(summaries: list[dict[str, str]]) -> list[str]:
     return blocks
 
 
+def _quota_line(quota: dict[str, object]) -> str:
+    """Render the CourtListener daily-window snapshot as one readable line."""
+    reset = quota.get("reset_at") or "unknown"
+    return (
+        f"CourtListener daily quota: {quota.get('remaining', 0)}/{quota.get('limit', 0)} "
+        f"remaining (used {quota.get('used', 0)}; resets {reset})."
+    )
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
@@ -230,6 +247,7 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         [f"Coverage score: {analysis.coverage_score:.2f}"],
         [f"Interpretation source: {analysis.interpretation_source}"],
         _bullets("Search telemetry", _telemetry_lines(analysis.search_telemetry)),
+        [_quota_line(analysis.courtlistener_quota)] if analysis.courtlistener_quota else [],
     ]
     return "\n\n".join("\n".join(block) for block in blocks)
 
@@ -298,6 +316,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
         "gaps", "detected_elements", "principle_findings", "search_telemetry",
+        "courtlistener_quota",
     ]
     row = [
         analysis.run_id,
@@ -316,6 +335,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         " | ".join(_element_label(e) for e in analysis.detected_elements),
         " | ".join(_finding_label(f) for f in analysis.principle_findings),
         json.dumps(analysis.search_telemetry, sort_keys=True),
+        json.dumps(analysis.courtlistener_quota, sort_keys=True),
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")

@@ -77,6 +77,12 @@ class LegalAnalysis(BaseModel):
     interpretation_source: str = "template"
     search_telemetry: dict[str, dict[str, object]] = Field(default_factory=dict)
     search_flags: list[str] = Field(default_factory=list)
+    # Snapshot of CourtListener's daily request window recorded by the usage
+    # guard's final pre-flight check (``used``/``limit``/``remaining``/
+    # ``reset_at``), so the output shows how much free-tier budget the run
+    # left. ``None`` when CourtListener is not a configured provider or the
+    # guard is disabled.
+    courtlistener_quota: dict[str, object] | None = None
 
 
 class ImpactProfile(BaseModel):

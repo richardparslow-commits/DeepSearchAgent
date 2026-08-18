@@ -201,6 +201,44 @@ def test_summary_rolls_up_search_telemetry(state_dir):
     assert cl == {"queries_issued": 8, "results": 12, "deduped": 0, "failures": 1, "variants": {}}
 
 
+def test_summary_telemetry_skips_courtlistener_quota_records(state_dir):
+    """Usage-guard quota snapshots ride along but never pollute the rollup."""
+    tracker = BatchTracker("batch-q")
+    tracker.record(
+        {
+            "event": "analysis_complete",
+            "issue": "tinnitus",
+            "coverage_score": 1.0,
+            "search_telemetry": [
+                {
+                    "courtlistener_quota": {
+                        "used": 8, "limit": 125, "remaining": 117, "reset_at": None
+                    }
+                },
+                {
+                    "provider": "courtlistener",
+                    "queries_issued": 8,
+                    "results": 3,
+                    "deduped": 1,
+                    "failures": 0,
+                },
+            ],
+        }
+    )
+
+    summary = tracker.summary()
+
+    assert summary["search_telemetry"] == {
+        "courtlistener": {
+            "queries_issued": 8,
+            "results": 3,
+            "deduped": 1,
+            "failures": 0,
+            "variants": {},
+        }
+    }
+
+
 def test_summary_search_telemetry_empty_when_none_recorded(state_dir):
     tracker = BatchTracker("batch-1")
     tracker.record({"event": "analysis_complete", "issue": "a", "coverage_score": 0.5})

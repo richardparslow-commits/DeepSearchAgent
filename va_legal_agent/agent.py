@@ -388,7 +388,7 @@ def research_issue(
     # Pre-flight the CourtListener daily budget before the first search round
     # (this is the entry point the CLI and batch runner use, so the guard must
     # live here, not only in the single-pass fetch_cases_for_issue primitive).
-    _check_courtlistener_budget_before_run([task.query for task in initial])
+    _check_courtlistener_budget_before_run([task.query for task in initial], telemetry)
     done.update(task.id for task in initial)
     round_cases, errors, budget_exhausted = _fanout_search(
         [task.query for task in initial if task.query],
@@ -409,7 +409,7 @@ def research_issue(
             break
         # Re-check per round: an earlier round may have drained the daily
         # window, and a gap round would otherwise grind through 429s.
-        _check_courtlistener_budget_before_run([task.query for task in ready])
+        _check_courtlistener_budget_before_run([task.query for task in ready], telemetry)
         logger.info(
             "Research gap detected: uncovered=%s search_flags=%s; refining queries.",
             list(uncovered),
@@ -446,7 +446,9 @@ def research_issue(
     return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read, deep_read_limit)
 
 
-def _check_courtlistener_budget_before_run(queries: list[str]) -> None:
+def _check_courtlistener_budget_before_run(
+    queries: list[str], telemetry: list[dict[str, object]] | None = None
+) -> None:
     """Abort early when CourtListener's daily budget can't cover *queries*.
 
     The free tier applies three rolling windows concurrently (5/min, 50/hour,
@@ -455,10 +457,12 @@ def _check_courtlistener_budget_before_run(queries: list[str]) -> None:
     request cost of the round (queries x variants x pages) and require that
     much headroom, raising :class:`SearchError` with the window reset time
     otherwise. Uses the api-usage endpoint's own throttle, so the check
-    itself never burns the search budget. Skips when CourtListener is not a
-    configured provider or the guard is disabled. Called from both
-    :func:`research_issue` (per round, the CLI/batch path) and
-    :func:`fetch_cases_for_issue` (the single-pass primitive).
+    itself never burns the search budget. When *telemetry* is given, a
+    passing check appends a ``{"courtlistener_quota": {...}}`` snapshot so
+    the final output can surface the remaining daily window. Skips when
+    CourtListener is not a configured provider or the guard is disabled.
+    Called from both :func:`research_issue` (per round, the CLI/batch path)
+    and :func:`fetch_cases_for_issue` (the single-pass primitive).
     """
     settings = get_settings()
     if not settings.courtlistener_usage_guard:
@@ -488,6 +492,27 @@ def _check_courtlistener_budget_before_run(queries: list[str]) -> None:
         estimated,
         int(budget["remaining"]),
     )
+    if telemetry is not None:
+        telemetry.append({"courtlistener_quota": dict(budget)})
+
+
+def _last_courtlistener_quota(
+    telemetry: list[dict[str, object]] | None,
+) -> dict[str, object] | None:
+    """Return the most recent CourtListener quota snapshot, if one was recorded.
+
+    The usage guard appends one ``{"courtlistener_quota": {...}}`` record per
+    pre-flight check, so a multi-round run carries several; the last one is
+    the freshest picture of the daily window. Returns ``None`` when
+    CourtListener was never pre-flighted (guard disabled or not a configured
+    provider).
+    """
+    quota: dict[str, object] | None = None
+    for record in telemetry or []:
+        snapshot = record.get("courtlistener_quota")
+        if isinstance(snapshot, dict):
+            quota = snapshot
+    return quota
 
 
 def fetch_cases_for_issue(
@@ -512,7 +537,7 @@ def fetch_cases_for_issue(
     deadline = _deadline_for(max_wall_seconds)
 
     queries = build_case_queries(claim_issue, claim_type)
-    _check_courtlistener_budget_before_run(queries)
+    _check_courtlistener_budget_before_run(queries, telemetry)
     cases, errors, budget_exhausted = _fanout_search(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
     )
@@ -603,6 +628,7 @@ def _build_analysis(
         interpretation_source=interpretive.interpretation_source,
         search_telemetry=rolled_telemetry,
         search_flags=recall_flags(rolled_telemetry),
+        courtlistener_quota=_last_courtlistener_quota(telemetry),
     )
 
 
@@ -617,6 +643,10 @@ def analyze_cases_for_claim(
     deep_read_limit: int | None = None,
 ) -> LegalAnalysis:
     """Run the adaptive research loop and build structured VA-claims guidance."""
+    if telemetry is None:
+        # Always collect into a sink so the output carries the recall picture
+        # and the usage-guard quota snapshot even when the caller doesn't care.
+        telemetry = []
     cases = research_issue(
         claim_issue,
         claim_type,
