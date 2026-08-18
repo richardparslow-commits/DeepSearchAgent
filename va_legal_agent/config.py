@@ -19,13 +19,24 @@ DEFAULT_USER_AGENT = (
 # memory blowups on unexpected payloads.
 MAX_FETCH_BYTES = 20 * 1024 * 1024
 
+# Upper bound on the search worker pool. A mistyped SEARCH_MAX_WORKERS
+# (e.g. 10000) would otherwise spawn thousands of daemon threads and burst
+# every provider at once; the cap fails fast back to the default instead.
+MAX_SEARCH_WORKERS = 32
 
-def env_int(name: str, default: int, min_value: int = 1) -> int:
+
+def env_int(
+    name: str,
+    default: int,
+    min_value: int = 1,
+    max_value: int | None = None,
+) -> int:
     """Read an integer from the environment, falling back to *default*.
 
-    Garbage or values below *min_value* are logged and replaced with the
-    default instead of raising at import time. Defaults to requiring a
-    positive integer; pass ``min_value=0`` to allow zero.
+    Garbage, values below *min_value*, or (when *max_value* is given) values
+    above *max_value* are logged and replaced with the default instead of
+    raising at import time. Defaults to requiring a positive integer; pass
+    ``min_value=0`` to allow zero.
     """
     raw = os.getenv(name, "")
     if not raw:
@@ -37,6 +48,9 @@ def env_int(name: str, default: int, min_value: int = 1) -> int:
         return default
     if value < min_value:
         logger.warning("%s=%s must be >= %s; using default %s.", name, value, min_value, default)
+        return default
+    if max_value is not None and value > max_value:
+        logger.warning("%s=%s must be <= %s; using default %s.", name, value, max_value, default)
         return default
     return value
 
@@ -211,7 +225,9 @@ class Settings:
             max_fetch_bytes=env_int("MAX_FETCH_BYTES", d.max_fetch_bytes),
             search_http_proxy=os.getenv("SEARCH_HTTP_PROXY", d.search_http_proxy),
             batch_state_dir=os.getenv("BATCH_STATE_DIR", d.batch_state_dir),
-            search_max_workers=env_int("SEARCH_MAX_WORKERS", d.search_max_workers),
+            search_max_workers=env_int(
+                "SEARCH_MAX_WORKERS", d.search_max_workers, max_value=MAX_SEARCH_WORKERS
+            ),
             search_delay_seconds=env_float("SEARCH_DELAY_SECONDS", d.search_delay_seconds),
             search_retry_attempts=env_int(
                 "SEARCH_RETRY_ATTEMPTS", d.search_retry_attempts, min_value=0

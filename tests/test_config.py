@@ -73,6 +73,26 @@ def test_env_int_accepts_one_with_default_min_value(monkeypatch):
     assert env_int("SOME_INT", 7) == 1
 
 
+def test_env_int_falls_back_on_value_above_max(monkeypatch):
+    # A value above max_value is rejected and replaced by the default, so a
+    # typo like SEARCH_MAX_WORKERS=10000 can't spawn a huge thread pool.
+    monkeypatch.setenv("SOME_INT", "40")
+    assert env_int("SOME_INT", 7, max_value=32) == 7
+
+
+def test_env_int_accepts_value_at_max(monkeypatch):
+    # max_value is inclusive: exactly 32 is valid, not replaced by default.
+    monkeypatch.setenv("SOME_INT", "32")
+    assert env_int("SOME_INT", 7, max_value=32) == 32
+
+
+def test_env_int_no_max_allows_large_value(monkeypatch):
+    # Without max_value there is no upper bound, preserving the historical
+    # behavior for every other integer setting.
+    monkeypatch.setenv("SOME_INT", "100000")
+    assert env_int("SOME_INT", 7) == 100000
+
+
 def test_env_float_accepts_zero(monkeypatch):
     monkeypatch.setenv("SOME_FLOAT", "0")
     assert env_float("SOME_FLOAT", 1.5) == 0.0
@@ -157,6 +177,17 @@ def test_settings_defaults(monkeypatch):
     assert settings.deep_read_limit == 3
     assert settings.deep_read_pages == 0
     assert settings.deep_chunk_chars == 6000
+
+
+def test_search_max_workers_is_capped(monkeypatch):
+    # The worker pool has a hard upper bound so a mistyped env var fails fast
+    # back to the default instead of spawning thousands of daemon threads.
+    monkeypatch.setenv("SEARCH_MAX_WORKERS", "10000")
+    assert get_settings().search_max_workers == 4
+
+    # The cap's own boundary is accepted (inclusive).
+    monkeypatch.setenv("SEARCH_MAX_WORKERS", "32")
+    assert get_settings().search_max_workers == 32
 
 
 def test_settings_read_from_env(monkeypatch):
