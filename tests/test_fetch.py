@@ -613,6 +613,48 @@ def test_fetch_case_details_requests_exact_args(monkeypatch):
     assert seen["stream"] is True
 
 
+def test_fetch_case_details_passes_proxy_when_configured(monkeypatch):
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, headers=None, timeout=None, stream=None, proxies=None):
+        captured["proxies"] = proxies
+        return FakePageResponse(
+            text="<html><body><p>No holding sentence here.</p></body></html>",
+            headers={"Content-Type": "text/html"},
+        )
+
+    monkeypatch.setattr("va_legal_agent.fetch.requests.get", fake_get)
+
+    fetch_case_details("https://uscourts.cavc.gov/proxied.html")
+
+    assert captured["proxies"] == {
+        "http": "http://user:pass@proxy.example:8080",
+        "https": "http://user:pass@proxy.example:8080",
+    }
+
+
+def test_fetch_full_text_passes_proxy_when_configured(monkeypatch):
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, headers=None, timeout=None, stream=None, proxies=None):
+        captured["proxies"] = proxies
+        return FakePageResponse(
+            text="<html><body>Opinion text here.</body></html>",
+            headers={"Content-Type": "text/html"},
+        )
+
+    monkeypatch.setattr("va_legal_agent.fetch.requests.get", fake_get)
+
+    fetch_full_text("https://uscourts.cavc.gov/proxied-opinion.html")
+
+    assert captured["proxies"] == {
+        "http": "http://proxy.example:8080",
+        "https": "http://proxy.example:8080",
+    }
+
+
 def test_fetch_case_details_content_type_pdf_without_pdf_extension(monkeypatch):
     # Content-Type alone marks a response as PDF (mutants reading the header
     # with the wrong key or default would fall through to HTML parsing).

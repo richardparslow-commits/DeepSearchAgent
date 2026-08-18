@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from .config import get_settings
+from .search import http_proxy_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,13 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     timeout = timeout or settings.request_timeout_seconds
     headers = {"User-Agent": settings.user_agent}
     try:
-        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+            **http_proxy_kwargs(),
+        )
         response.raise_for_status()
         content = _read_response_body(response, settings.max_fetch_bytes)
     except requests.RequestException as exc:
@@ -287,7 +294,13 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     timeout = timeout or settings.request_timeout_seconds
     headers = {"User-Agent": settings.user_agent}
     try:
-        response = requests.get(url, headers=headers, timeout=timeout, stream=True)
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+            **http_proxy_kwargs(),
+        )
         response.raise_for_status()
         content = _read_response_body(response, settings.max_fetch_bytes)
     except requests.RequestException as exc:
