@@ -10,6 +10,7 @@ import sys
 import uuid
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
@@ -171,6 +172,36 @@ def _mask_secret(value: str | None) -> str | None:
     return f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
 
 
+def _mask_proxy_url(value: str | None) -> str | None:
+    """Mask any credentials embedded in a proxy URL for safe display.
+
+    ``SEARCH_HTTP_PROXY`` may carry a ``user:pass@`` authority (e.g.
+    ``http://user:pass@residential-proxy.example:8080``), and ``--show-config``
+    must never echo that password. The entire userinfo authority is redacted
+    to ``***`` (never partially revealed, since it can hold a password) while
+    the ``host:port`` stays visible so operators can still see which proxy is
+    configured. A proxy without userinfo is returned unchanged; an unparseable
+    value is masked wholesale rather than leaked.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "***"
+    if parts.username is None and parts.password is None:
+        return value
+    # Rebuild the authority with the userinfo fully redacted, re-bracketing an
+    # IPv6 host if present.
+    host = parts.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"***@{host}"
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _redacted_settings() -> dict[str, object]:
     """Return the resolved settings as a dict, masking every API key.
 
@@ -184,6 +215,8 @@ def _redacted_settings() -> dict[str, object]:
     data["effective_search_providers"] = resolve_search_providers()
     for key in ("openai_api_key", "courtlistener_api_key"):
         data[key] = _mask_secret(data.get(key))
+    # The proxy URL may embed ``user:pass@``, so mask that too.
+    data["search_http_proxy"] = _mask_proxy_url(data.get("search_http_proxy"))
     return data
 
 

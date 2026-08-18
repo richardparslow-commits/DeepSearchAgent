@@ -9,6 +9,7 @@ import pytest
 
 from va_legal_agent.__main__ import (
     _configure_logging,
+    _mask_proxy_url,
     _redacted_settings,
     _resolve_log_format,
     _run_id,
@@ -121,6 +122,44 @@ def test_redacted_settings_masks_short_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "short")
 
     assert _redacted_settings()["openai_api_key"] == "***"
+
+
+def test_mask_proxy_url_masks_embedded_credentials():
+    masked = _mask_proxy_url("http://user:pass@residential-proxy.example:8080")
+    assert masked == "http://***@residential-proxy.example:8080"
+    assert "pass" not in masked
+
+
+def test_mask_proxy_url_keeps_credential_free_proxy_unchanged():
+    value = "http://residential-proxy.example:8080"
+    assert _mask_proxy_url(value) == value
+
+
+def test_mask_proxy_url_masks_user_only_proxy():
+    masked = _mask_proxy_url("socks5://alice@proxy.example:1080")
+    assert masked == "socks5://***@proxy.example:1080"
+    assert "alice" not in masked
+
+
+def test_mask_proxy_url_redacts_unparseable_value():
+    assert _mask_proxy_url("http://[invalid") == "***"
+
+
+def test_mask_proxy_url_rebrackets_ipv6_host():
+    masked = _mask_proxy_url("http://user:pass@[::1]:8080")
+    assert masked == "http://***@[::1]:8080"
+
+
+def test_show_config_redacts_proxy_credentials(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://richardproxy:supersecret@proxy.example:8080")
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "supersecret" not in output
+    assert "richardproxy" not in output
+    assert json.loads(output)["search_http_proxy"] == "http://***@proxy.example:8080"
 
 
 def test_missing_issue_is_reported(capsys, monkeypatch):
