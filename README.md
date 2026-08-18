@@ -327,7 +327,14 @@ If a run still 429s after all retries, wait out the `retry-after` window (the er
 
 ### DuckDuckGo keeps serving challenge pages
 
-Throttled responses are retried with backoff automatically, but sustained heavy use still gets blocked. Reduce load with `SEARCH_DELAY_SECONDS`, `SEARCH_MIN_INTERVAL_SECONDS`, or fewer `SEARCH_QUERY_VARIANTS`.
+DuckDuckGo's `html.duckduckgo.com/html/` endpoint challenge-flags the plain `requests` client — a 202/anomaly page, or a hard 403 after sustained use — keying on **both** the TLS fingerprint and the app's own `USER_AGENT` (which declares itself a bot). The DuckDuckGo provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome handshake and supplies a browser User-Agent. As with BVA, the app's `USER_AGENT` is **not** sent — overriding the impersonation would re-trigger the block.
+
+Two things still cause challenge pages even with impersonation:
+
+1. **Rapid bursts.** DuckDuckGo challenge-flags an IP that fires many requests in quick succession (verified live: back-to-back requests get 202, then a single paced request returns 200 again). Slow the run with `SEARCH_DELAY_SECONDS`, `SEARCH_MIN_INTERVAL_SECONDS`, or `SEARCH_MAX_RPM_BY_PROVIDER=duckduckgo=…`, and space repeated runs out.
+2. **A hard 403 after sustained abuse.** If even the browser-impersonated client gets 403 for minutes on end, the IP is flagged longer-term — switch networks/VPN, or drop `duckduckgo` from `SEARCH_PROVIDERS` until it cools.
+
+Failures are graceful: a challenged query counts as a provider failure in the telemetry and the run completes on the other providers.
 
 ### BVA returns rate-limit/anomaly challenge pages (202)
 
