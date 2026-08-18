@@ -203,6 +203,96 @@ def test_synthesize_case_falls_back_on_empty_llm_summary(monkeypatch):
     assert result == "- digest one"
 
 
+def test_deep_read_case_uses_courtlistener_api_text(monkeypatch):
+    """A CourtListener case fetches its body from the detail endpoint, not the WAF-blocked URL."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fetched_urls: list[str] = []
+    seen_ids: list[int] = []
+
+    class _FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            seen_ids.append(opinion_id)
+            return "The Court holds that the Board erred in weighing the evidence."
+
+    def recording_url_fetch(url, max_pages=0):
+        fetched_urls.append(url)
+        return "fallback body"
+
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.CourtListenerProvider", lambda: _FakeProvider()
+    )
+    monkeypatch.setattr("va_legal_agent.deep_read.fetch_full_text", recording_url_fetch)
+
+    case = _case(
+        url="https://www.courtlistener.com/opinion/12345/x/",
+        courtlistener_opinion_id="12345",
+    )
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert "Holding: The Court holds that the Board erred" in result
+    assert fetched_urls == []  # the WAF-blocked URL was never scraped
+    assert seen_ids == [12345]  # the string id is coerced to int for the API
+
+
+def test_deep_read_case_falls_back_to_url_when_api_text_empty(monkeypatch):
+    """Empty API text falls through to the generic URL fetch."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fetched_urls: list[str] = []
+
+    class _FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            return "   "
+
+    def recording_url_fetch(url, max_pages=0):
+        fetched_urls.append(url)
+        return "The Court holds that the Board erred in weighing the evidence."
+
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.CourtListenerProvider", lambda: _FakeProvider()
+    )
+    monkeypatch.setattr("va_legal_agent.deep_read.fetch_full_text", recording_url_fetch)
+
+    case = _case(url="https://www.courtlistener.com/opinion/12345/x/", courtlistener_opinion_id="12345")
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert "Holding: The Court holds that the Board erred" in result
+    assert fetched_urls == [case.url]
+
+
+def test_deep_read_case_falls_back_to_url_on_api_error(monkeypatch, caplog):
+    """An API error degrades to the URL fetch rather than failing the case."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fetched_urls: list[str] = []
+
+    class _FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            raise ValueError("bad id")
+
+    def recording_url_fetch(url, max_pages=0):
+        fetched_urls.append(url)
+        return "The Court holds that the Board erred in weighing the evidence."
+
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.CourtListenerProvider", lambda: _FakeProvider()
+    )
+    monkeypatch.setattr("va_legal_agent.deep_read.fetch_full_text", recording_url_fetch)
+
+    case = _case(url="https://www.courtlistener.com/opinion/12345/x/", courtlistener_opinion_id="12345")
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert "Holding: The Court holds that the Board erred" in result
+    assert fetched_urls == [case.url]
+    assert any(
+        r.getMessage().startswith("CourtListener opinion text fetch failed")
+        and "bad id" in r.getMessage()
+        and case.url in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_deep_read_case_returns_empty_on_fetch_failure(monkeypatch, caplog):
     def failing_fetch(url, max_pages=0):
         raise FetchError("Failed to fetch")

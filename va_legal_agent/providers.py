@@ -107,8 +107,11 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
     # holding extraction get empty text. Sane into the standard snippet slot.
     opinions = item.get("opinions") or []
     snippet = ""
+    opinion_id = ""
     if opinions and isinstance(opinions[0], dict):
         snippet = str(opinions[0].get("snippet") or "").strip()
+        raw_id = opinions[0].get("id")
+        opinion_id = str(raw_id) if raw_id is not None else ""
     return {
         "title": case_name,
         "url": url,
@@ -118,6 +121,7 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
         "decision_date": item.get("dateFiled") or "",
         "docket": item.get("docketNumber") or "",
         "judge": item.get("judge") or "",
+        "courtlistener_opinion_id": opinion_id,
     }
 
 
@@ -329,6 +333,28 @@ class CourtListenerProvider:
             "docket": docket.get("docket_number") or "",
             "judge": cluster.get("judges") or "",
         }
+
+    def fetch_opinion_text(self, opinion_id: int) -> str:
+        """Return the full opinion body for *opinion_id* from the detail endpoint.
+
+        The frontend ``/opinion/<cluster>/`` page is AWS-WAF-challenged for
+        every non-browser client (including curl_cffi), so deep-read cannot
+        scrape it. The REST opinion detail endpoint instead carries the body
+        in ``plain_text`` or one of the HTML variants; prefer the plain text,
+        else strip markup from the richest HTML field so the chunked
+        map-reduce can digest real holdings instead of empty snippets.
+        """
+        opinion = self._get_json(f"{self.API_URL}{opinion_id}/")
+        plain = str(opinion.get("plain_text") or "").strip()
+        if plain:
+            return plain
+        for key in ("html_with_citations", "html", "html_columbia", "html_lawbox", "html_anon_2020"):
+            html_body = str(opinion.get(key) or "")
+            if not html_body.strip():
+                continue
+            stripped = re.sub(r"<[^>]+>", " ", html_body)
+            return re.sub(r"\s+", " ", stripped).strip()
+        return ""
 
     def _related_opinions(
         self, opinion_id: int, relation: str, max_results: int

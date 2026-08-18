@@ -939,12 +939,22 @@ def test_normalize_case_applies_all_fallbacks():
     assert case.decision_date == ""
     assert case.docket == ""
     assert case.judge == ""
+    assert case.courtlistener_opinion_id == ""
     assert case.holding == ""
     assert case.impact == ""
     assert case.authority_rank == 0
     assert case.relevance_score == 0
     assert case.issue == "tinnitus"
     assert case.authority_weight == 2  # CAVC tier
+
+
+def test_normalize_case_carries_courtlistener_opinion_id():
+    case = normalize_case(
+        {"title": "X", "url": "https://example.com", "courtlistener_opinion_id": "5286139"},
+        COURT_CAVC,
+        "tinnitus",
+    )
+    assert case.courtlistener_opinion_id == "5286139"
 
 
 def test_fetch_cases_defaults_claim_type_and_max_results(monkeypatch):

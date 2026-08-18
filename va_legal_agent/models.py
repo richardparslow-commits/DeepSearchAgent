@@ -15,6 +15,10 @@ class CaseRecord(BaseModel):
     impact: str = ""
     docket: str = ""
     judge: str = ""
+    # CourtListener opinion id (from the search result's nested opinion), so
+    # deep-read can pull the full text from the opinion detail endpoint
+    # instead of the WAF-challenged frontend page.
+    courtlistener_opinion_id: str = ""
     deep_summary: str = ""
     statutes: list[str] = Field(default_factory=list)
     outcome: str = ""

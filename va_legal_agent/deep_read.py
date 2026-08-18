@@ -24,6 +24,7 @@ from .fetch import (
 )
 from .llm import call_openai, llm_enabled
 from .models import CaseRecord
+from .providers import CourtListenerProvider, SearchError
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,29 @@ def _synthesize_case(case_title: str, issue: str, digests: list[str]) -> str:
     return "\n".join(f"- {digest}" for digest in digests)
 
 
+def _fetch_case_text(case: CaseRecord) -> str:
+    """Return the full opinion body for *case*, via API when available.
+
+    CourtListener cases carry ``courtlistener_opinion_id`` and their frontend
+    page is WAF-challenged, so pull the body from the REST detail endpoint
+    instead of scraping the URL. Every other source (BVA ``.txt`` decisions,
+    CAVC/CAFC pages, DDG links) falls back to the generic URL fetch.
+    """
+    if case.courtlistener_opinion_id:
+        try:
+            text = CourtListenerProvider().fetch_opinion_text(
+                int(case.courtlistener_opinion_id)
+            )
+            if text.strip():
+                return text
+        except (SearchError, ValueError) as exc:
+            logger.warning(
+                "CourtListener opinion text fetch failed for %s: %s", case.url, exc
+            )
+    settings = get_settings()
+    return fetch_full_text(case.url, max_pages=settings.deep_read_pages)
+
+
 def deep_read_case(case: CaseRecord, issue: str) -> str:
     """Deep-read one case: fetch its full text and return its deep summary.
 
@@ -123,7 +147,7 @@ def deep_read_case(case: CaseRecord, issue: str) -> str:
     """
     settings = get_settings()
     try:
-        text = fetch_full_text(case.url, max_pages=settings.deep_read_pages)
+        text = _fetch_case_text(case)
     except FetchError as exc:
         logger.warning("Deep-read fetch failed for %s: %s", case.url, exc)
         return ""

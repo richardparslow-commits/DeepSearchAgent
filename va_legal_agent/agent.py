@@ -158,6 +158,7 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
         decision_date=raw.get("decision_date", ""),
         docket=raw.get("docket", ""),
         judge=raw.get("judge", ""),
+        courtlistener_opinion_id=raw.get("courtlistener_opinion_id", ""),
         holding="",
         impact="",
         authority_rank=0,

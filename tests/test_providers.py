@@ -201,6 +201,137 @@ def test_courtlistener_maps_nested_opinion_snippet(monkeypatch):
     )
 
 
+def test_courtlistener_maps_nested_opinion_id(monkeypatch):
+    """The nested opinion id rides along so deep-read can fetch the full body."""
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import _map_courtlistener_opinion
+
+    assert _map_courtlistener_opinion(
+        _cl_result(opinions=[{"snippet": "x", "id": 5286139}])
+    )["courtlistener_opinion_id"] == "5286139"
+    # Missing id, missing opinions, and id=None all degrade to "".
+    assert _map_courtlistener_opinion(
+        _cl_result(opinions=[{"snippet": "x"}])
+    )["courtlistener_opinion_id"] == ""
+    assert _map_courtlistener_opinion(
+        _cl_result(opinions=[])
+    )["courtlistener_opinion_id"] == ""
+    assert _map_courtlistener_opinion(
+        _cl_result(opinions=[{"snippet": "x", "id": None}])
+    )["courtlistener_opinion_id"] == ""
+
+
+def test_courtlistener_fetch_opinion_text_prefers_plain_text(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    captured: dict[str, object] = {}
+
+    def recording_get_json(self, url):
+        captured["url"] = url
+        return _cl_opinion_detail(plain_text="  The full opinion text.  ")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json", recording_get_json
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "The full opinion text."
+    # The opinion id is embedded in the detail-endpoint URL.
+    assert captured["url"] == "https://www.courtlistener.com/api/rest/v4/opinions/12345/"
+
+
+def test_courtlistener_fetch_opinion_text_strips_html(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(
+            plain_text="", html_with_citations="<p>The <strong>holding</strong> text.</p>"
+        ),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "The holding text."
+
+
+def test_courtlistener_fetch_opinion_text_falls_through_html_variants(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(
+            plain_text="",
+            html_with_citations="",
+            html="",
+            html_columbia="",
+            html_lawbox="<p>lawbox text</p>",
+        ),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "lawbox text"
+
+
+def test_courtlistener_fetch_opinion_text_uses_html_field(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(plain_text="", html="<p>html body</p>"),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "html body"
+
+
+def test_courtlistener_fetch_opinion_text_uses_html_columbia(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(
+            plain_text="",
+            html_with_citations="",
+            html="",
+            html_columbia="<p>columbia body</p>",
+        ),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "columbia body"
+
+
+def test_courtlistener_fetch_opinion_text_uses_html_anon_2020(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(
+            plain_text="",
+            html_with_citations="",
+            html="",
+            html_columbia="",
+            html_lawbox="",
+            html_anon_2020="<p>anon body</p>",
+        ),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == "anon body"
+
+
+def test_courtlistener_fetch_opinion_text_empty_when_no_text(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    from va_legal_agent.providers import CourtListenerProvider
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._get_json",
+        lambda self, url: _cl_opinion_detail(plain_text="", html_with_citations=""),
+    )
+
+    assert CourtListenerProvider().fetch_opinion_text(12345) == ""
+
+
 def test_courtlistener_sends_api_key_when_set(monkeypatch):
     monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
     captured = {}
