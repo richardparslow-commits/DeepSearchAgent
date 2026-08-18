@@ -170,7 +170,7 @@ Each case carries a `composite_score` (authority tier + within-tier score) and a
 
 ## Case detail extraction
 
-The enrichment step (`va_legal_agent/fetch.py`) pulls structured details from each top case's source page or PDF opinion:
+The enrichment step (`va_legal_agent/fetch.py`) pulls structured details from each top case's source page or PDF opinion. CourtListener cases are enriched from the REST opinion detail endpoint's full text instead of the frontend page — the `courtlistener.com/opinion/…` page serves an AWS WAF JavaScript challenge that no non-browser client (curl_cffi included) can solve, while the API carries the same body unchallenged. BVA `.txt` decisions, CAVC/CAFC pages, and other URLs use the generic page/PDF fetch.
 
 - **Citation** — reporter citations (Vet.App., F.2d/F.3d/F.4th, U.S., S. Ct., Westlaw) and BVA citation numbers
 - **Decision date** — ISO date, preferring dates marked "Decided"/"Filed"/"Issued"
