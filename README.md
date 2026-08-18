@@ -329,6 +329,17 @@ If a run still 429s after all retries, wait out the `retry-after` window (the er
 
 Throttled responses are retried with backoff automatically, but sustained heavy use still gets blocked. Reduce load with `SEARCH_DELAY_SECONDS`, `SEARCH_MIN_INTERVAL_SECONDS`, or fewer `SEARCH_QUERY_VARIANTS`.
 
+### BVA returns rate-limit/anomaly challenge pages (202)
+
+`search.usa.gov` (which indexes Board decisions) sits behind **AWS WAF**, which challenges the TLS fingerprint of plain HTTP clients — the `requests` library is almost always blocked regardless of IP or pacing. The BVA provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome TLS handshake and passes the challenge. This also means the app's own `USER_AGENT` is **not** sent to BVA — overriding the impersonation with a bot-identifying UA would re-trigger the block, so it is deliberately omitted.
+
+Two things still cause 202s even with impersonation:
+
+1. **Rapid bursts.** WAF challenge-flags an IP that fires many requests in quick succession (verified live: even a plain browser curl gets 202 + empty body during a burst, then 200 again after ~30s). Slow the run with `SEARCH_DELAY_SECONDS` or `SEARCH_MAX_RPM_BY_PROVIDER=bva=…`, and space repeated runs out.
+2. **A hard block after sustained abuse.** If even a browser UA gets 202 for minutes on end, the IP is flagged longer-term — switch networks/VPN, or drop `bva` from `SEARCH_PROVIDERS` until it cools.
+
+Failures are graceful: a challenged query counts as a provider failure in the telemetry and the run completes on the other providers.
+
 ### A provider name is silently ignored
 
 Typos in `SEARCH_PROVIDERS` are warned about at startup and dropped; `--show-config` prints both `search_providers` (raw) and `effective_search_providers` (what will actually run). Valid names: `duckduckgo`, `courtlistener`, `bva`.

@@ -3,3 +3,4 @@ beautifulsoup4>=4.2.0
 python-dotenv>=1.0.1
 pydantic>=2.8.0
 pypdf>=4.0.0
+curl_cffi>=0.16.0

@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 import requests
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
 from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
@@ -528,7 +530,6 @@ class BVAProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         settings = get_settings()
-        headers = {"User-Agent": settings.user_agent}
         # BVA's index searches only Board decisions; site: tokens are noise.
         query = strip_site_prefixes(query)
         params = {"affiliate": self.AFFILIATE, "query": query}
@@ -536,14 +537,19 @@ class BVAProvider:
             params["page"] = page
         _throttle(self.name)
         try:
-            response = requests.get(
+            # search.usa.gov sits behind AWS WAF, which challenges the TLS
+            # fingerprint of the plain ``requests`` client (HTTP 202 with an
+            # empty body). Impersonating a real Chrome handshake via curl_cffi
+            # passes the challenge; the impersonation also supplies a browser
+            # User-Agent, so do not override it with the app's own UA.
+            response = cffi_requests.get(
                 self.SEARCH_URL,
                 params=params,
-                headers=headers,
+                impersonate="chrome",
                 timeout=settings.request_timeout_seconds,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:
+        except CffiRequestException as exc:
             raise SearchError(f"BVA search failed for query: {query}: {exc}") from exc
 
         if response.status_code == 202 or "anomaly" in response.text.lower():

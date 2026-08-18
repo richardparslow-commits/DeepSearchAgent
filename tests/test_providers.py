@@ -624,17 +624,19 @@ BVA_HTML = """
 def test_bva_provider_parses_results_data(monkeypatch):
     captured = {}
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, impersonate=None):
         captured["url"] = url
         captured["params"] = params
+        captured["impersonate"] = impersonate
         return FakeResponse(BVA_HTML)
 
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
 
     results = BVAProvider().search("tinnitus", max_results=5)
 
     assert captured["params"]["affiliate"] == "bvadecisions"
     assert captured["params"]["query"] == "tinnitus"
+    assert captured["impersonate"] == "chrome"
     assert len(results) == 2
     assert results[0]["title"] == "A25049742"
     assert results[0]["url"] == "https://www.va.gov/vetapp25/Files6/A25049742.txt"
@@ -646,21 +648,23 @@ def test_bva_provider_parses_results_data(monkeypatch):
 def test_bva_provider_strips_site_prefix(monkeypatch):
     captured = {}
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, impersonate=None):
         captured["params"] = params
+        captured["impersonate"] = impersonate
         return FakeResponse(BVA_HTML)
 
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
 
     BVAProvider().search("site:bva.va.gov tinnitus")
 
     assert "site:" not in captured["params"]["query"]
+    assert captured["impersonate"] == "chrome"
 
 
 def test_bva_provider_raises_on_challenge_page(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(
             "<html>anomaly challenge</html>", status_code=202
         ),
     )
@@ -670,10 +674,19 @@ def test_bva_provider_raises_on_challenge_page(monkeypatch):
 
 
 def test_bva_provider_raises_on_http_error(monkeypatch):
-    def fake_get(url, params=None, headers=None, timeout=None):
-        return FakeResponse({}, status_code=500)
+    # BVA now goes through curl_cffi, so the fake must raise a cffi
+    # RequestException for the provider's except clause to catch it.
+    from curl_cffi.requests.exceptions import HTTPError as CffiHTTPError
 
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    class _CffiFakeResponse(FakeResponse):
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise CffiHTTPError(f"HTTP {self.status_code}", response=self)
+
+    def fake_get(url, params=None, headers=None, timeout=None, impersonate=None):
+        return _CffiFakeResponse({}, status_code=500)
+
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="BVA"):
         BVAProvider().search("tinnitus")
@@ -681,8 +694,10 @@ def test_bva_provider_raises_on_http_error(monkeypatch):
 
 def test_bva_provider_raises_when_no_results(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse("<html></html>"),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(
+            "<html></html>"
+        ),
     )
 
     with pytest.raises(SearchError, match="No search results"):
@@ -988,11 +1003,11 @@ def test_courtlistener_raises_when_no_results(monkeypatch):
 def test_bva_sets_page_param_when_paged(monkeypatch):
     captured = {}
 
-    def fake_get(url, params=None, headers=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None, impersonate=None):
         captured["params"] = params
         return FakeResponse(BVA_HTML)
 
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
 
     BVAProvider().search("tinnitus", page=2)
 
@@ -1008,8 +1023,8 @@ def test_bva_skips_non_dict_and_urlless_items(monkeypatch):
         "]}}</script></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     results = BVAProvider().search("tinnitus")
@@ -1025,8 +1040,8 @@ def test_bva_title_falls_back_when_empty(monkeypatch):
         "]}}</script></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     results = BVAProvider().search("tinnitus")
@@ -1041,8 +1056,8 @@ def test_bva_caps_at_max_results(monkeypatch):
     )
     html = f'<html><script>{{&quot;resultsData&quot;:{{&quot;results&quot;:[{items}]}}}}</script></html>'
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     results = BVAProvider().search("tinnitus", max_results=2)
@@ -1053,8 +1068,8 @@ def test_bva_caps_at_max_results(monkeypatch):
 def test_bva_malformed_results_data_json(monkeypatch):
     html = '<html><script>{&quot;resultsData&quot;:{broken json</script></html>'
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     with pytest.raises(SearchError, match="No search results"):
@@ -1688,18 +1703,23 @@ def test_courtlistener_throttles_every_attempt(monkeypatch):
 def test_bva_provider_sends_exact_request_args(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_get(url, params=None, headers=None, timeout=None):
-        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+    def fake_get(url, params=None, headers=None, timeout=None, impersonate=None):
+        captured.update(
+            url=url, params=params, headers=headers, timeout=timeout, impersonate=impersonate
+        )
         return FakeResponse(BVA_HTML)
 
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
 
     BVAProvider().search("tinnitus")  # default page=1
     assert captured["url"] == BVAProvider.SEARCH_URL
     assert captured["params"]["affiliate"] == "bvadecisions"  # type: ignore[index]
     assert captured["params"]["query"] == "tinnitus"  # type: ignore[index]
     assert "page" not in captured["params"]  # type: ignore[operator]
-    assert "User-Agent" in captured["headers"]  # type: ignore[operator]
+    assert captured["impersonate"] == "chrome"
+    # The impersonation supplies the browser User-Agent; the app must not
+    # override it with its own bot-identifying UA.
+    assert captured["headers"] is None
     assert captured["timeout"] is not None
 
     BVAProvider().search("tinnitus", page=2)
@@ -1707,7 +1727,9 @@ def test_bva_provider_sends_exact_request_args(monkeypatch):
 
 
 def test_bva_provider_throttles_before_request(monkeypatch):
-    monkeypatch.setattr("va_legal_agent.providers.requests.get", lambda *a, **k: FakeResponse(BVA_HTML))
+    monkeypatch.setattr(
+        "va_legal_agent.providers.cffi_requests.get", lambda *a, **k: FakeResponse(BVA_HTML)
+    )
     throttled_providers: list[str | None] = []
     monkeypatch.setattr(
         "va_legal_agent.providers._throttle",
@@ -1721,8 +1743,8 @@ def test_bva_provider_throttles_before_request(monkeypatch):
 
 def test_bva_provider_detects_202_challenge_without_anomaly_text(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(
             "<html>slow down</html>", status_code=202
         ),
     )
@@ -1737,8 +1759,8 @@ def test_bva_provider_detects_202_challenge_without_anomaly_text(monkeypatch):
 
 def test_bva_provider_detects_mixed_case_anomaly_text(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(
             "<html>Anomaly challenge</html>", status_code=200
         ),
     )
@@ -1765,8 +1787,8 @@ def test_bva_provider_sanitizes_descriptions_and_fallbacks(monkeypatch):
     ]
     html = f'<html><script>"resultsData":{json.dumps({"results": items})}</script></html>'
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     results = BVAProvider().search("tinnitus", max_results=10)
@@ -2007,8 +2029,8 @@ def test_bva_provider_caps_default_max_results(monkeypatch):
     ]
     html = f'<html><script>"resultsData":{json.dumps({"results": items})}</script></html>'
     monkeypatch.setattr(
-        "va_legal_agent.providers.requests.get",
-        lambda url, params=None, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.providers.cffi_requests.get",
+        lambda url, params=None, headers=None, timeout=None, impersonate=None: FakeResponse(html),
     )
 
     results = BVAProvider().search("tinnitus")  # default max_results=10
