@@ -8,6 +8,7 @@ from va_legal_agent.fetch import extract_holding_sentence, extract_statutes
 from va_legal_agent.interpretation import InterpretiveAnalysis
 from va_legal_agent.llm import ReasoningResult
 from va_legal_agent.models import CaseRecord, Contradiction, PrincipleFinding
+from va_legal_agent.planning import ResearchPlan, SubTask
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
@@ -1533,6 +1534,126 @@ def test_research_issue_refines_uncovered_elements(monkeypatch, caplog):
     )
     assert any(
         r.getMessage() == "Research refinement complete: uncovered=['rating'] search_flags=[]."
+        for r in caplog.records
+    )
+    # The loop ended because the ready filter emptied with uncovered remaining
+    # and rounds below the cap (1 < 3), so the limit log must NOT fire -- a
+    # mutant that widens the condition to `or` would log here.
+    assert not any(
+        r.getMessage().startswith("Refinement round limit of")
+        for r in caplog.records
+    )
+
+
+def test_research_issue_refinement_rounds_are_bounded_without_deadline(monkeypatch, caplog):
+    """A ready-filter that never empties cannot spin the gap loop forever.
+
+    Regression for the ready-filter mutants (``and`` -> ``or``, ``not in`` ->
+    ``in``): with ``SEARCH_MAX_WALL_SECONDS=0`` there is no wall-clock deadline,
+    and a refine_plan that mints a fresh task every round would re-search done
+    tasks forever. The deterministic round cap terminates the loop after
+    ``SEARCH_MAX_REFINEMENT_ROUNDS`` rounds regardless of the deadline.
+    """
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "0")  # deadline disabled
+    monkeypatch.setenv("SEARCH_MAX_REFINEMENT_ROUNDS", "1")
+    calls = _stub_search(
+        monkeypatch,
+        results=[
+            {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}
+        ],
+    )
+
+    # Pathological refine_plan: a fresh task every round, so the ready filter
+    # never empties (mirrors what a broken ready-filter does to the loop).
+    counter = {"n": 0}
+
+    def spinning_refine(plan, uncovered=()):
+        counter["n"] += 1
+        task = SubTask(
+            id=f"gap-{counter['n']}",
+            kind="search",
+            goal="gap",
+            query='"rating" "tinnitus" veterans law',
+        )
+        return ResearchPlan(issue=plan.issue, claim_type=plan.claim_type, subtasks=(task,))
+
+    monkeypatch.setattr("va_legal_agent.agent.refine_plan", spinning_refine)
+
+    observations = {"n": 0}
+
+    def counting_observe(issue, cases, telemetry):
+        observations["n"] += 1
+        if observations["n"] > 2:  # initial + exactly 1 capped gap round
+            raise AssertionError("refinement loop spun past the round cap")
+        return ({"rating"}, [])
+
+    monkeypatch.setattr("va_legal_agent.agent._observe", counting_observe)
+
+    cases = research_issue("tinnitus", max_wall_seconds=0.0)
+
+    # The loop stops after the capped refinement round instead of spinning:
+    # round-1 queries + exactly one gap query, and the limit is logged.
+    assert len(cases) >= 1
+    assert observations["n"] == 2
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation")) + 1
+    assert any(
+        r.getMessage().startswith("Refinement round limit of 1 reached")
+        for r in caplog.records
+    )
+
+
+def test_research_issue_refinement_rounds_run_exactly_to_the_cap(monkeypatch, caplog):
+    """The loop runs exactly SEARCH_MAX_REFINEMENT_ROUNDS gap rounds, no more.
+
+    Kills the round-arithmetic mutants (`rounds = 1`, `rounds -= 1`, `rounds +=
+    2`): each changes how many gap rounds run before the cap stops the loop.
+    The observation stub raises if it is ever called past the expected count
+    (initial + capped rounds), so a runaway mutant fails fast instead of
+    hanging the run into a mutmut timeout.
+    """
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "0")  # deadline disabled
+    monkeypatch.setenv("SEARCH_MAX_REFINEMENT_ROUNDS", "2")
+    calls = _stub_search(
+        monkeypatch,
+        results=[
+            {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}
+        ],
+    )
+
+    counter = {"n": 0}
+
+    def spinning_refine(plan, uncovered=()):
+        counter["n"] += 1
+        task = SubTask(
+            id=f"gap-{counter['n']}",
+            kind="search",
+            goal="gap",
+            query='"rating" "tinnitus" veterans law',
+        )
+        return ResearchPlan(issue=plan.issue, claim_type=plan.claim_type, subtasks=(task,))
+
+    monkeypatch.setattr("va_legal_agent.agent.refine_plan", spinning_refine)
+
+    observations = {"n": 0}
+
+    def counting_observe(issue, cases, telemetry):
+        observations["n"] += 1
+        if observations["n"] > 3:  # initial + exactly 2 capped gap rounds
+            raise AssertionError("refinement loop spun past the round cap")
+        return ({"rating"}, [])
+
+    monkeypatch.setattr("va_legal_agent.agent._observe", counting_observe)
+
+    research_issue("tinnitus", max_wall_seconds=0.0)
+
+    # Exactly two gap rounds ran (not one, not unbounded), and the limit log
+    # fired after the second.
+    assert observations["n"] == 3
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation")) + 2
+    assert any(
+        r.getMessage().startswith("Refinement round limit of 2 reached")
         for r in caplog.records
     )
 

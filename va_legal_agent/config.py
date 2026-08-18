@@ -150,6 +150,12 @@ class Settings:
     # fetch_cases_for_issue, so operators can bound runs without tuning the
     # nested retry/backoff loops individually.
     search_max_wall_seconds: float = 0.0
+    # Deterministic cap on gap-refinement rounds in the research loop. Even
+    # with SEARCH_MAX_WALL_SECONDS=0 (deadline disabled), a pathological
+    # ready-filter (or a refine_plan that mints a fresh task every round) must
+    # not spin the re-search loop forever; the loop stops after this many
+    # refinement rounds.
+    search_max_refinement_rounds: int = 3
     search_providers: str = "duckduckgo"
     search_pages_per_query: int = 1
     # Per-provider overrides of SEARCH_PAGES_PER_QUERY, e.g. {"bva": 1} to
@@ -243,6 +249,9 @@ class Settings:
             ),
             search_max_wall_seconds=env_float(
                 "SEARCH_MAX_WALL_SECONDS", d.search_max_wall_seconds
+            ),
+            search_max_refinement_rounds=env_int(
+                "SEARCH_MAX_REFINEMENT_ROUNDS", d.search_max_refinement_rounds
             ),
             search_providers=os.getenv("SEARCH_PROVIDERS", d.search_providers),
             search_pages_per_query=env_int(

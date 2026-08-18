@@ -152,6 +152,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.search_backoff_max_seconds == 10.0
     assert settings.search_min_interval_seconds == 0.0
     assert settings.search_max_wall_seconds == 0.0
+    assert settings.search_max_refinement_rounds == 3
     assert settings.search_providers == "duckduckgo"
     assert settings.search_pages_per_query == 1
     assert settings.search_pages_per_query_by_provider == {}
@@ -222,6 +223,7 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("DEEP_READ_PAGES", "0")
     monkeypatch.setenv("DEEP_CHUNK_CHARS", "4000")
     monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "7.5")
+    monkeypatch.setenv("SEARCH_MAX_REFINEMENT_ROUNDS", "5")
 
     settings = get_settings()
 
@@ -232,6 +234,7 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.batch_state_dir == "/tmp/custom-batches"
     assert settings.search_max_workers == 6
     assert settings.search_max_wall_seconds == 7.5
+    assert settings.search_max_refinement_rounds == 5
     assert settings.search_providers == "duckduckgo,courtlistener"
     assert settings.search_pages_per_query == 3
     assert settings.search_pages_per_query_by_provider == {"bva": 1, "duckduckgo": 4}

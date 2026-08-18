@@ -404,11 +404,21 @@ def research_issue(
     _raise_if_no_results(cases, errors, budget_exhausted, claim_issue, max_wall_seconds)
 
     uncovered, flags = _observe(claim_issue, cases, telemetry)
-    while uncovered and (deadline is None or time.monotonic() < deadline):
+    # Deterministic cap on refinement rounds: even with the wall-time budget
+    # disabled, a broken ready-filter (or a refine_plan that mints a fresh
+    # task every round) must not spin the re-search loop forever.
+    max_refinement_rounds = get_settings().search_max_refinement_rounds
+    rounds = 0
+    while (
+        uncovered
+        and (deadline is None or time.monotonic() < deadline)
+        and rounds < max_refinement_rounds
+    ):
         plan = refine_plan(plan, uncovered)
         ready = [task for task in plan.search_subtasks() if task.id not in done and task.query]
         if not ready:
             break
+        rounds += 1
         # Re-check per round: an earlier round may have drained the daily
         # window, and a gap round would otherwise grind through 429s.
         _check_courtlistener_budget_before_run([task.query for task in ready], telemetry)
@@ -432,6 +442,13 @@ def research_issue(
             "Research refinement complete: uncovered=%s search_flags=%s.",
             list(uncovered),
             flags,
+        )
+    if uncovered and rounds >= max_refinement_rounds:
+        logger.info(
+            "Refinement round limit of %s reached for issue %r; stopping with uncovered=%s.",
+            max_refinement_rounds,
+            claim_issue,
+            list(uncovered),
         )
 
     # Multi-hop recall (opt-in): follow CourtListener citation trails from the
