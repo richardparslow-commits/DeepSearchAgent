@@ -297,13 +297,13 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     url_path = url.lower().split("?")[0]
     looks_pdf = "pdf" in content_type.lower() or url_path.endswith(".pdf")
     if looks_pdf:
-        return _details_from_text(_extract_pdf_text(content))
+        return extract_case_details(_extract_pdf_text(content))
 
     encoding = getattr(response, "encoding", None) or "utf-8"
     text = content.decode(encoding, errors="replace")
     # BVA decisions are plain-text files; parse them directly rather than as HTML.
     if "text/plain" in content_type.lower() or url_path.endswith(".txt"):
-        return _details_from_text(text)
+        return extract_case_details(text)
 
     soup = BeautifulSoup(text, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -311,14 +311,19 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
         "meta", attrs={"property": "og:description"}
     )
     page_text = soup.get_text(" ", strip=True)
-    details = _details_from_text(f"{title} {page_text}")
+    details = extract_case_details(f"{title} {page_text}")
     if not details["holding"] and meta:
         details["holding"] = (meta.get("content") or "").strip()
     return details
 
 
-def _details_from_text(text: str) -> dict[str, str | list[str]]:
-    """Extract all structured details from raw decision text."""
+def extract_case_details(text: str) -> dict[str, str | list[str]]:
+    """Extract all structured details from raw decision text.
+
+    Public counterpart used by the enrichment path and by the CourtListener
+    provider when it extracts details from API-delivered opinion text (the
+    frontend page is AWS-WAF-challenged and cannot be scraped).
+    """
     return {
         "citation": extract_citation(text),
         "decision_date": extract_decision_date(text),

@@ -332,6 +332,9 @@ class CourtListenerProvider:
             "decision_date": cluster.get("date_filed") or "",
             "docket": docket.get("docket_number") or "",
             "judge": cluster.get("judges") or "",
+            # Carry the opinion id so enrichment/deep-read can pull full text
+            # from the detail endpoint instead of the WAF-challenged frontend.
+            "courtlistener_opinion_id": str(opinion_id),
         }
 
     def fetch_opinion_text(self, opinion_id: int) -> str:

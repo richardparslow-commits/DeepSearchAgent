@@ -8,12 +8,13 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 from .config import get_settings
 from .deep_read import deep_read_cases
-from .fetch import fetch_case_details
+from .fetch import extract_case_details, fetch_case_details
 from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis, uncovered_element_names
 from .models import CaseRecord, LegalAnalysis
 from .planning import decompose_issue, plan_queries, refine_plan
 from .providers import (
+    CourtListenerProvider,
     check_courtlistener_daily_budget,
     recall_flags,
     resolve_search_providers,
@@ -555,11 +556,20 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
     """
     if limit is None:
         limit = get_settings().enrich_case_limit
+    courtlistener = CourtListenerProvider()
     for case in cases[:limit]:
         if not case.url:
             continue
         try:
-            details = fetch_case_details(case.url)
+            if case.courtlistener_opinion_id:
+                # CourtListener's frontend page is AWS-WAF JS-challenged for
+                # every non-browser client (curl_cffi included), so extract
+                # the same structured details from the REST opinion detail
+                # endpoint's full text instead of scraping the URL.
+                text = courtlistener.fetch_opinion_text(int(case.courtlistener_opinion_id))
+                details = extract_case_details(text) if text else {}
+            else:
+                details = fetch_case_details(case.url)
         except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
             logger.warning("Could not fetch details for %s: %s", case.url, exc)
             continue

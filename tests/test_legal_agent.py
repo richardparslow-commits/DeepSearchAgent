@@ -857,6 +857,63 @@ def test_enrich_falls_back_when_fetch_raises(monkeypatch, caplog):
     assert any("Could not fetch details" in r.message for r in caplog.records)
 
 
+def test_enrich_uses_courtlistener_api_when_opinion_id_present(monkeypatch):
+    case = CaseRecord(
+        title="Ito v. Copper River",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.courtlistener.com/opinion/9497426/yvonne-ito-v-copper-river/",
+        courtlistener_opinion_id="9497426",
+    )
+    api_ids: list[int] = []
+    scraped: list[str] = []
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            api_ids.append(opinion_id)
+            return (
+                "The Court holds that service connection requires a nexus "
+                "under 38 U.S.C. § 5107."
+            )
+
+    monkeypatch.setattr("va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider())
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: scraped.append(url) or {},
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert api_ids == [9497426]
+    assert scraped == []  # the WAF-challenged frontend is never scraped
+    assert case.holding  # holding extracted from API full text
+    assert case.statutes == ["38 U.S.C. § 5107"]
+
+
+def test_enrich_courtlistener_api_empty_text_degrades_gracefully(monkeypatch):
+    case = CaseRecord(
+        title="Empty opinion",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.courtlistener.com/opinion/1/empty/",
+        courtlistener_opinion_id="1",
+    )
+    scraped: list[str] = []
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            return ""
+
+    monkeypatch.setattr("va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider())
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: scraped.append(url) or {},
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.holding == ""  # empty API text -> no details, no crash
+    assert scraped == []  # still never scrapes the frontend
+
+
 @pytest.mark.filterwarnings("ignore:.*found in sys.modules.*:RuntimeWarning")
 def test_build_queries_uses_issue_and_strips_quotes():
     queries = build_case_queries('he"aring loss', "cancer")

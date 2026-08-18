@@ -2347,6 +2347,7 @@ def test_courtlistener_get_opinion_success(monkeypatch):
     assert result["docket"] == "19-4433"
     assert result["judge"] == "Judge Mary J. Smith"
     assert result["snippet"] == ""
+    assert result["courtlistener_opinion_id"] == "12345"
 
 
 def test_courtlistener_get_opinion_sparse_fallbacks(monkeypatch):
@@ -2372,6 +2373,7 @@ def test_courtlistener_get_opinion_sparse_fallbacks(monkeypatch):
     assert result["docket"] == ""
     assert result["judge"] == ""
     assert result["snippet"] == ""
+    assert result["courtlistener_opinion_id"] == "12345"
 
 
 def test_courtlistener_get_opinion_missing_cite_in_cluster(monkeypatch):
