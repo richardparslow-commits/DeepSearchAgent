@@ -53,6 +53,44 @@ def test_get_provider_unknown_name():
         get_provider("google")
 
 
+def test_courtlistener_get_json_passes_proxy_when_configured(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        captured["proxies"] = kwargs.get("proxies")
+        return FakeResponse({"results": []})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    CourtListenerProvider()._get_json("https://www.courtlistener.com/api/rest/v4/search/")
+
+    assert captured["proxies"] == {
+        "http": "http://user:pass@proxy.example:8080",
+        "https": "http://user:pass@proxy.example:8080",
+    }
+
+
+def test_bva_search_passes_proxy_when_configured(monkeypatch):
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
+    captured: dict[str, object] = {}
+    payload = '{"resultsData": {"results": [{"url": "https://www.va.gov/vetapp/x.txt", "title": "A1.txt", "description": "x"}]}}'
+
+    def fake_get(url, params=None, impersonate=None, timeout=None, **kwargs):
+        captured["proxies"] = kwargs.get("proxies")
+        return FakeResponse(payload)
+
+    monkeypatch.setattr("va_legal_agent.providers.cffi_requests.get", fake_get)
+
+    BVAProvider().search("tinnitus")
+
+    assert captured["proxies"] == {
+        "http": "http://proxy.example:8080",
+        "https": "http://proxy.example:8080",
+    }
+
+
 def test_resolve_search_providers_filters_without_logging(monkeypatch, caplog):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,bva,google")
 

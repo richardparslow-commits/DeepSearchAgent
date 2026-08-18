@@ -113,6 +113,11 @@ class Settings:
     request_timeout_seconds: int = 20
     user_agent: str = DEFAULT_USER_AGENT
     max_fetch_bytes: int = MAX_FETCH_BYTES
+    # Optional HTTP(S) proxy URL for the search layer (e.g.
+    # ``http://user:pass@host:port``). When set, every DuckDuckGo/CourtListener/
+    # BVA request routes through it, so a flagged local IP can be swapped for a
+    # residential proxy without touching the provider code. Empty = direct.
+    search_http_proxy: str = ""
 
     # Batch state
     batch_state_dir: str = field(
@@ -204,6 +209,7 @@ class Settings:
             request_timeout_seconds=env_int("REQUEST_TIMEOUT_SECONDS", d.request_timeout_seconds),
             user_agent=os.getenv("USER_AGENT", d.user_agent),
             max_fetch_bytes=env_int("MAX_FETCH_BYTES", d.max_fetch_bytes),
+            search_http_proxy=os.getenv("SEARCH_HTTP_PROXY", d.search_http_proxy),
             batch_state_dir=os.getenv("BATCH_STATE_DIR", d.batch_state_dir),
             search_max_workers=env_int("SEARCH_MAX_WORKERS", d.search_max_workers),
             search_delay_seconds=env_float("SEARCH_DELAY_SECONDS", d.search_delay_seconds),

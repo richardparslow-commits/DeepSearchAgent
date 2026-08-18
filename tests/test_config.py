@@ -163,6 +163,7 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("USER_AGENT", "Custom-Agent/9.9")
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
     monkeypatch.setenv("BATCH_STATE_DIR", "/tmp/custom-batches")
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "6")
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,courtlistener")
@@ -196,6 +197,7 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.request_timeout_seconds == 30
     assert settings.user_agent == "Custom-Agent/9.9"
     assert settings.max_fetch_bytes == 10
+    assert settings.search_http_proxy == "http://user:pass@proxy.example:8080"
     assert settings.batch_state_dir == "/tmp/custom-batches"
     assert settings.search_max_workers == 6
     assert settings.search_max_wall_seconds == 7.5

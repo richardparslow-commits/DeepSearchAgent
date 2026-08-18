@@ -113,6 +113,21 @@ def _throttle(provider: str | None = None) -> None:
             _last_request_monotonic = now
 
 
+def http_proxy_kwargs() -> dict[str, dict[str, str]]:
+    """Return ``{"proxies": {...}}`` for ``SEARCH_HTTP_PROXY``, else ``{}``.
+
+    Spread into a request call (``**http_proxy_kwargs()``) so a configured
+    residential proxy is applied to both http and https, while an unset proxy
+    leaves the call signature unchanged (no ``proxies`` kwarg at all, so the
+    direct-connect path and its tests stay identical). ``requests`` and
+    ``curl_cffi`` both accept the same ``{"http": ..., "https": ...}`` form.
+    """
+    proxy = get_settings().search_http_proxy.strip()
+    if not proxy:
+        return {}
+    return {"proxies": {"http": proxy, "https": proxy}}
+
+
 def build_duckduckgo_url(query: str, page: int = 1) -> str:
     params = {
         "q": query,
@@ -214,7 +229,12 @@ class DuckDuckGoProvider:
                 # via curl_cffi passes both; the impersonation supplies a
                 # browser User-Agent, so do not override it with the app's own
                 # bot-identifying UA.
-                response = cffi_requests.get(url, impersonate="chrome", timeout=timeout)
+                response = cffi_requests.get(
+                    url,
+                    impersonate="chrome",
+                    timeout=timeout,
+                    **http_proxy_kwargs(),
+                )
                 response.raise_for_status()
             except CffiRequestException as exc:
                 if not _is_transient_error(exc):

@@ -33,6 +33,7 @@ from .search import (
     _is_transient_error,
     _retry_delay,
     _throttle,
+    http_proxy_kwargs,
 )
 from .topics import (
     COURT_BVA,
@@ -237,6 +238,7 @@ class CourtListenerProvider:
                     params=params,
                     headers=self._headers(),
                     timeout=settings.request_timeout_seconds,
+                    **http_proxy_kwargs(),
                 )
                 response.raise_for_status()
             except requests.RequestException as exc:
@@ -576,6 +578,7 @@ class BVAProvider:
                 params=params,
                 impersonate="chrome",
                 timeout=settings.request_timeout_seconds,
+                **http_proxy_kwargs(),
             )
             response.raise_for_status()
         except CffiRequestException as exc:

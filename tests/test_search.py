@@ -105,10 +105,11 @@ def test_is_transient_error_handles_response_none():
 def test_search_web_sends_expected_request(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_get(url, impersonate=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None, proxies=None):
         captured["url"] = url
         captured["impersonate"] = impersonate
         captured["timeout"] = timeout
+        captured["proxies"] = proxies
         return FakeResponse(SAMPLE_HTML)
 
     monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
@@ -120,6 +121,25 @@ def test_search_web_sends_expected_request(monkeypatch):
     assert "s=0" in str(captured["url"])
     assert captured["impersonate"] == "chrome"  # browser fingerprint, no bot UA override
     assert captured["timeout"] == 20
+    assert captured["proxies"] is None  # no proxy configured -> direct connection
+
+
+def test_search_web_passes_proxy_when_configured(monkeypatch):
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, impersonate=None, timeout=None, proxies=None):
+        captured["proxies"] = proxies
+        return FakeResponse(SAMPLE_HTML)
+
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
+
+    search_web("tinnitus", max_results=5)
+
+    assert captured["proxies"] == {
+        "http": "http://user:pass@proxy.example:8080",
+        "https": "http://user:pass@proxy.example:8080",
+    }
 
 
 def test_parse_uses_result_link_fallback(monkeypatch):
