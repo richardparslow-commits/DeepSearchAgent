@@ -499,7 +499,7 @@ def test_research_issue_usage_guard_rechecks_gap_rounds(monkeypatch):
         "va_legal_agent.agent._observe",
         lambda issue, cases, telemetry: next(states),
     )
-    _stub_search(
+    calls = _stub_search(
         monkeypatch,
         results=[{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection rating"}],
     )
@@ -511,6 +511,10 @@ def test_research_issue_usage_guard_rechecks_gap_rounds(monkeypatch):
     # (a None argument would crash the estimate, killing the mutant).
     assert len(demands) == 2
     assert demands[0] > 0 and demands[1] > 0
+    # The gap round must search only the refined gap query, never re-running a
+    # round-1 query (kills the ready-filter `or`/`in` mutants deterministically).
+    round1 = build_case_queries("service connection and rating", "Compensation")
+    assert calls == round1 + ['"rating" "service connection and rating" veterans law']
     # Each passing check records a quota snapshot for the run output.
     assert [record.get("courtlistener_quota") for record in telemetry] == [
         {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
@@ -1505,7 +1509,12 @@ def test_research_issue_refines_uncovered_elements(monkeypatch, caplog):
     # All 13 round-1/gap results collapse to the single deduped case.
     assert [c.title for c in cases] == ["Smith v. Wilkie"]
     gap_query = '"rating" "service connection and rating" veterans law'
-    assert len(calls) == len(build_case_queries("service connection and rating", "Compensation")) + 1
+    round1 = build_case_queries("service connection and rating", "Compensation")
+    # Pin the exact query sequence, not just the count: a ready-filter mutant
+    # (`or` re-searches done tasks, `in` searches only done tasks) emits a
+    # different first gap query, so this kills both on the first gap query
+    # even when the wall-clock deadline truncates the round on a slow runner.
+    assert [c[0] for c in calls] == round1 + [gap_query]
     # The gap round reuses the same max_results and telemetry sink as round 1.
     gap_call = next(c for c in calls if c[0] == gap_query)
     assert gap_call[1] == 10
