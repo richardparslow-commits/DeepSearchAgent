@@ -141,6 +141,15 @@ def test_mask_proxy_url_masks_user_only_proxy():
     assert "alice" not in masked
 
 
+def test_mask_proxy_url_masks_proxy_without_port():
+    # A credential-bearing proxy with no port exercises the parts.port-is-None
+    # branch, where the netloc is rebuilt without a trailing :port.
+    masked = _mask_proxy_url("http://user:pass@proxy.example")
+    assert masked == "http://***@proxy.example"
+    assert "user" not in masked
+    assert "pass" not in masked
+
+
 def test_mask_proxy_url_redacts_unparseable_value():
     assert _mask_proxy_url("http://[invalid") == "***"
 
