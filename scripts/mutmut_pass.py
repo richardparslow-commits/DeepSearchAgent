@@ -136,26 +136,26 @@ def main() -> None:
     # ``segfault`` (SIGSEGV) is re-verified by running the mutant's tests
     # directly, because the macOS worker crash masks the true killed/survived
     # verdict (see :func:`_reverify_segfault`).
-    survivors: list[str] = []
+    survivors: list[tuple[str, str]] = []
     for line in result.stdout.splitlines():
         line = line.strip()
         if ":" not in line:
             continue
         name, status = (part.strip() for part in line.split(":", 1))
         if status == "survived":
-            survivors.append(name)
+            survivors.append((name, status))
         elif status == "timeout":
-            survivors.append(name)
+            survivors.append((name, status))
         elif status == "segfault":
             if _reverify_segfault(name, tests, target):
-                survivors.append(name)
+                survivors.append((name, status))
         elif status == "suspicious":
             if sys.platform == "darwin" and exit_codes.get(name) == -6:
                 continue
-            survivors.append(name)
+            survivors.append((name, status))
     with open(f"/tmp/mutmut_survivors_{module}.txt", "w") as f:
         f.write(f"### {module}: {len(survivors)} survivors\n\n")
-        for name in survivors:
+        for name, _status in survivors:
             show = subprocess.run(
                 [sys.executable, "-m", "mutmut", "show", name],
                 capture_output=True,
@@ -164,11 +164,19 @@ def main() -> None:
             f.write(show.stdout or show.stderr)
             f.write("\n" + "=" * 60 + "\n\n")
     print(f"{module}: {len(survivors)} survivors -> /tmp/mutmut_survivors_{module}.txt")
-    # Echo the survivor names to stdout so a CI failure is actionable without
-    # shelling into the runner: /tmp files do not survive the job, but these
-    # lines land in the workflow log.
-    for name in survivors:
-        print(f"  - {name}")
+    # Echo the survivor names, their mutmut verdict, and how many tests are
+    # associated with their function to stdout so a CI failure is actionable
+    # without shelling into the runner: /tmp files do not survive the job, but
+    # these lines land in the workflow log.
+    associated: dict[str, int] = {}
+    stats_path = Path("mutants") / "mutmut-stats.json"
+    if stats_path.exists():
+        stats_data = json.loads(stats_path.read_text())
+        tests_by_fn = stats_data.get("tests_by_mangled_function_name", {})
+        associated = {fn: len(tests) for fn, tests in tests_by_fn.items()}
+    for name, status in survivors:
+        func = name.rsplit("__mutmut_", 1)[0] if "__mutmut_" in name else name
+        print(f"  - {name} [{status}, {associated.get(func, 0)} associated tests]")
 
 
 if __name__ == "__main__":
