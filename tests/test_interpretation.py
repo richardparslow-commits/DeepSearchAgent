@@ -51,8 +51,12 @@ def test_detect_claim_elements_from_issue_text():
     assert "benefit of the doubt" in names
 
 
-def test_detect_claim_elements_empty_when_no_match():
-    assert detect_claim_elements("completely unrelated phrase") == []
+def test_detect_claim_elements_falls_back_to_full_library():
+    # A bare condition names no element phrase, so detection falls back to the
+    # whole library (the app is VA-specific) instead of returning nothing.
+    assert [spec.name for spec in detect_claim_elements("tinnitus")] == [
+        topic.name for topic in TOPICS
+    ]
 
 
 def test_uncovered_element_names_flags_elements_without_coverage():
@@ -65,9 +69,18 @@ def test_uncovered_element_names_flags_elements_without_coverage():
     ) == ("presumption",)
 
 
-def test_uncovered_element_names_empty_when_no_elements_detected():
-    assert uncovered_element_names("totally unrelated issue", []) == ()
-    assert uncovered_element_names("totally unrelated issue", [_case("Any")]) == ()
+def test_uncovered_element_names_falls_back_for_bare_issue():
+    # A bare issue scopes in the whole library, so with no covering cases every
+    # element is flagged as uncovered (drives the exhaustive gap round).
+    assert uncovered_element_names("tinnitus", []) == tuple(topic.name for topic in TOPICS)
+
+    # A case covering "service connection" and "nexus" still leaves the rest.
+    uncovered = uncovered_element_names(
+        "tinnitus", [_case("Smith v. Wilkie", snippet="service connection requires a nexus")]
+    )
+    assert "service connection" not in uncovered
+    assert "nexus" not in uncovered
+    assert "benefit of the doubt" in uncovered
 
 
 def test_extract_principle_findings_attributes_source_cases():
@@ -521,15 +534,22 @@ def test_build_analysis_flags_missing_principles():
     assert "No explicit principle" in result.how_it_affects_va_claims
 
 
-def test_build_analysis_handles_no_detected_elements():
+def test_build_analysis_falls_back_to_full_library_for_bare_issue():
     cases = [_case("Doe v. VA", snippet="service connection requires a nexus")]
 
-    result = build_interpretive_analysis("totally unrelated issue", "Compensation", cases)
+    result = build_interpretive_analysis("tinnitus", "Compensation", cases)
 
-    assert result.detected_elements == []
-    assert result.coverage_score == 0.0
+    # The bare condition falls back to the full element library, so coverage is
+    # computed against every claim element instead of a trivially empty set.
+    assert [element.name for element in result.detected_elements] == [
+        topic.name for topic in TOPICS
+    ]
+    assert result.detected_elements[0].covered_by == ["Doe v. VA"]  # service connection
+    assert result.coverage_score == 2 / 9  # service connection + nexus of 9
+    # The fallback still yields actionable element steps (not an empty list).
     assert result.next_steps[0] == (
-        "Identify the precise legal issue and the evidence in the claim file."
+        "Map the record to the three Caluza elements (diagnosis, in-service "
+        "event, nexus) and identify which element is contested."
     )
     assert "XXXX" not in result.how_it_affects_va_claims
 

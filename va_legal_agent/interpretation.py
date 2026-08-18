@@ -249,9 +249,16 @@ def _merge_contradictions(
 
 
 def detect_claim_elements(issue: str) -> list[ElementSpec]:
-    """Return the element specs whose detection phrases appear in the claim issue."""
+    """Return the element specs whose detection phrases appear in the claim issue.
+
+    Falls back to the full element library when the issue names no element
+    (a bare condition like ``"tinnitus"``): the app is VA-claims-specific, so
+    a bare condition is still a service-connection question and the coverage
+    score needs a non-empty denominator instead of a trivially 0.0.
+    """
     text = issue.lower()
-    return [spec for spec in ELEMENT_LIBRARY if any(phrase in text for phrase in spec.phrases)]
+    detected = [spec for spec in ELEMENT_LIBRARY if any(phrase in text for phrase in spec.phrases)]
+    return detected or list(ELEMENT_LIBRARY)
 
 
 def extract_principle_findings(cases: list[CaseRecord]) -> list[PrincipleFinding]:
@@ -296,11 +303,9 @@ def _template_interpretation(
     case_names = ", ".join(case.title for case in cases[:interpret_limit])
     if findings:
         principle_text = " ".join(finding.principle for finding in findings[:3])
-        element_text = (
-            f"Key elements to establish: {'; '.join(spec.name for spec in elements)}. "
-            if elements
-            else ""
-        )
+        # ``elements`` is never empty here: detect_claim_elements falls back to
+        # the full library for a bare issue, so the element text is unconditional.
+        element_text = f"Key elements to establish: {'; '.join(spec.name for spec in elements)}. "
         return (
             f"For the issue of {issue} under {claim_type}, the retrieved authorities "
             f"({case_names}) indicate the following governing principles: {principle_text} "
@@ -356,13 +361,11 @@ def build_interpretive_analysis(
             "verify the query terms or broaden the search.",
         )
 
-    coverage_score = (
-        sum(1 for element in detected if element.covered_by) / len(detected) if detected else 0.0
-    )
+    # ``detect_claim_elements`` now falls back to the full library for a bare
+    # issue, so ``detected`` is never empty here and the divisor is safe.
+    coverage_score = sum(1 for element in detected if element.covered_by) / len(detected)
 
     next_steps = [spec.step for spec in element_specs]
-    if not element_specs:
-        next_steps.append("Identify the precise legal issue and the evidence in the claim file.")
     next_steps.extend(GENERIC_NEXT_STEPS)
 
     template_text = _template_interpretation(

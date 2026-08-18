@@ -1663,6 +1663,10 @@ def test_research_issue_budget_expires_mid_round_returns_partial(monkeypatch, ca
     values = iter([100.0, 100.0, 100.0, 200.0, 100.0, 200.0])
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: next(values))
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
+    # Bare "tinnitus" now detects the full element library, which would add a
+    # gap round and consume an extra monotonic call; this test targets the
+    # budget-expiry path, so pin observation to "no gaps".
+    monkeypatch.setattr("va_legal_agent.agent._observe", lambda issue, cases, telemetry: ((), []))
     results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
@@ -2210,6 +2214,10 @@ def test_analyze_cases_default_claim_type_and_max_results(monkeypatch):
         monkeypatch,
         results=[{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}],
     )
+    # Bare "tinnitus" now detects the full element library and would trigger
+    # gap re-searches; this test only verifies the default claim_type and
+    # max_results flow through, so pin observation to "no gaps".
+    monkeypatch.setattr("va_legal_agent.agent._observe", lambda issue, cases, telemetry: ((), []))
 
     analyze_cases_for_claim("tinnitus")  # both args use their defaults
 
