@@ -164,6 +164,11 @@ def main() -> None:
             f.write(show.stdout or show.stderr)
             f.write("\n" + "=" * 60 + "\n\n")
     print(f"{module}: {len(survivors)} survivors -> /tmp/mutmut_survivors_{module}.txt")
+    # Echo the survivor names to stdout so a CI failure is actionable without
+    # shelling into the runner: /tmp files do not survive the job, but these
+    # lines land in the workflow log.
+    for name in survivors:
+        print(f"  - {name}")
 
 
 if __name__ == "__main__":
