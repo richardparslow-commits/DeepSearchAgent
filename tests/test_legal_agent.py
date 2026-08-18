@@ -799,10 +799,17 @@ def test_holding_extraction_handles_statute_citations_and_varying_phrasing():
 
 
 def test_analyze_cases_for_claim_raises_when_no_cases(monkeypatch):
-    _stub_search(monkeypatch, results=[])
+    calls = _stub_search(monkeypatch, results=[])
 
     with pytest.raises(ValueError, match="No cases found"):
-        analyze_cases_for_claim("obscure issue")
+        analyze_cases_for_claim("obscure issue", max_wall_seconds=1.0)
+
+    # The gap loop must never re-run a round-1 query. A ready-filter mutant
+    # (`and` -> `or` or `not in` -> `in`) re-searches done tasks until the wall
+    # deadline, which would otherwise hang this test into a mutmut timeout on
+    # runners whose set-hash test order puts it before the query-pinning tests.
+    # The no-repeat invariant fails on that mutant's very first gap query.
+    assert len(calls) == len(set(calls))
 
 
 def test_enrich_top_cases_limit_reads_env(monkeypatch):
@@ -2294,8 +2301,10 @@ def test_analyze_cases_default_claim_type_and_max_results(monkeypatch):
 
 def test_analyze_cases_honors_enrich_false(monkeypatch):
     calls: list[str] = []
+    queries: list[str] = []
 
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries.append(query)
         return [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
 
     def forbid_fetch(url, timeout=None):
@@ -2307,13 +2316,19 @@ def test_analyze_cases_honors_enrich_false(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
 
-    analyze_cases_for_claim("tinnitus", enrich=False)
+    analyze_cases_for_claim("tinnitus", enrich=False, max_wall_seconds=1.0)
 
     assert calls == []  # the enrich=False flag reached fetch_cases_for_issue
+    # Bound the refinement loop AND pin the no-repeat invariant so the
+    # ready-filter mutants fail fast here instead of timing out on Linux.
+    assert len(queries) == len(set(queries))
 
 
 def test_analyze_cases_carries_search_telemetry_and_flags(monkeypatch):
+    queries: list[str] = []
+
     def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        queries.append(query)
         if telemetry is not None:
             telemetry.append(
                 {"provider": "duckduckgo", "queries_issued": 1, "results": 0, "failures": 1, "deduped": 0}
@@ -2326,7 +2341,12 @@ def test_analyze_cases_carries_search_telemetry_and_flags(monkeypatch):
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
 
     telemetry: list[dict[str, object]] = []
-    analysis = analyze_cases_for_claim("tinnitus", telemetry=telemetry)
+    analysis = analyze_cases_for_claim("tinnitus", telemetry=telemetry, max_wall_seconds=1.0)
+
+    # A ready-filter mutant re-searches round-1 queries, which would hang this
+    # test into a mutmut timeout on Linux; the deadline bounds the loop and the
+    # no-repeat invariant kills the mutant on its first re-run query.
+    assert len(queries) == len(set(queries))
 
     assert analysis.search_telemetry  # rolled from the pipeline telemetry
     assert analysis.search_telemetry["duckduckgo"]["failures"] > 0
