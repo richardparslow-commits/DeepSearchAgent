@@ -1,5 +1,9 @@
 import pytest
-import requests
+from curl_cffi.requests.exceptions import (
+    ConnectionError as CffiConnectionError,
+    HTTPError as CffiHTTPError,
+    InvalidURL as CffiInvalidURL,
+)
 
 from va_legal_agent.search import (
     SearchError,
@@ -87,24 +91,34 @@ def test_is_challenge_detects_202_without_anomaly_text(monkeypatch):
     assert not _is_challenge(FakeResponse("<html>normal results</html>", status_code=200))
 
 
+def test_is_transient_error_handles_response_none():
+    from va_legal_agent.search import _is_transient_error
+
+    # A non-HTTP request exception carries response=None; the status lookup
+    # must degrade to None (not raise) so the error is treated as non-retryable.
+    assert _is_transient_error(CffiInvalidURL("bad url")) is False
+    assert _is_transient_error(CffiConnectionError("down")) is True
+    assert _is_transient_error(CffiHTTPError("429", response=FakeResponse("", 429))) is True
+    assert _is_transient_error(CffiHTTPError("403", response=FakeResponse("", 403))) is False
+
+
 def test_search_web_sends_expected_request(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         captured["url"] = url
-        captured["headers"] = headers
+        captured["impersonate"] = impersonate
         captured["timeout"] = timeout
         return FakeResponse(SAMPLE_HTML)
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     search_web("tinnitus", max_results=5)
 
     assert str(captured["url"]).startswith("https://duckduckgo.com/html/?")
     assert "q=tinnitus" in str(captured["url"])
     assert "s=0" in str(captured["url"])
-    assert captured["headers"] is not None
-    assert "User-Agent" in captured["headers"]
+    assert captured["impersonate"] == "chrome"  # browser fingerprint, no bot UA override
     assert captured["timeout"] == 20
 
 
@@ -118,8 +132,8 @@ def test_parse_uses_result_link_fallback(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -139,8 +153,8 @@ def test_parse_falls_back_to_plain_anchor(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -158,8 +172,8 @@ def test_parse_skips_result_block_without_any_link(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     with pytest.raises(SearchError, match="No search results"):
@@ -199,8 +213,8 @@ class FakeResponse:
 
 def test_search_web_parses_unwraps_and_dedupes(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(SAMPLE_HTML),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(SAMPLE_HTML),
     )
 
     results = search_web("site:uscourts.cavc.gov tinnitus", max_results=5)
@@ -225,8 +239,8 @@ def test_parse_prefers_result__a_over_first_anchor(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -238,8 +252,8 @@ def test_parse_prefers_result__a_over_first_anchor(monkeypatch):
 
 def test_search_web_raises_when_no_results(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse("<html><body></body></html>"),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse("<html><body></body></html>"),
     )
 
     with pytest.raises(SearchError, match="query that returns nothing"):
@@ -249,8 +263,8 @@ def test_search_web_raises_when_no_results(monkeypatch):
 def test_search_web_detects_rate_limit_challenge_page(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse("<html>anomaly-modal challenge</html>", status_code=202),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse("<html>anomaly-modal challenge</html>", status_code=202),
     )
 
     with pytest.raises(SearchError) as exc:
@@ -264,8 +278,8 @@ def test_search_web_detects_rate_limit_challenge_page(monkeypatch):
 def test_search_web_detects_anomaly_page_with_200_status(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse("<html>duckduckgo anomaly detected</html>"),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse("<html>duckduckgo anomaly detected</html>"),
     )
 
     with pytest.raises(SearchError, match="anomaly"):
@@ -287,8 +301,8 @@ def test_search_web_retries_challenge_with_exponential_backoff(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: next(responses),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: next(responses),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -302,11 +316,11 @@ def test_search_web_gives_up_after_retries(monkeypatch):
     monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
     calls: list[str] = []
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         calls.append(url)
         return FakeResponse("<html>anomaly</html>", status_code=202)
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="rate-limit"):
         search_web("tinnitus")
@@ -319,13 +333,13 @@ def test_search_web_retries_on_429(monkeypatch):
     monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
     responses = iter([FakeResponse("", status_code=429), FakeResponse(SAMPLE_HTML)])
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         response = next(responses)
         if response.status_code == 429:
-            raise requests.HTTPError("429 Too Many Requests", response=response)
+            raise CffiHTTPError("429 Too Many Requests", response=response)
         return response
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     results = search_web("tinnitus", max_results=5)
 
@@ -335,15 +349,15 @@ def test_search_web_retries_on_429(monkeypatch):
 def test_search_web_retries_connection_error(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
     monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
-    responses = iter([requests.ConnectionError("network down"), FakeResponse(SAMPLE_HTML)])
+    responses = iter([CffiConnectionError("network down"), FakeResponse(SAMPLE_HTML)])
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         response = next(responses)
         if isinstance(response, Exception):
             raise response
         return response
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     results = search_web("tinnitus", max_results=5)
 
@@ -354,10 +368,10 @@ def test_search_web_reports_unavailable_after_transient_errors(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
     monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
 
-    def fake_get(url, headers=None, timeout=None):
-        raise requests.ConnectionError("network down")
+    def fake_get(url, impersonate=None, timeout=None):
+        raise CffiConnectionError("network down")
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="repeatedly unavailable"):
         search_web("tinnitus")
@@ -369,8 +383,8 @@ def test_search_web_caps_results_at_max_results(monkeypatch):
         for i in range(3)
     )
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(f"<html><body>{blocks}</body></html>"),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(f"<html><body>{blocks}</body></html>"),
     )
 
     results = search_web("tinnitus", max_results=2)
@@ -386,8 +400,8 @@ def test_search_web_skips_click_trackers_then_stops_at_scan_cap(monkeypatch):
         + '<div class="result"><a class="result__a" href="https://example.com/real">Real</a></div>'
     )
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(f"<html><body>{blocks}</body></html>"),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(f"<html><body>{blocks}</body></html>"),
     )
 
     with pytest.raises(SearchError, match="No search results"):
@@ -399,10 +413,10 @@ def test_search_web_does_not_retry_fatal_status(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
 
-    def fake_get(url, headers=None, timeout=None):
-        raise requests.HTTPError("403 Forbidden", response=FakeResponse("", status_code=403))
+    def fake_get(url, impersonate=None, timeout=None):
+        raise CffiHTTPError("403 Forbidden", response=FakeResponse("", status_code=403))
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="Search request failed"):
         search_web("tinnitus")
@@ -466,12 +480,12 @@ def test_global_pacing_holds_under_concurrent_requests(monkeypatch):
     timestamps: list[float] = []
     lock = threading.Lock()
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         with lock:
             timestamps.append(clock["now"])
-        raise requests.ConnectionError("down")
+        raise CffiConnectionError("down")
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
     monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
     monkeypatch.setattr(
         "va_legal_agent.search.time.sleep", lambda sec: clock.__setitem__("now", clock["now"] + sec)
@@ -501,10 +515,10 @@ def test_retry_backoff_respects_max_seconds(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
 
-    def fake_get(url, headers=None, timeout=None):
-        raise requests.ConnectionError("down")
+    def fake_get(url, impersonate=None, timeout=None):
+        raise CffiConnectionError("down")
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="repeatedly unavailable"):
         search_web("tinnitus")
@@ -529,11 +543,11 @@ def test_search_web_exhausts_retries_and_propagates_error(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         attempts.append(url)
-        raise requests.ConnectionError("connection refused")
+        raise CffiConnectionError("connection refused")
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError) as excinfo:
         search_web("tinnitus")
@@ -545,7 +559,7 @@ def test_search_web_exhausts_retries_and_propagates_error(monkeypatch):
     # ... and it surfaces the last failure rather than a generic message.
     assert "repeatedly unavailable" in str(excinfo.value)
     assert "connection refused" in str(excinfo.value)
-    assert isinstance(excinfo.value.__cause__, requests.ConnectionError)
+    assert isinstance(excinfo.value.__cause__, CffiConnectionError)
     # Backoff ran before each retry: base * 2**i, capped at the max.
     assert sleeps == [1.0, 2.0, 4.0]
 
@@ -563,10 +577,10 @@ def test_backoff_never_exceeds_max_with_jitter(monkeypatch):
     sleeps: list[float] = []
     monkeypatch.setattr("va_legal_agent.search.time.sleep", sleeps.append)
 
-    def fake_get(url, headers=None, timeout=None):
-        raise requests.ConnectionError("down")  # real random.uniform left intact
+    def fake_get(url, impersonate=None, timeout=None):
+        raise CffiConnectionError("down")  # real random.uniform left intact
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError):
         search_web("tinnitus")
@@ -588,11 +602,11 @@ def test_search_web_throttles_before_each_request(monkeypatch):
 
     monkeypatch.setattr("va_legal_agent.search._throttle", record_throttle)
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         order.append("get")
         return FakeResponse(SAMPLE_HTML)
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     results = search_web("tinnitus", max_results=5)
 
@@ -811,8 +825,8 @@ def test_parse_prefers_result_link_over_decoy_anchor(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -832,8 +846,8 @@ def test_parse_collapses_multiline_title(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -853,8 +867,8 @@ def test_parse_collapses_multiline_snippet(monkeypatch):
     </body></html>
     """
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse(html),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
     results = search_web("tinnitus", max_results=5)
@@ -874,8 +888,8 @@ def test_duckduckgo_search_default_max_results(monkeypatch):
 
     monkeypatch.setattr("va_legal_agent.search._parse_results", fake_parse)
     monkeypatch.setattr(
-        "va_legal_agent.search.requests.get",
-        lambda url, headers=None, timeout=None: FakeResponse("ok"),
+        "va_legal_agent.search.cffi_requests.get",
+        lambda url, impersonate=None, timeout=None: FakeResponse("ok"),
     )
 
     DuckDuckGoProvider().search("tinnitus")
@@ -905,11 +919,11 @@ def test_duckduckgo_search_passes_page_to_url(monkeypatch):
     monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
     captured: dict[str, object] = {}
 
-    def fake_get(url, headers=None, timeout=None):
+    def fake_get(url, impersonate=None, timeout=None):
         captured["url"] = url
         return FakeResponse(SAMPLE_HTML)
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     DuckDuckGoProvider().search("tinnitus", page=2)
 
@@ -921,10 +935,10 @@ def test_search_web_reports_last_error_details(monkeypatch):
     monkeypatch.setenv("SEARCH_MIN_INTERVAL_SECONDS", "0")
     monkeypatch.setattr("va_legal_agent.search.time.sleep", lambda seconds: None)
 
-    def fake_get(url, headers=None, timeout=None):
-        raise requests.ConnectionError("network down")
+    def fake_get(url, impersonate=None, timeout=None):
+        raise CffiConnectionError("network down")
 
-    monkeypatch.setattr("va_legal_agent.search.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
 
     with pytest.raises(SearchError, match="network down"):
         search_web("tinnitus")

@@ -8,6 +8,12 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import (
+    ConnectionError as CffiConnectionError,
+    RequestException as CffiRequestException,
+    Timeout as CffiTimeout,
+)
 
 from .config import get_settings
 
@@ -35,10 +41,26 @@ def _is_challenge(response: "requests.Response") -> bool:
     return response.status_code == 202 or "anomaly" in response.text.lower()
 
 
-def _is_transient_error(exc: "requests.RequestException") -> bool:
-    """True for retryable network errors and throttle/server status codes."""
-    if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+def _is_transient_error(exc: Exception) -> bool:
+    """True for retryable network errors and throttle/server status codes.
+
+    Covers both the plain ``requests`` client (CourtListener) and the
+    curl_cffi browser-impersonating client (DuckDuckGo), whose exception
+    hierarchies share the same shape but are unrelated classes.
+    """
+    if isinstance(
+        exc,
+        (
+            requests.ConnectionError,
+            requests.Timeout,
+            CffiConnectionError,
+            CffiTimeout,
+        ),
+    ):
         return True
+    # Both exception families always set ``.response`` (defaulting to None for
+    # non-HTTP errors), so the direct attribute access is safe; only the
+    # ``status_code`` lookup needs a None default for ``.response is None``.
     return getattr(exc.response, "status_code", None) in _RETRYABLE_STATUSES
 
 
@@ -169,7 +191,6 @@ class DuckDuckGoProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         settings = get_settings()
-        headers = {"User-Agent": settings.user_agent}
         url = build_duckduckgo_url(query, page=page)
         timeout = settings.request_timeout_seconds
         retries = settings.search_retry_attempts
@@ -187,9 +208,15 @@ class DuckDuckGoProvider:
                 time.sleep(_retry_delay(attempt - 1))
             _throttle(self.name)
             try:
-                response = requests.get(url, headers=headers, timeout=timeout)
+                # DuckDuckGo's html endpoint challenges the plain ``requests``
+                # TLS fingerprint (403/202 anomaly page) and its bot-detection
+                # keys on the User-Agent. Impersonating a real Chrome handshake
+                # via curl_cffi passes both; the impersonation supplies a
+                # browser User-Agent, so do not override it with the app's own
+                # bot-identifying UA.
+                response = cffi_requests.get(url, impersonate="chrome", timeout=timeout)
                 response.raise_for_status()
-            except requests.RequestException as exc:
+            except CffiRequestException as exc:
                 if not _is_transient_error(exc):
                     raise SearchError(f"Search request failed for query: {query}: {exc}") from exc
                 last_error = exc
