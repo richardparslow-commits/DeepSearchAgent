@@ -295,6 +295,119 @@ def test_search_all_merges_providers_and_dedupes(monkeypatch):
     assert "https://courtlistener.com/opinion/1/" in urls
 
 
+def test_search_all_shares_cap_across_providers(monkeypatch):
+    """The first-listed provider must not fill the cap alone and starve the rest."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,courtlistener")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "1")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": f"DDG {i}", "url": f"https://example.com/ddg/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    class _FakeCL:
+        name = "courtlistener"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": f"CL {i}", "url": f"https://example.com/cl/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.get_provider",
+        lambda name: {"duckduckgo": _FakeDDG(), "courtlistener": _FakeCL()}[name],
+    )
+
+    results = search_all("tinnitus", max_results=6)
+
+    sources = {r["title"].split()[0] for r in results}
+    assert sources == {"DDG", "CL"}  # both providers contributed
+    assert len(results) == 6  # still capped overall
+
+
+def test_search_all_floor_keeps_every_provider_when_cap_below_count(monkeypatch):
+    """When max_results <= provider count, each provider still gets one slot."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,courtlistener")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "1")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": f"DDG {i}", "url": f"https://example.com/ddg/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    class _FakeCL:
+        name = "courtlistener"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": f"CL {i}", "url": f"https://example.com/cl/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.get_provider",
+        lambda name: {"duckduckgo": _FakeDDG(), "courtlistener": _FakeCL()}[name],
+    )
+
+    results = search_all("tinnitus", max_results=2)
+
+    # 2 slots for 2 providers: each gets 1, rather than the first taking both.
+    sources = {r["title"].split()[0] for r in results}
+    assert sources == {"DDG", "CL"}
+    assert len(results) == 2
+
+
+def test_search_all_stops_paging_when_share_exhausted(monkeypatch):
+    """A provider whose share is spent mid-pagination stops paging, not over-fetches."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo,courtlistener")
+    monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "2")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+    pages_seen: list[tuple[str, int]] = []
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            pages_seen.append(("DDG", page))
+            return [
+                {"title": f"DDG {i}", "url": f"https://example.com/ddg/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    class _FakeCL:
+        name = "courtlistener"
+
+        def search(self, query, max_results=10, page=1):
+            pages_seen.append(("CL", page))
+            return [
+                {"title": f"CL {i}", "url": f"https://example.com/cl/{i}", "snippet": ""}
+                for i in range(max_results)
+            ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.get_provider",
+        lambda name: {"duckduckgo": _FakeDDG(), "courtlistener": _FakeCL()}[name],
+    )
+
+    results = search_all("tinnitus", max_results=6)
+
+    assert len(results) == 6
+    # DDG's 3-slot share is spent after page 1, so it must not fetch page 2.
+    assert ("DDG", 2) not in pages_seen
+    assert ("CL", 1) in pages_seen
+
+
 def test_search_all_paginates(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
     monkeypatch.setenv("SEARCH_PAGES_PER_QUERY", "3")

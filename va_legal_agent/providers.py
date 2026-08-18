@@ -742,6 +742,11 @@ def search_all(
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
     errors: list[Exception] = []
+    # Fair-share the result cap across providers so the first-listed provider
+    # cannot fill *max_results* alone and starve the rest (e.g. courtlistener
+    # returning a full page of 20 before bva ever runs). Each provider gets at
+    # least one slot; the merged list is still capped at *max_results* overall.
+    per_provider_budget = max(1, -(-max_results // len(provider_names)))
     for name in provider_names:
         try:
             provider = get_provider(name)
@@ -767,14 +772,17 @@ def search_all(
             "failures": 0,
             "variants": variant_stats,
         }
+        provider_remaining = per_provider_budget
         for variant in variants:
             adapted = adapt_query_for_provider(variant, name)
             vstat = variant_stats.setdefault(adapted, {"results": 0, "failures": 0})
             for page in range(1, pages + 1):
+                if provider_remaining <= 0:
+                    break
                 if deadline is not None and time.monotonic() >= deadline:
                     raise SearchError(f"Search wall-time budget exhausted for query {query!r}")
                 try:
-                    results = provider.search(adapted, max_results, page=page)
+                    results = provider.search(adapted, provider_remaining, page=page)
                 except SearchError as exc:
                     logger.warning(
                         "Provider %s returned no results for query %r: %s", name, adapted, exc
@@ -791,6 +799,7 @@ def search_all(
                     if url and url not in seen:
                         seen.add(url)
                         merged.append(result)
+                        provider_remaining -= 1
                     else:
                         stats["deduped"] = int(stats["deduped"]) + 1
                     if len(merged) >= max_results:
