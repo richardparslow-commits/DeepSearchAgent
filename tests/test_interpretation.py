@@ -20,6 +20,7 @@ def _case(
     holding: str = "",
     outcome: str = "",
     statutes: list[str] | None = None,
+    deep_summary: str = "",
 ) -> CaseRecord:
     return CaseRecord(
         title=title,
@@ -29,6 +30,7 @@ def _case(
         holding=holding,
         outcome=outcome,
         statutes=statutes or [],
+        deep_summary=deep_summary,
     )
 
 
@@ -427,6 +429,34 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
     assert "Smith v. Wilkie" in result.how_it_affects_va_claims
     assert result.likely_applicable_principles  # "competent evidence" principle found
     assert all(step for step in result.next_steps)
+
+
+def test_deep_summary_feeds_element_coverage():
+    # snippet/holding/impact are empty; only the deep-read summary mentions the
+    # element phrase. The deterministic coverage scan must credit it.
+    cases = [
+        _case(
+            "Smith v. Wilkie",
+            deep_summary="Full opinion: service connection requires a nexus.",
+        )
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.detected_elements[0].covered_by == ["Smith v. Wilkie"]
+    assert result.coverage_score == 1.0
+
+
+def test_coverage_zero_without_deep_summary():
+    # Same case, no deep summary: the element phrase appears nowhere in the
+    # scanned text, so coverage must stay 0.0 (pins that deep_summary is what
+    # supplies the match above).
+    cases = [_case("Smith v. Wilkie")]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.detected_elements[0].covered_by == []
+    assert result.coverage_score == 0.0
 
 
 def test_build_analysis_uses_llm_text_when_available(monkeypatch):

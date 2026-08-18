@@ -134,7 +134,15 @@ class InterpretiveAnalysis:
 
 
 def _case_text(case: CaseRecord) -> str:
-    return f"{case.title} {case.snippet} {case.holding} {case.impact}".lower()
+    # ``deep_summary`` is included so full-text ingestion feeds the
+    # deterministic element-coverage, principle, and statute scans, not just
+    # the LLM reasoning pass. Without it, deep-read mode could produce a
+    # substantive holding while the coverage score stays 0.0 because the
+    # snippet/holding fields were too thin to match an element phrase.
+    return (
+        f"{case.title} {case.snippet} {case.holding} "
+        f"{case.impact} {case.deep_summary}"
+    ).lower()
 
 
 # Dispositions that favor the claimant position vs. go against it, used by the
