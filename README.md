@@ -214,6 +214,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 |---|---|---|
 | `REQUEST_TIMEOUT_SECONDS` | `20` | Timeout for each outbound search/fetch request |
 | `MAX_FETCH_BYTES` | `20971520` | Cap on downloaded response size in bytes (20 MiB) |
+| `USER_AGENT` | `Mozilla/5.0 (compatible; VA-Legal-Agent/1.0; …)` | HTTP User-Agent sent by the fetch layer (enrichment / deep-read) and the CourtListener provider; **not** sent to DuckDuckGo or BVA, which use `curl_cffi` browser impersonation instead |
 | `SEARCH_MAX_WORKERS` | `4` | Number of court-site search queries run concurrently |
 | `SEARCH_DELAY_SECONDS` | `0.5` | Stagger between starting consecutive search queries (`0` disables) |
 | `SEARCH_RETRY_ATTEMPTS` | `2` | Extra retries for throttled/transient DuckDuckGo responses (`0` disables) |
@@ -232,6 +233,8 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_QUERY_VARIANTS_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=0,courtlistener=5`; unlisted providers fall back to the global (`0` disables expansion for that provider) |
 | `COURTLISTENER_API_KEY` | – | CourtListener API token (free account; now required — v4 returns 401 for anonymous requests) |
 | `COURTLISTENER_USAGE_GUARD` | `1` | Pre-flight check against CourtListener's `api-usage` endpoint before each run; aborts with the daily-window reset time when the remaining budget can't cover the run (`0` disables) |
+| `CITATION_TRAVERSAL` | `0` | Multi-hop citation traversal: follow CourtListener citation trails from the strongest cases found and merge the discovered opinions before final ranking (`1`/`true`/`yes`/`on` enables). Off by default because it makes extra authenticated API calls per run |
+| `CITATION_TRAVERSE_LIMIT` | `3` | How many top cases seed the citation traversal |
 | `ENRICH_CASE_LIMIT` | `5` | Top cases enriched with full source-page details |
 | `INTERPRET_CASE_LIMIT` | `3` | Top cases fed into the interpretation narrative / LLM |
 | `PRINCIPLE_SCAN_LIMIT` | `5` | Cases scanned for case-backed principle findings |
