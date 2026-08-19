@@ -9,6 +9,7 @@ import requests
 
 from va_legal_agent.providers import (
     _courtlistener_query,
+    _minimize_bva_query,
     _parse_retry_after,
     BVAProvider,
     CourtListenerProvider,
@@ -968,9 +969,71 @@ def test_bva_provider_strips_site_prefix(monkeypatch):
     assert "site:" not in captured["params"]["query"]
 
 
-def test_bva_provider_strips_quotes(monkeypatch):
-    # search.usa.gov's WAF challenges any query containing a double-quoted
-    # phrase, so BVA strips quote characters before sending the request.
+def test_minimize_bva_query_broad_recall():
+    # The broad recall query puts the issue first in quotes; the claim type
+    # and trailing boilerplate are dropped so only the issue phrase is sent.
+    assert (
+        _minimize_bva_query(
+            'site:bva.va.gov "service connection for tinnitus" "Compensation" '
+            "veterans compensation"
+        )
+        == "service connection for tinnitus"
+    )
+
+
+def test_minimize_bva_query_statute_anchor_skipped():
+    # Statute-anchored queries put the fragment first; skip it and take the
+    # issue that follows.
+    assert _minimize_bva_query('"1110" "tinnitus" veterans compensation') == "tinnitus"
+    assert _minimize_bva_query('"38 U.S.C. 1110" "tinnitus" veterans') == "tinnitus"
+    assert _minimize_bva_query('"3.303" "hearing loss" veterans') == "hearing loss"
+
+
+def test_minimize_bva_query_unquoted_sheds_boilerplate():
+    # The unquoted broad recall is issue + trailing boilerplate; the suffix is
+    # stripped so the bare issue remains.
+    assert (
+        _minimize_bva_query("service connection for tinnitus veterans compensation decision")
+        == "service connection for tinnitus"
+    )
+    assert _minimize_bva_query("tinnitus veterans benefits law") == "tinnitus"
+    assert _minimize_bva_query("tinnitus veterans benefits court") == "tinnitus"
+
+
+def test_minimize_bva_query_unquoted_service_connection_suffix():
+    # The CAVC unquoted recall appends "service connection veterans law"; the
+    # whole suffix is shed so the issue's own "service connection" survives.
+    assert (
+        _minimize_bva_query("service connection for tinnitus service connection veterans law")
+        == "service connection for tinnitus"
+    )
+
+
+def test_minimize_bva_query_variant_synonym_does_not_replace_issue():
+    # derive_variants appends a quoted synonym to an unquoted query; the issue
+    # is the leading unquoted text, not the appended phrase.
+    assert (
+        _minimize_bva_query('service connection for tinnitus veterans compensation decision "hearing loss"')
+        == "service connection for tinnitus"
+    )
+
+
+def test_minimize_bva_query_never_empties_on_stopword_issue():
+    # An issue that is itself a boilerplate word must not be stripped away.
+    assert _minimize_bva_query("compensation veterans law") == "compensation"
+
+
+def test_minimize_bva_query_short_query_unchanged():
+    # A short, unquoted query (what a direct CLI call sends) is already the
+    # issue and passes through untouched.
+    assert _minimize_bva_query("tinnitus") == "tinnitus"
+    assert _minimize_bva_query("service connection tinnitus") == "service connection tinnitus"
+
+
+def test_bva_provider_minimizes_query_before_request(monkeypatch):
+    # search.usa.gov's WAF challenges long, quote-bearing, boilerplate-laden
+    # recall queries, so BVA reduces the query to the issue phrase before
+    # sending the request.
     captured = {}
 
     def fake_get(url, params=None, timeout=None, **kwargs):
@@ -984,7 +1047,7 @@ def test_bva_provider_strips_quotes(monkeypatch):
     BVAProvider().search('"service connection for tinnitus" "Compensation" veterans')
 
     assert '"' not in captured["params"]["query"]
-    assert captured["params"]["query"] == "service connection for tinnitus Compensation veterans"
+    assert captured["params"]["query"] == "service connection for tinnitus"
 
 
 def test_bva_provider_raises_on_challenge_page(monkeypatch):

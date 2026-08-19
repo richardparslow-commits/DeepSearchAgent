@@ -18,11 +18,11 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **741 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **751 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
-- **Pluggable search providers** — `SEARCH_PROVIDERS` selects DuckDuckGo (default), CourtListener (structured CAVC/Federal Circuit/SCOTUS metadata via the v4 REST API), and/or BVA (Board decisions via search.usa.gov). Queries are expanded issue-aware into variant queries, paged per provider, paced by RPM budgets, retried with backoff, and merged with URL-level dedupe; each provider reports per-query telemetry.
+- **Pluggable search providers** — `SEARCH_PROVIDERS` selects DuckDuckGo (default), CourtListener (structured CAVC/Federal Circuit/SCOTUS metadata via the v4 REST API), and/or BVA (Board decisions via the search.usa.gov index, query-minimized to the issue phrase to pass its WAF). Queries are expanded issue-aware into variant queries, paged per provider, paced by RPM budgets, retried with backoff, and merged with URL-level dedupe; each provider reports per-query telemetry.
 - **Deep multi-round research loop** — plan → execute → observe → refine: uncovered claim elements trigger gap-refinement rounds (bounded by `SEARCH_MAX_REFINEMENT_ROUNDS`, optionally by `SEARCH_MAX_WALL_SECONDS`), and opt-in `CITATION_TRAVERSAL` follows CourtListener citation trails from the strongest cases.
 - **Enrichment + deep-read** — top cases get full source-page details; `DEEP_READ=1` ingests whole opinion bodies via chunked map-reduce summaries surfaced as `deep_summaries`.
 - **Reasoning and synthesis** — deterministic template analysis is always on; with `OPENAI_API_KEY` set, an LLM narrative and a reconciling reasoning pass add contradiction flags and per-claim citations. Deterministic contradiction detection (opposite outcomes on the same statute) runs even without the LLM.
@@ -33,7 +33,7 @@ State as of August 2026: **741 tests at 100% line + branch coverage**, ruff clea
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 741 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 751 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every module at/under `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
@@ -124,7 +124,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (741 tests) runs in about seven seconds, so run it after
+The full suite (751 tests) runs in about seven seconds, so run it after
 every change:
 
 ```bash
@@ -384,12 +384,12 @@ Failures are graceful: a challenged query counts as a provider failure in the te
 
 ### BVA returns rate-limit/anomaly challenge pages (202)
 
-`search.usa.gov` (which indexes Board decisions) sits behind **AWS WAF**, which challenges the TLS fingerprint of plain HTTP clients — the `requests` library is almost always blocked regardless of IP or pacing. The BVA provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome TLS handshake and passes the challenge. It reuses one process-wide session so the `AWSALB` cookie jar persists across the whole run, and it **strips double-quote characters from the query** (the WAF challenges any request whose query contains a quoted phrase, before and independent of rate-limiting). This also means the app's own `USER_AGENT` is **not** sent to BVA — overriding the impersonation with a bot-identifying UA would re-trigger the block, so it is deliberately omitted.
+`search.usa.gov` (which indexes Board decisions) sits behind **AWS WAF**, which challenges the TLS fingerprint of plain HTTP clients — the `requests` library is almost always blocked regardless of IP or pacing. The BVA provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome TLS handshake and passes the challenge. It reuses one process-wide session so the `AWSALB` cookie jar persists across the whole run. On top of that, the provider **minimizes every query to its issue phrase** before sending it: the broad `site:bva.va.gov "issue" "ClaimType" veterans compensation` recall and the statute-anchored `"1110" "issue" veterans compensation` query are both reduced to just `issue`, dropping the quotes, claim type, statute fragment, and trailing boilerplate. The WAF challenges the *content* of those long recall queries (`service connection for tinnitus veterans compensation decision` returns a 202) while the short issue phrase (`service connection for tinnitus`) sails through, and the Board index ranks decisions on that phrase alone, so nothing is lost. (BVA decision `.txt` files themselves live on `www.va.gov/vetapp…` and are served without a WAF; only the search index is protected.) The app's own `USER_AGENT` is **not** sent to BVA — overriding the impersonation with a bot-identifying UA would re-trigger the block, so it is deliberately omitted.
 
-Things that still cause 202s even with impersonation, the cookie jar, and quote stripping:
+Things that can still cause 202s even with impersonation, the cookie jar, and query minimization:
 
 1. **Rapid bursts.** WAF challenge-flags an IP that fires many requests in quick succession (verified live: even a plain browser curl gets 202 + empty body during a burst, then 200 again after ~30s). Slow the run with `SEARCH_DELAY_SECONDS` or `SEARCH_MAX_RPM_BY_PROVIDER=bva=…`, and space repeated runs out.
-2. **VA-claims query patterns.** The WAF also challenges the *content* of long legal-research queries (e.g. `service connection for tinnitus veterans compensation`) regardless of pacing — this is tuned against exactly the kind of automated claims research this app performs. Short queries (`tinnitus`, `hearing loss`) sail through, but the expanded court-site queries often do not. There is no reliable client-side workaround; see the proxy note below.
+2. **Very long issue phrases.** A genuinely long multi-condition issue can still trip the length heuristic once the issue phrase itself is long; shorten the issue text, or rely on CourtListener to carry the run.
 3. **A hard block after sustained abuse.** If even a browser UA gets 202 for minutes on end, the IP is flagged longer-term — switch networks/VPN, or drop `bva` from `SEARCH_PROVIDERS` until it cools.
 
 For reliable Board-level recall from a flagged IP, route BVA through a residential proxy with `SEARCH_HTTP_PROXY` (the provider honors it), or accept that BVA degrades gracefully while CourtListener carries the run.

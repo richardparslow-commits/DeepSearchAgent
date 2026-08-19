@@ -534,6 +534,97 @@ def _get_bva_session() -> cffi_requests.Session:
     return _bva_session
 
 
+# The WAF in front of search.usa.gov's Board index challenges *long*
+# court-recall queries (``site:bva.va.gov "issue" "ClaimType" veterans
+# compensation``) but accepts the short issue phrase on its own -- verified
+# live: ``service connection for tinnitus`` passes while
+# ``service connection for tinnitus veterans compensation decision`` returns a
+# 202 challenge. The Board index ranks decisions on the issue phrase alone, so
+# the provider reduces every query to that phrase instead of sending the full
+# recall string. A double-quoted phrase, or the quoted (or unquoted) suffix
+# ``veterans compensation decision``, is the recall boilerplate we shed.
+_BVA_QUOTED_PHRASE = re.compile(r'"([^"]+)"')
+# Quoted statute/regulation fragments (``"1110"``, ``"3.303"``, or the long
+# ``"38 U.S.C. 1110"`` form) anchor the statute-anchored queries and are not
+# the issue; skip them so the issue phrase is selected instead.
+_BVA_STATUTE_PHRASE = re.compile(
+    r"^(?:\d+(?:\.\d+)*$|\d+\s+(?:U\.S\.C\.|C\.F\.R\.))", re.IGNORECASE
+)
+# The four unquoted broad-recall queries append a fixed boilerplate suffix
+# after the issue (see planning._broad_queries): `` veterans compensation
+# decision``, `` veterans benefits court/law``, or `` service connection
+# veterans law``. Strip the known suffix (longest first) so only the issue
+# remains; the word-level stoplist below is a backstop for anything else.
+_BVA_BOILERPLATE_SUFFIXES = (
+    "service connection veterans law",
+    "veterans compensation decision",
+    "veterans benefits court",
+    "veterans benefits law",
+    "veterans compensation",
+    "veterans benefits",
+)
+# Trailing recall-boilerplate words dropped as a backstop from unquoted
+# queries (``... tinnitus veterans compensation`` -> ``... tinnitus``).
+_BVA_BOILERPLATE = frozenset(
+    {
+        "appeals",
+        "benefit",
+        "benefits",
+        "board",
+        "case",
+        "cases",
+        "compensation",
+        "court",
+        "decision",
+        "decisions",
+        "law",
+        "veteran",
+        "veterans",
+    }
+)
+
+
+def _minimize_bva_query(query: str) -> str:
+    """Reduce a court-recall query to the issue phrase the Board index needs.
+
+    ``build_case_queries`` emits broad recalls such as
+    ``site:bva.va.gov "service connection for tinnitus" "Compensation" veterans
+    compensation`` and statute-anchored queries such as
+    ``"1110" "tinnitus" veterans compensation``. search.usa.gov's WAF
+    challenges those long queries but accepts the short issue phrase, and the
+    Board index ranks decisions on that phrase alone, so nothing is lost by
+    sending only the phrase.
+
+    When the query *begins* with a quoted phrase, the first quoted phrase that
+    is not a statute/regulation fragment is the issue (broad recalls put it
+    first; statute queries put the fragment first and are skipped to the
+    following phrase). An unquoted query is the issue followed by the
+    boilerplate suffix, so the leading text before the first quote is taken
+    and its trailing recall boilerplate is shed instead.
+    """
+    text = strip_site_prefixes(query).replace("\u201c", '"').replace("\u201d", '"')
+    if text.lstrip().startswith('"'):
+        for match in _BVA_QUOTED_PHRASE.finditer(text):
+            phrase = match.group(1).strip()
+            if phrase and not _BVA_STATUTE_PHRASE.match(phrase):
+                return phrase
+    # No leading quoted phrase (or none that names the issue): the issue is the
+    # leading text before the first quote. Shed the known boilerplate suffix,
+    # then any residual trailing boilerplate words, never emptying the query.
+    leading = text.split('"', 1)[0]
+    lower = leading.lower()
+    for suffix in _BVA_BOILERPLATE_SUFFIXES:
+        if lower.endswith(suffix):
+            candidate = leading[: -len(suffix)].rstrip()
+            if candidate:  # keep at least the issue; never strip the whole string
+                leading = candidate
+            break
+    words = leading.split()
+    while len(words) > 1 and words[-1].lower() in _BVA_BOILERPLATE:
+        words.pop()
+    return " ".join(words)
+
+
 class BVAProvider:
     """Board of Veterans' Appeals decisions via search.usa.gov.
 
@@ -580,14 +671,13 @@ class BVAProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         settings = get_settings()
-        # BVA's index searches only Board decisions; site: tokens are noise.
-        query = strip_site_prefixes(query)
-        # search.usa.gov's WAF challenges any request whose query contains a
-        # double-quoted phrase (it flags the quote characters themselves, before
-        # and independent of rate-limiting). One quote-bearing query poisons the
-        # shared session for the rest of the run, so strip the quotes — the
-        # Board index returns the same decisions without exact-phrase syntax.
-        query = query.replace('"', "").replace("\u201c", "").replace("\u201d", "")
+        # Reduce the court-recall query to its issue phrase. The WAF in front
+        # of search.usa.gov challenges long, quote-bearing, boilerplate-laden
+        # research queries while accepting the short issue phrase (verified
+        # live); the Board index ranks decisions on that phrase alone, so the
+        # recall string's site:/quote/claim-type/statute-anchor noise is
+        # dropped rather than sent. See :func:`_minimize_bva_query`.
+        query = _minimize_bva_query(query)
         params = {"affiliate": self.AFFILIATE, "query": query}
         if page > 1:
             params["page"] = page
