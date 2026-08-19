@@ -2,6 +2,7 @@ import pytest
 
 from va_legal_agent.models import CaseRecord
 from va_legal_agent.ranking import (
+    COURT_REPRESENTATION_FLOOR,
     WEIGHT_COMPLETENESS,
     WEIGHT_RECENCY,
     WEIGHT_RELEVANCE,
@@ -10,6 +11,7 @@ from va_legal_agent.ranking import (
     rank_cases,
     recency_score,
     score_case,
+    select_with_court_floor,
 )
 
 CAVC = "Court of Appeals for Veterans Claims"
@@ -187,3 +189,65 @@ def test_rank_cases_respects_current_year():
 
     tier = WEIGHT_RELEVANCE * 1.0 + WEIGHT_RECENCY * (30 / 31) + WEIGHT_COMPLETENESS * (1 / 3)
     assert ranked[0].composite_score == pytest.approx(case.authority_weight + tier)
+
+
+def test_select_with_court_floor_keeps_lowest_tier_visible():
+    cases = [make_case(f"CAFC {i}", court=CAFC, weight=3, relevance=9) for i in range(5)]
+    cases += [make_case(f"CAVC {i}", weight=2, relevance=5) for i in range(5)]
+    cases += [
+        make_case(f"BVA {i}", court="Board of Veterans' Appeals", weight=1, relevance=9)
+        for i in range(3)
+    ]
+
+    selected = select_with_court_floor(rank_cases(cases, current_year=2026), limit=6)
+
+    # Each present tier contributes the floor (2), so the Board tier survives a
+    # cap that a pure authority-dominant truncation would fill with CAFC/CAVC.
+    weights = [case.authority_weight for case in selected]
+    assert weights.count(3) == 2
+    assert weights.count(2) == 2
+    assert weights.count(1) == 2
+    assert len(selected) == 6
+    assert [case.authority_rank for case in selected] == [1, 2, 3, 4, 5, 6]
+
+
+def test_select_with_court_floor_fills_best_first_after_floor():
+    cases = [make_case(f"CAFC {i}", court=CAFC, weight=3, relevance=9) for i in range(4)]
+    cases += [make_case(f"CAVC {i}", weight=2, relevance=5) for i in range(3)]
+    cases += [
+        make_case(f"BVA {i}", court="Board of Veterans' Appeals", weight=1, relevance=9)
+        for i in range(2)
+    ]
+
+    selected = select_with_court_floor(
+        rank_cases(cases, current_year=2026), limit=7, floor=1
+    )
+
+    # floor=1 reserves one slot per tier (CAFC, CAVC, BVA), then the remaining
+    # four slots fill best-first: the other CAFC cases, then CAVC.
+    weights = [case.authority_weight for case in selected]
+    assert weights == [3, 2, 1, 3, 3, 3, 2]
+    assert [case.authority_rank for case in selected] == list(range(1, 8))
+
+
+def test_select_with_court_floor_zero_floor_is_truncation():
+    cases = [make_case(f"CAFC {i}", court=CAFC, weight=3) for i in range(3)]
+    cases += [
+        make_case(f"BVA {i}", court="Board of Veterans' Appeals", weight=1) for i in range(3)
+    ]
+
+    selected = select_with_court_floor(rank_cases(cases, current_year=2026), limit=3, floor=0)
+
+    assert [case.court for case in selected] == [CAFC, CAFC, CAFC]
+
+
+def test_select_with_court_floor_empty_and_zero_limit():
+    assert select_with_court_floor([], 5) == []
+    ranked = rank_cases([make_case("Only")], current_year=2026)
+    assert select_with_court_floor(ranked, 0) == []
+    # A negative limit is clamped to the empty selection too.
+    assert select_with_court_floor(ranked, -3) == []
+
+
+def test_court_representation_floor_default():
+    assert COURT_REPRESENTATION_FLOOR >= 1

@@ -28,6 +28,12 @@ WEIGHT_COMPLETENESS = 0.15
 # Cases with an unknown decision date are neither rewarded nor penalized.
 UNKNOWN_RECENCY = 0.5
 
+# Minimum number of cases each present authority tier contributes to the final
+# selection. Pure authority-dominant truncation lets the top tiers fill the
+# entire result cap (e.g. 30 Federal Circuit/CAVC cases), so the Board (BVA)
+# and other persuasive tiers never surface even when they returned results.
+COURT_REPRESENTATION_FLOOR = 2
+
 
 def _parse_year(decision_date: str) -> int | None:
     text = (decision_date or "").strip()
@@ -97,3 +103,49 @@ def rank_cases(cases: list[CaseRecord], current_year: int | None = None) -> list
     for index, case in enumerate(ordered, start=1):
         case.authority_rank = index
     return ordered
+
+
+def select_with_court_floor(
+    ordered: list[CaseRecord],
+    limit: int,
+    floor: int = COURT_REPRESENTATION_FLOOR,
+) -> list[CaseRecord]:
+    """Select up to *limit* ranked cases, reserving *floor* per authority tier.
+
+    *ordered* must be the :func:`rank_cases` output (authority-dominant, then
+    within-tier composite). The selection first takes up to *floor* cases from
+    each authority tier that is present (highest tier first, best-within-tier
+    first), then fills the remaining slots with the best-remaining cases, so
+    lower-authority tiers (BVA) stay visible without dethroning binding
+    authority in the fill phase. Re-numbers ``authority_rank`` to the final
+    selection order. ``floor <= 0`` (or ``limit <= 0``) degenerates to plain
+    top-*limit* truncation.
+    """
+    if limit <= 0 or floor <= 0:
+        return ordered[: max(limit, 0)]
+
+    selected: list[CaseRecord] = []
+    selected_ids: set[int] = set()
+    tiers = sorted({case.authority_weight for case in ordered}, reverse=True)
+    for weight in tiers:
+        taken = 0
+        for case in ordered:
+            if case.authority_weight != weight:
+                continue
+            selected.append(case)
+            selected_ids.add(id(case))
+            taken += 1
+            if taken >= floor or len(selected) >= limit:
+                break
+        if len(selected) >= limit:
+            break
+
+    for case in ordered:
+        if len(selected) >= limit:
+            break
+        if id(case) not in selected_ids:
+            selected.append(case)
+
+    for index, case in enumerate(selected, start=1):
+        case.authority_rank = index
+    return selected

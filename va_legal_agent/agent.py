@@ -22,7 +22,7 @@ from .providers import (
     search_all,
     traverse_citations,
 )
-from .ranking import rank_cases
+from .ranking import rank_cases, select_with_court_floor
 from .reliability import classify_source
 from .search import SearchError
 from .topics import (
@@ -335,8 +335,11 @@ def _dedupe_rank_and_enrich(
         deep_read_cases(deduped, claim_issue, limit=min(deep_read_limit, len(deduped)))
 
     # Final ordering comes from the ranking layer (authority tiers strictly
-    # dominant; within a tier: relevance, recency, and completeness).
-    ranked = rank_cases(deduped)[:max_results]
+    # dominant; within a tier: relevance, recency, and completeness), then a
+    # per-court representation floor so lower-authority tiers (BVA) are not
+    # truncated out of the cap by a full slate of higher-tier cases.
+    ranked = rank_cases(deduped)
+    ranked = select_with_court_floor(ranked, max_results)
     for case in ranked:
         case.impact = summarize_case_impact(case)
     return ranked

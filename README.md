@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **751 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **758 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -33,7 +33,7 @@ State as of August 2026: **751 tests at 100% line + branch coverage**, ruff clea
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 751 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 758 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every module at/under `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
@@ -124,7 +124,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (751 tests) runs in about seven seconds, so run it after
+The full suite (758 tests) runs in about seven seconds, so run it after
 every change:
 
 ```bash
@@ -203,7 +203,7 @@ The ranking layer (`va_legal_agent/ranking.py`) orders candidates in two steps:
    - recency (25%): decision year scaled from 1985 to today; unknown dates get a neutral score
    - completeness (15%): share of citation/decision date/holding extracted during enrichment
 
-Each case carries a `composite_score` (authority tier + within-tier score) and a `ranking_explanation` describing the factor breakdown, and the analysis summary reports the score alongside authority and relevance.
+Before the final result cap is applied, a **per-court representation floor** reserves two slots for every authority tier that is present, so a full slate of Federal Circuit/CAVC cases can't starve the Board (BVA) out of the output entirely; the remaining slots then fill best-first. Each case carries a `composite_score` (authority tier + within-tier score) and a `ranking_explanation` describing the factor breakdown, and the analysis summary reports the score alongside authority and relevance.
 
 ## Case detail extraction
 
