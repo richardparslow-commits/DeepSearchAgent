@@ -582,6 +582,12 @@ class BVAProvider:
         settings = get_settings()
         # BVA's index searches only Board decisions; site: tokens are noise.
         query = strip_site_prefixes(query)
+        # search.usa.gov's WAF challenges any request whose query contains a
+        # double-quoted phrase (it flags the quote characters themselves, before
+        # and independent of rate-limiting). One quote-bearing query poisons the
+        # shared session for the rest of the run, so strip the quotes — the
+        # Board index returns the same decisions without exact-phrase syntax.
+        query = query.replace('"', "").replace("\u201c", "").replace("\u201d", "")
         params = {"affiliate": self.AFFILIATE, "query": query}
         if page > 1:
             params["page"] = page

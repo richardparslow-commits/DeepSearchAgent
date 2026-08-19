@@ -384,12 +384,15 @@ Failures are graceful: a challenged query counts as a provider failure in the te
 
 ### BVA returns rate-limit/anomaly challenge pages (202)
 
-`search.usa.gov` (which indexes Board decisions) sits behind **AWS WAF**, which challenges the TLS fingerprint of plain HTTP clients — the `requests` library is almost always blocked regardless of IP or pacing. The BVA provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome TLS handshake and passes the challenge. This also means the app's own `USER_AGENT` is **not** sent to BVA — overriding the impersonation with a bot-identifying UA would re-trigger the block, so it is deliberately omitted.
+`search.usa.gov` (which indexes Board decisions) sits behind **AWS WAF**, which challenges the TLS fingerprint of plain HTTP clients — the `requests` library is almost always blocked regardless of IP or pacing. The BVA provider therefore sends its HTTP through `curl_cffi` with `impersonate="chrome"`, which reproduces a real Chrome TLS handshake and passes the challenge. It reuses one process-wide session so the `AWSALB` cookie jar persists across the whole run, and it **strips double-quote characters from the query** (the WAF challenges any request whose query contains a quoted phrase, before and independent of rate-limiting). This also means the app's own `USER_AGENT` is **not** sent to BVA — overriding the impersonation with a bot-identifying UA would re-trigger the block, so it is deliberately omitted.
 
-Two things still cause 202s even with impersonation:
+Things that still cause 202s even with impersonation, the cookie jar, and quote stripping:
 
 1. **Rapid bursts.** WAF challenge-flags an IP that fires many requests in quick succession (verified live: even a plain browser curl gets 202 + empty body during a burst, then 200 again after ~30s). Slow the run with `SEARCH_DELAY_SECONDS` or `SEARCH_MAX_RPM_BY_PROVIDER=bva=…`, and space repeated runs out.
-2. **A hard block after sustained abuse.** If even a browser UA gets 202 for minutes on end, the IP is flagged longer-term — switch networks/VPN, or drop `bva` from `SEARCH_PROVIDERS` until it cools.
+2. **VA-claims query patterns.** The WAF also challenges the *content* of long legal-research queries (e.g. `service connection for tinnitus veterans compensation`) regardless of pacing — this is tuned against exactly the kind of automated claims research this app performs. Short queries (`tinnitus`, `hearing loss`) sail through, but the expanded court-site queries often do not. There is no reliable client-side workaround; see the proxy note below.
+3. **A hard block after sustained abuse.** If even a browser UA gets 202 for minutes on end, the IP is flagged longer-term — switch networks/VPN, or drop `bva` from `SEARCH_PROVIDERS` until it cools.
+
+For reliable Board-level recall from a flagged IP, route BVA through a residential proxy with `SEARCH_HTTP_PROXY` (the provider honors it), or accept that BVA degrades gracefully while CourtListener carries the run.
 
 Failures are graceful: a challenged query counts as a provider failure in the telemetry and the run completes on the other providers.
 

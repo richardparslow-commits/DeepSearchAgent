@@ -968,6 +968,25 @@ def test_bva_provider_strips_site_prefix(monkeypatch):
     assert "site:" not in captured["params"]["query"]
 
 
+def test_bva_provider_strips_quotes(monkeypatch):
+    # search.usa.gov's WAF challenges any query containing a double-quoted
+    # phrase, so BVA strips quote characters before sending the request.
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["params"] = params
+        return FakeResponse(BVA_HTML)
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers._get_bva_session", lambda: _FakeSession(fake_get)
+    )
+
+    BVAProvider().search('"service connection for tinnitus" "Compensation" veterans')
+
+    assert '"' not in captured["params"]["query"]
+    assert captured["params"]["query"] == "service connection for tinnitus Compensation veterans"
+
+
 def test_bva_provider_raises_on_challenge_page(monkeypatch):
     monkeypatch.setattr(
         "va_legal_agent.providers._get_bva_session",
