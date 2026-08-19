@@ -1,5 +1,11 @@
 """Tests for guarded environment parsing and typed settings (va_legal_agent.config)."""
 
+import ast
+import re
+from pathlib import Path
+
+import pytest
+
 from va_legal_agent.config import DEFAULT_USER_AGENT, Settings, env_bool, env_float, env_int, get_settings
 
 
@@ -14,7 +20,9 @@ _ENV_VARS = (
     "SEARCH_BACKOFF_BASE_SECONDS",
     "SEARCH_BACKOFF_MAX_SECONDS",
     "SEARCH_MIN_INTERVAL_SECONDS",
+    "SEARCH_HTTP_PROXY",
     "SEARCH_MAX_WALL_SECONDS",
+    "SEARCH_MAX_REFINEMENT_ROUNDS",
     "SEARCH_PROVIDERS",
     "SEARCH_PAGES_PER_QUERY",
     "SEARCH_PAGES_PER_QUERY_BY_PROVIDER",
@@ -287,3 +295,99 @@ def test_settings_are_frozen_and_typed():
     assert isinstance(Settings().search_delay_seconds, float)
     assert Settings().search_query_variants_by_provider == {}
     assert Settings().search_max_rpm_by_provider == {}
+
+
+def _env_vars_read_in(tree: ast.Module) -> set[str]:
+    """Env var names read with a literal string key in an AST.
+
+    Matches ``os.getenv("NAME")`` calls and the config helpers
+    ``env_int``/``env_float``/``env_bool`` (whose first argument is the env
+    name). Dynamic keys -- the helper implementations' own ``os.getenv(name)``
+    parameters -- are excluded because the argument is a variable, not a
+    literal, so multi-line formatting can't hide a name.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        is_helper = (
+            isinstance(fn, ast.Name) and fn.id in {"env_int", "env_float", "env_bool"}
+        )
+        is_getenv = (
+            isinstance(fn, ast.Attribute)
+            and fn.attr == "getenv"
+            and isinstance(fn.value, ast.Name)
+            and fn.value.id == "os"
+        )
+        if not (is_helper or is_getenv):
+            continue
+        if (
+            node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            names.add(node.args[0].value)
+    return names
+
+
+def test_env_var_documentation_parity():
+    """Every env var the package reads is documented in both reference files.
+
+    The contract, enforced by the manual settings sweep: every env var read in
+    ``config.py`` must appear in the README settings table and have a
+    ``.env.example`` entry; every ``.env.example`` entry must be in the README
+    table; and every documented var must actually be read by some module (so
+    docs can't outlive the code). This test would have caught the two gaps the
+    sweep found -- CITATION_TRAVERSAL / CITATION_TRAVERSE_LIMIT and USER_AGENT
+    were read but undocumented in one or both files.
+    """
+    root = Path(__file__).resolve().parents[1]
+
+    config_source = (root / "va_legal_agent" / "config.py").read_text()
+    if "mutmut.mutation.trampoline" in config_source or "_mutmut_mutated" in config_source:
+        # Under the mutation pass, this test runs from the mutants/ sandbox
+        # against mutmut's trampoline-instrumented config.py (every function
+        # wrapped, mutant copies inline), so the AST parser would harvest
+        # mutant scaffolding like os.getenv("") instead of the real env
+        # names. The parity contract is enforced by the real suite; skip here
+        # so the sandbox's stats-collection run doesn't fail on it.
+        pytest.skip("config.py is mutmut-instrumented; parity is enforced by the real suite")
+
+    config_vars = _env_vars_read_in(ast.parse(config_source))
+    package_vars: set[str] = set()
+    for path in (root / "va_legal_agent").glob("*.py"):
+        package_vars |= _env_vars_read_in(ast.parse(path.read_text()))
+
+    readme_vars = set(
+        re.findall(
+            r"^\| `([A-Z][A-Z0-9_]+)`",
+            (root / "README.md").read_text(),
+            re.MULTILINE,
+        )
+    )
+    template_vars = set(
+        re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(), re.MULTILINE)
+    )
+
+    missing_from_readme = config_vars - readme_vars
+    missing_from_template = config_vars - template_vars
+    undocumented_template = template_vars - readme_vars
+    dead_docs = (readme_vars | template_vars) - package_vars
+
+    assert not missing_from_readme, (
+        "Settings read in config.py are missing from the README settings table: "
+        f"{sorted(missing_from_readme)}"
+    )
+    assert not missing_from_template, (
+        "Settings read in config.py are missing from .env.example: "
+        f"{sorted(missing_from_template)}"
+    )
+    assert not undocumented_template, (
+        ".env.example entries are missing from the README settings table: "
+        f"{sorted(undocumented_template)}"
+    )
+    assert not dead_docs, (
+        "Documented env vars that no module reads (dead documentation): "
+        f"{sorted(dead_docs)}"
+    )

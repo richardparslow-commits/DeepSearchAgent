@@ -124,6 +124,22 @@ def main() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
     )
+    result_lines = [ln for ln in result.stdout.splitlines() if ":" in ln]
+    checked = [
+        ln for ln in result_lines if ln.rsplit(":", 1)[1].strip() != "not checked"
+    ]
+    if result_lines and not checked:
+        # Every mutant came back "not checked": mutmut's stats collection
+        # failed (e.g. a test crashed in the sandbox), so nothing was actually
+        # executed. Reporting a vacuous green here would let the gate pass
+        # while testing nothing, so fail loudly instead.
+        print(
+            "FATAL: mutmut reported no checked mutants "
+            "(stats collection failed; every mutant is 'not checked') -- "
+            "refusing to report a vacuous pass",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     exit_codes: dict[str, int] = {}
     meta_path = scratch_pkg / f"{stem}.py.meta"
     if meta_path.exists():
