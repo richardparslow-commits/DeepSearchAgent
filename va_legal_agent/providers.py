@@ -771,6 +771,12 @@ def search_all(
     """
     settings = get_settings()
     provider_names = validate_search_providers(settings.search_providers)
+    # A fully-unknown SEARCH_PROVIDERS list resolves to no providers (see
+    # validate_search_providers); there is nothing to run, so return an empty
+    # result rather than dividing by zero below. Callers treat an empty merge
+    # as "no results", which surfaces as the usual no-cases error.
+    if not provider_names:
+        return []
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
     errors: list[Exception] = []

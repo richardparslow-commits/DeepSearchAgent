@@ -670,6 +670,19 @@ def test_search_all_skips_unknown_provider(monkeypatch, caplog):
     assert any("Unknown search provider" in r.message for r in caplog.records)
 
 
+def test_search_all_all_unknown_providers_returns_empty(monkeypatch):
+    """A fully-unknown SEARCH_PROVIDERS list yields no providers, not a crash.
+
+    validate_search_providers resolves "google,google" to [] (documented
+    behavior), and search_all must treat that as an empty result instead of
+    dividing by zero on the per-provider budget.
+    """
+    monkeypatch.setenv("SEARCH_PROVIDERS", "google,google")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+
+    assert search_all("tinnitus") == []
+
+
 def test_search_all_expands_query_variants(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "2")
