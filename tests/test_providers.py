@@ -1030,6 +1030,19 @@ def test_minimize_bva_query_short_query_unchanged():
     assert _minimize_bva_query("service connection tinnitus") == "service connection tinnitus"
 
 
+def test_minimize_bva_query_statute_only_anchor():
+    # A query with only statute anchors (no issue phrase) exhausts the quoted
+    # phrases without selecting one and degrades to an empty query rather than
+    # sending a statute fragment to the Board index.
+    assert _minimize_bva_query('"1110" veterans compensation') == ""
+
+
+def test_minimize_bva_query_boilerplate_only():
+    # A query that is entirely boilerplate (no issue) matches the suffix but
+    # the candidate is empty, so the query is never stripped to nothing.
+    assert _minimize_bva_query("veterans compensation") == "veterans"
+
+
 def test_bva_provider_minimizes_query_before_request(monkeypatch):
     # search.usa.gov's WAF challenges long, quote-bearing, boilerplate-laden
     # recall queries, so BVA reduces the query to the issue phrase before
