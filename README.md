@@ -16,6 +16,43 @@ This project is designed to search widely for relevant court and board decisions
 - U.S. Supreme Court
 - Board of Veterans' Appeals (BVA)
 
+## Project status (handoff)
+
+State as of August 2026: **741 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+
+### Feature surface
+
+- **Pluggable search providers** — `SEARCH_PROVIDERS` selects DuckDuckGo (default), CourtListener (structured CAVC/Federal Circuit/SCOTUS metadata via the v4 REST API), and/or BVA (Board decisions via search.usa.gov). Queries are expanded issue-aware into variant queries, paged per provider, paced by RPM budgets, retried with backoff, and merged with URL-level dedupe; each provider reports per-query telemetry.
+- **Deep multi-round research loop** — plan → execute → observe → refine: uncovered claim elements trigger gap-refinement rounds (bounded by `SEARCH_MAX_REFINEMENT_ROUNDS`, optionally by `SEARCH_MAX_WALL_SECONDS`), and opt-in `CITATION_TRAVERSAL` follows CourtListener citation trails from the strongest cases.
+- **Enrichment + deep-read** — top cases get full source-page details; `DEEP_READ=1` ingests whole opinion bodies via chunked map-reduce summaries surfaced as `deep_summaries`.
+- **Reasoning and synthesis** — deterministic template analysis is always on; with `OPENAI_API_KEY` set, an LLM narrative and a reconciling reasoning pass add contradiction flags and per-claim citations. Deterministic contradiction detection (opposite outcomes on the same statute) runs even without the LLM.
+- **Observability** — structured `analysis_complete` / `analysis_failed` events on stderr carrying run ids, `search_telemetry` + `search_flags` in the JSON output, `{json,text,csv}` output formats, and `--batch-size` `batch_summary` aggregation.
+- **Operational controls** — every runtime knob is a typed `Settings` field; `--show-config` prints the resolved dump with secrets masked (proxy credentials included), and per-provider overrides, budgets, retry/backoff, wall-time, round-cap, and worker caps are all env-driven.
+
+### Quality gates
+
+| Gate | Command | Status |
+|---|---|---|
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 741 passing |
+| Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
+| Lint | `make lint` | ruff clean |
+| Mutation kill-property | `make mutate-check` | every module at/under `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
+| CI (pushes + PRs) | `.github/workflows/ci.yml`, Python 3.11–3.14 | green |
+| Nightly mutation gate | `.github/workflows/mutation.yml`, cron 03:00 UTC + `workflow_dispatch` | green |
+
+Two gate scripts carry the mutation enforcement: `scripts/mutmut_pass.py` runs a scoped pass over one module (survivor diffs land in `/tmp/mutmut_survivors_<module>.txt`) and hard-fails if mutmut reports no checked mutants, so a failed stats-collection run can never masquerade as a pass; `scripts/check_mutation_baseline.py` fails on any count above baseline or any timeout. When extending the app, keep coverage at 100% and hold the baselines — triage new survivors with the pass script before bumping `.mutation-baseline.json`.
+
+### Operating
+
+```bash
+cp .env.example .env                 # edit: API keys, providers, budgets
+python -m va_legal_agent "service connection for tinnitus" --output-format text
+make smoke                           # one real query per configured provider
+make mutate-check                    # full mutation pass + baseline gate in one shot
+```
+
+See Configuration for the full settings table, the Retry and exhaustion chain section for worst-case timing, and Troubleshooting for provider-specific failures.
+
 ## Quick start
 
 1. Create a virtual environment.
@@ -87,7 +124,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Running tests
 
-The full suite (637 tests) runs in about seven seconds, so run it after
+The full suite (741 tests) runs in about seven seconds, so run it after
 every change:
 
 ```bash
