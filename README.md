@@ -259,7 +259,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_BACKOFF_MAX_SECONDS` | `10.0` | Cap on the retry backoff delay (seconds) |
 | `SEARCH_MIN_INTERVAL_SECONDS` | `0` | Global minimum seconds between any two search requests, across all providers (`0` disables) |
 | `SEARCH_HTTP_PROXY` | – | Optional HTTP(S) proxy URL that every DuckDuckGo/CourtListener/BVA request routes through (e.g. a residential proxy when the local IP is flagged); empty connects directly |
-| `SEARCH_MAX_RPM_BY_PROVIDER` | – | Per-provider requests-per-minute budget, e.g. `courtlistener=5,bva=10`; unlisted providers have no budget (`0` disables for that provider) |
+| `SEARCH_MAX_RPM_BY_PROVIDER` | – | Per-provider requests-per-minute budget, e.g. `courtlistener=5,bva=3`; unlisted providers have no budget (`0` disables for that provider) |
 | `SEARCH_MAX_RESULTS` | `10` | Cap on results merged per search query; raise it (e.g. `30`) for multi-provider runs so a backend listed first can't fill the cap alone and starve the others (override per run with `--max-results`) |
 | `SEARCH_MAX_WALL_SECONDS` | `0` | Cap on total wall time (seconds) spent searching for one issue (`0` disables; override per run with `--max-wall-time`) |
 | `SEARCH_MAX_REFINEMENT_ROUNDS` | `3` | Deterministic cap on gap-refinement rounds in the research loop — the re-search loop stops after this many rounds even with `SEARCH_MAX_WALL_SECONDS=0`, so a broken ready-filter or a `refine_plan` that mints fresh tasks can't spin forever (`0` disables gap refinement entirely) |

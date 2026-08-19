@@ -515,6 +515,25 @@ def traverse_citations(urls: list[str], max_results: int = 10) -> list[dict[str,
     return merged
 
 
+_bva_session: cffi_requests.Session | None = None
+
+
+def _get_bva_session() -> cffi_requests.Session:
+    """Return the process-wide BVA session, creating it lazily.
+
+    search.usa.gov issues ``AWSALB``/``AWSALBCORS`` session cookies on the
+    first request. A fresh connection per query never carries them back, so a
+    multi-query run looks like a stream of cookie-less bots and trips the WAF's
+    challenge mid-run. Reusing one ``curl_cffi`` Session keeps the impersonated
+    Chrome handshake *and* the cookie jar across the whole run, so it reads as
+    a single browser session instead of a burst of anonymous clients.
+    """
+    global _bva_session
+    if _bva_session is None:
+        _bva_session = cffi_requests.Session(impersonate="chrome")
+    return _bva_session
+
+
 class BVAProvider:
     """Board of Veterans' Appeals decisions via search.usa.gov.
 
@@ -570,13 +589,13 @@ class BVAProvider:
         try:
             # search.usa.gov sits behind AWS WAF, which challenges the TLS
             # fingerprint of the plain ``requests`` client (HTTP 202 with an
-            # empty body). Impersonating a real Chrome handshake via curl_cffi
-            # passes the challenge; the impersonation also supplies a browser
-            # User-Agent, so do not override it with the app's own UA.
-            response = cffi_requests.get(
+            # empty body). A reused curl_cffi Session impersonates a real
+            # Chrome handshake and carries the AWSALB session cookies between
+            # queries; the impersonation also supplies a browser User-Agent, so
+            # do not override it with the app's own UA.
+            response = _get_bva_session().get(
                 self.SEARCH_URL,
                 params=params,
-                impersonate="chrome",
                 timeout=settings.request_timeout_seconds,
                 **http_proxy_kwargs(),
             )
