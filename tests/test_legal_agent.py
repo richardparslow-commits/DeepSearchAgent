@@ -455,6 +455,32 @@ def test_deep_read_limit_respected(monkeypatch):
     assert seen["limit"] == 2
 
 
+def test_deep_read_selection_applies_court_floor(monkeypatch):
+    """Deep-read mirrors the ranking floor so the lowest tier (BVA) is ingested."""
+    results = [
+        {"title": "FC 1", "url": "https://cafc.uscourts.gov/1", "snippet": "service connection rating", "court": COURT_FEDERAL_CIRCUIT},
+        {"title": "FC 2", "url": "https://cafc.uscourts.gov/2", "snippet": "service connection rating", "court": COURT_FEDERAL_CIRCUIT},
+        {"title": "CAVC 1", "url": "https://uscourts.cavc.gov/1", "snippet": "service connection rating", "court": COURT_CAVC},
+        {"title": "CAVC 2", "url": "https://uscourts.cavc.gov/2", "snippet": "service connection rating", "court": COURT_CAVC},
+        {"title": "BVA 1", "url": "https://www.va.gov/vetapp25/1.txt", "snippet": "service connection rating", "court": COURT_BVA},
+        {"title": "BVA 2", "url": "https://www.va.gov/vetapp25/2.txt", "snippet": "service connection rating", "court": COURT_BVA},
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    seen: list[list[str]] = []
+
+    def recording_deep_read(cases, issue, limit=None):
+        seen.append([c.title for c in cases])
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", recording_deep_read)
+
+    fetch_cases_for_issue("service connection", max_results=6, deep_read_limit=6)
+
+    # The floor reserves two slots per authority tier, so both BVA decisions
+    # are deep-read alongside the binding Federal Circuit/CAVC cases.
+    assert sorted(seen[0]) == ["BVA 1", "BVA 2", "CAVC 1", "CAVC 2", "FC 1", "FC 2"]
+
+
 def test_research_issue_usage_guard_aborts_before_search(monkeypatch):
     """The CLI/batch entry pre-flights the budget before the first round."""
     monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")

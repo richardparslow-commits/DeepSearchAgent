@@ -329,10 +329,6 @@ def _dedupe_rank_and_enrich(
 
     if enrich:
         enrich_top_cases(deduped, limit=min(settings.enrich_case_limit, max(max_results, 1)))
-    # Deep-read mode fetches the full body of the top cases and summarizes it
-    # so the reasoning pass cross-references holdings across the whole corpus.
-    if deep_read:
-        deep_read_cases(deduped, claim_issue, limit=min(deep_read_limit, len(deduped)))
 
     # Final ordering comes from the ranking layer (authority tiers strictly
     # dominant; within a tier: relevance, recency, and completeness), then a
@@ -340,6 +336,21 @@ def _dedupe_rank_and_enrich(
     # truncated out of the cap by a full slate of higher-tier cases.
     ranked = rank_cases(deduped)
     ranked = select_with_court_floor(ranked, max_results)
+
+    # Deep-read mode fetches the full body of the top cases and summarizes it
+    # so the reasoning pass cross-references holdings across the whole corpus.
+    # The selection mirrors the ranking floor so every represented authority
+    # tier (including BVA) gets full-text ingestion instead of only the
+    # authority-sorted top-N. ``deep_read_limit`` still caps the total number
+    # of ingests for cost control; the floor guarantees each tier a slot when
+    # the limit is at least ``floor x #tiers``. ``renumber=False`` keeps the
+    # returned ordering's authority_rank from being clobbered.
+    if deep_read:
+        deep_selection = select_with_court_floor(
+            ranked, min(deep_read_limit, len(ranked)), renumber=False
+        )
+        deep_read_cases(deep_selection, claim_issue, limit=len(deep_selection))
+
     for case in ranked:
         case.impact = summarize_case_impact(case)
     return ranked

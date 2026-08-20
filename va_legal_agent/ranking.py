@@ -109,6 +109,7 @@ def select_with_court_floor(
     ordered: list[CaseRecord],
     limit: int,
     floor: int = COURT_REPRESENTATION_FLOOR,
+    renumber: bool = True,
 ) -> list[CaseRecord]:
     """Select up to *limit* ranked cases, reserving *floor* per authority tier.
 
@@ -117,9 +118,12 @@ def select_with_court_floor(
     each authority tier that is present (highest tier first, best-within-tier
     first), then fills the remaining slots with the best-remaining cases, so
     lower-authority tiers (BVA) stay visible without dethroning binding
-    authority in the fill phase. Re-numbers ``authority_rank`` to the final
-    selection order. ``floor <= 0`` (or ``limit <= 0``) degenerates to plain
-    top-*limit* truncation.
+    authority in the fill phase. ``floor <= 0`` (or ``limit <= 0``) degenerates
+    to plain top-*limit* truncation.
+
+    ``renumber=False`` skips the ``authority_rank`` re-numbering so callers can
+    reuse the floor selection (e.g. deep-read) without clobbering the final
+    display order of the already-selected cases.
     """
     if limit <= 0 or floor <= 0:
         return ordered[: max(limit, 0)]
@@ -146,6 +150,7 @@ def select_with_court_floor(
         if id(case) not in selected_ids:
             selected.append(case)
 
-    for index, case in enumerate(selected, start=1):
-        case.authority_rank = index
+    if renumber:
+        for index, case in enumerate(selected, start=1):
+            case.authority_rank = index
     return selected
