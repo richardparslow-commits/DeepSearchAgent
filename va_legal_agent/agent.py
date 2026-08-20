@@ -16,6 +16,7 @@ from .planning import decompose_issue, plan_queries, refine_plan
 from .providers import (
     CourtListenerProvider,
     check_courtlistener_daily_budget,
+    check_courtlistener_minute_budget,
     recall_flags,
     resolve_search_providers,
     rollup_search_telemetry,
@@ -404,7 +405,13 @@ def research_issue(
     # Pre-flight the CourtListener daily budget before the first search round
     # (this is the entry point the CLI and batch runner use, so the guard must
     # live here, not only in the single-pass fetch_cases_for_issue primitive).
-    _check_courtlistener_budget_before_run([task.query for task in initial], telemetry)
+    _settings = get_settings()
+    _check_courtlistener_budget_before_run(
+        [task.query for task in initial],
+        telemetry,
+        deep_read=bool(deep_read if deep_read is not None else _settings.deep_read),
+        deep_read_limit=deep_read_limit or _settings.deep_read_limit,
+    )
     done.update(task.id for task in initial)
     round_cases, errors, budget_exhausted = _fanout_search(
         [task.query for task in initial if task.query],
@@ -435,7 +442,12 @@ def research_issue(
         rounds += 1
         # Re-check per round: an earlier round may have drained the daily
         # window, and a gap round would otherwise grind through 429s.
-        _check_courtlistener_budget_before_run([task.query for task in ready], telemetry)
+        _check_courtlistener_budget_before_run(
+            [task.query for task in ready],
+            telemetry,
+            deep_read=bool(deep_read if deep_read is not None else _settings.deep_read),
+            deep_read_limit=deep_read_limit or _settings.deep_read_limit,
+        )
         logger.info(
             "Research gap detected: uncovered=%s search_flags=%s; refining queries.",
             list(uncovered),
@@ -480,20 +492,26 @@ def research_issue(
 
 
 def _check_courtlistener_budget_before_run(
-    queries: list[str], telemetry: list[dict[str, object]] | None = None
+    queries: list[str],
+    telemetry: list[dict[str, object]] | None = None,
+    deep_read: bool = False,
+    deep_read_limit: int = 0,
 ) -> None:
-    """Abort early when CourtListener's daily budget can't cover *queries*.
+    """Abort early when CourtListener's budget can't cover the planned run.
 
     The free tier applies three rolling windows concurrently (5/min, 50/hour,
-    125/day) and the daily one is what drains on sustained use, but the
-    per-minute pacing in ``_throttle`` cannot see it. Estimate the nominal
-    request cost of the round (queries x variants x pages) and require that
-    much headroom, raising :class:`SearchError` with the window reset time
-    otherwise. Uses the api-usage endpoint's own throttle, so the check
-    itself never burns the search budget. When *telemetry* is given, a
-    passing check appends a ``{"courtlistener_quota": {...}}`` snapshot so
-    the final output can surface the remaining daily window. Skips when
-    CourtListener is not a configured provider or the guard is disabled.
+    125/day). This guard estimates the total CourtListener request cost
+    — search queries × variants × pages **plus** deep-read opinion-detail
+    fetches — and pre-flights both the daily window and the per-minute
+    window.  Deep-read adds one opinion-detail REST call per ingested case
+    that carries a ``courtlistener_opinion_id``, so a deep-read of 6 cases
+    burns up to 6 extra requests from both windows.
+
+    When *telemetry* is given, a passing check appends a
+    ``{"courtlistener_quota": {...}}`` snapshot so the final output can
+    surface the remaining daily window.  Skips when CourtListener is not a
+    configured provider or the guard is disabled.
+
     Called from both :func:`research_issue` (per round, the CLI/batch path)
     and :func:`fetch_cases_for_issue` (the single-pass primitive).
     """
@@ -514,7 +532,18 @@ def _check_courtlistener_budget_before_run(
         ),
         1,
     )
-    estimated = len(queries) * variants * pages
+    search_cost = len(queries) * variants * pages
+    # Deep-read opinion-detail fetches each burn one CourtListener REST
+    # request (the opinion detail endpoint).  The actual count depends on
+    # how many cases carry a courtlistener_opinion_id, but the worst case
+    # is every case; use the limit (capped to the search results) as the
+    # upper bound so the guard never under-estimates.
+    dr_cost = 0
+    if deep_read:
+        dr_cost = max(deep_read_limit, 0)
+    estimated = search_cost + dr_cost
+
+    # --- Daily window ---
     try:
         budget = check_courtlistener_daily_budget(estimated)
     except SearchError as exc:
@@ -527,6 +556,24 @@ def _check_courtlistener_budget_before_run(
     )
     if telemetry is not None:
         telemetry.append({"courtlistener_quota": dict(budget)})
+
+    # --- Per-minute window ---
+    # Deep-read fetches hit the opinion detail endpoint in rapid succession;
+    # without this check the run would grind through 429s with 60-second
+    # backoffs.  Search queries are already spaced by _throttle, so the
+    # minute window only bites when deep-read adds extra calls.
+    if dr_cost:
+        try:
+            minute_budget = check_courtlistener_minute_budget(dr_cost)
+        except SearchError as exc:
+            logger.warning("CourtListener usage guard aborted run: %s", exc)
+            raise
+        if minute_budget:
+            logger.info(
+                "CourtListener minute budget OK for deep-read (need %d, %d remaining).",
+                dr_cost,
+                int(minute_budget.get("remaining", 0)),
+            )
 
 
 def _last_courtlistener_quota(
@@ -570,7 +617,12 @@ def fetch_cases_for_issue(
     deadline = _deadline_for(max_wall_seconds)
 
     queries = build_case_queries(claim_issue, claim_type)
-    _check_courtlistener_budget_before_run(queries, telemetry)
+    _check_courtlistener_budget_before_run(
+        queries,
+        telemetry,
+        deep_read=bool(deep_read if deep_read is not None else get_settings().deep_read),
+        deep_read_limit=deep_read_limit or get_settings().deep_read_limit,
+    )
     cases, errors, budget_exhausted = _fanout_search(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
     )

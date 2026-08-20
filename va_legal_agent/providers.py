@@ -434,6 +434,7 @@ def fetch_courtlistener_usage() -> dict[str, object]:
 
 
 _DAILY_RATE_PATTERN = re.compile(r"^\d+/day$")
+_MINUTE_RATE_PATTERN = re.compile(r"^\d+/min$")
 
 
 def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
@@ -445,6 +446,29 @@ def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
     have higher limits). A missing day row means the payload shape changed,
     which should raise rather than silently pass a wrong budget.
     """
+    return _extract_rate_row(usage, _DAILY_RATE_PATTERN, "daily")
+
+
+def courtlistener_minute_budget(usage: dict[str, object]) -> dict[str, object]:
+    """Extract the user-scope per-minute row from an api-usage payload.
+
+    Mirrors :func:`courtlistener_daily_budget` for the ``N/min`` window.
+    Returns the budget dict when found, or ``None`` when the payload has no
+    minute row (e.g. a different API version or a non-standard scope).
+    """
+    try:
+        return _extract_rate_row(usage, _MINUTE_RATE_PATTERN, "per-minute")
+    except SearchError:
+        return {}  # absent minute row is non-fatal; callers check remaining
+
+
+def _extract_rate_row(
+    usage: dict[str, object], pattern: re.Pattern[str], label: str  # type: ignore[type-arg]
+) -> dict[str, object]:
+    """Pull a single rate-window row from an api-usage payload.
+
+    Shared helper for the daily and per-minute budget extractors.
+    """
     rows = usage.get("current_usage")
     if not isinstance(rows, list):
         raise SearchError("CourtListener api-usage response had no current_usage list.")
@@ -454,7 +478,7 @@ def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
         if row.get("scope") != "user":
             continue
         rate = str(row.get("rate", ""))
-        if _DAILY_RATE_PATTERN.match(rate):
+        if pattern.match(rate):
             return {
                 "used": int(row.get("used", 0) or 0),
                 "limit": int(row.get("limit", 0) or 0),
@@ -462,7 +486,7 @@ def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
                 "reset_at": row.get("reset_at"),
             }
     raise SearchError(
-        "Could not find the CourtListener daily request budget in the api-usage response."
+        f"Could not find the CourtListener {label} request budget in the api-usage response."
     )
 
 
@@ -483,6 +507,35 @@ def check_courtlistener_daily_budget(min_remaining: int) -> dict[str, object]:
             f"need {min_remaining} for this run (used {budget['used']}/{budget['limit']}). "
             f"Daily window resets at {reset}. Wait for the reset, run fewer issues "
             "today, or disable this guard with COURTLISTENER_USAGE_GUARD=0."
+        )
+    return budget
+
+
+def check_courtlistener_minute_budget(min_remaining: int) -> dict[str, object]:
+    """Abort when CourtListener's per-minute budget can't cover the planned run.
+
+    The free tier allows 5 requests per minute; deep-read opinion-detail
+    fetches each burn one of those, so a run that plans to fetch more
+    opinion details than the window allows will grind through 429s with
+    60-second backoffs. This guard pre-flights the live minute window and
+    aborts with the reset time when headroom is insufficient.
+
+    Returns the minute-window budget dict on success. When the api-usage
+    payload has no minute row (non-standard tier), the check is skipped
+    (returns an empty dict) rather than aborting — higher tiers may have
+    wider minute windows that we cannot read.
+    """
+    budget = courtlistener_minute_budget(fetch_courtlistener_usage())
+    if not budget:
+        return budget  # no minute row; skip
+    remaining = int(budget["remaining"])
+    if remaining < min_remaining:
+        reset = budget.get("reset_at") or "the next minute window"
+        raise SearchError(
+            f"CourtListener per-minute budget too low: {remaining} remaining, "
+            f"need {min_remaining} for this run (used {budget['used']}/{budget['limit']}). "
+            f"Minute window resets at {reset}. Slow down with SEARCH_DELAY_SECONDS, "
+            "reduce deep-read cases, or disable this guard with COURTLISTENER_USAGE_GUARD=0."
         )
     return budget
 

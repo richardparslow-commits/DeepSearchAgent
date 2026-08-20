@@ -1239,6 +1239,134 @@ def test_fetch_cases_usage_guard_skipped_when_disabled(monkeypatch):
     assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
 
 
+def test_fetch_cases_usage_guard_includes_deep_read_cost(monkeypatch, caplog):
+    """Deep-read adds fetches to the estimated daily budget."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "6")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    # Minute guard must also accept the deep-read cost.
+    minute_demands: list[int] = []
+
+    def recording_minute(min_remaining):
+        minute_demands.append(min_remaining)
+        return {"used": 0, "limit": 5, "remaining": 5, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_minute_budget", recording_minute
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus", deep_read=True, deep_read_limit=6)
+
+    queries = build_case_queries("tinnitus", "Compensation")
+    # variants=3, pages=1 by default; daily guard sees queries*3*1 + 6 deep-read.
+    search_cost = len(queries) * 3 * 1
+    assert demands == [search_cost + 6]
+    # Minute guard only fires when deep_read adds cost.
+    assert minute_demands == [6]
+    assert len(calls) == len(queries)
+
+
+def test_fetch_cases_usage_guard_skips_minute_check_without_deep_read(monkeypatch):
+    """Without deep-read, the per-minute guard is not called."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    demands: list[int] = []
+
+    def recording_guard(min_remaining):
+        demands.append(min_remaining)
+        return {"used": 0, "limit": 125, "remaining": 125, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", recording_guard
+    )
+    minute_demands: list[int] = []
+
+    def recording_minute(min_remaining):
+        minute_demands.append(min_remaining)
+        return {"used": 0, "limit": 5, "remaining": 5, "reset_at": None}
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_minute_budget", recording_minute
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus")  # no deep_read
+
+    assert demands == [len(build_case_queries("tinnitus", "Compensation")) * 3]
+    assert minute_demands == []  # no deep-read cost -> minute guard skipped
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
+
+
+def test_fetch_cases_usage_guard_skips_minute_log_when_no_minute_row(monkeypatch, caplog):
+    """When the minute row is absent, the guard skips the minute check silently."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "6")
+    minute_demands: list[int] = []
+
+    def recording_minute(min_remaining):
+        minute_demands.append(min_remaining)
+        return {}  # no minute row in the payload
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_minute_budget", recording_minute
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
+    )
+    calls = _stub_search_recording(monkeypatch, results=[])
+
+    fetch_cases_for_issue("tinnitus", deep_read=True, deep_read_limit=6)
+
+    assert minute_demands == [6]  # guard was called with the deep-read cost
+    assert len(calls) == len(build_case_queries("tinnitus", "Compensation"))
+
+
+def test_fetch_cases_usage_guard_minute_abort_prevents_search(monkeypatch, caplog):
+    """When the minute budget is exhausted, the guard aborts before any search."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setenv("DEEP_READ_LIMIT", "6")
+    searched: list[str] = []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        searched.append(query)
+        return []
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    # Daily guard passes.
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {"used": 0, "limit": 125, "remaining": 125, "reset_at": None},
+    )
+    # Minute guard aborts.
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_minute_budget",
+        lambda min_remaining: (_ for _ in ()).throw(
+            SearchError(
+                "CourtListener per-minute budget too low: 0 remaining, need 6 "
+                "for this run (used 5/5). Minute window resets at "
+                "the next minute window."
+            )
+        ),
+    )
+
+    with pytest.raises(SearchError, match="per-minute budget too low"):
+        fetch_cases_for_issue("tinnitus", deep_read=True, deep_read_limit=6)
+
+    assert searched == []  # minute guard fired before the first query
+
+
 def test_fetch_cases_budget_skips_stagger_when_none_remains(monkeypatch):
     """When the stagger would start at exactly the deadline, no sleep happens."""
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "4")

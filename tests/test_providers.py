@@ -17,7 +17,9 @@ from va_legal_agent.providers import (
     SearchError,
     USAGE_URL,
     check_courtlistener_daily_budget,
+    check_courtlistener_minute_budget,
     courtlistener_daily_budget,
+    courtlistener_minute_budget,
     fetch_courtlistener_usage,
     get_provider,
     resolve_search_providers,
@@ -1960,6 +1962,85 @@ def test_check_courtlistener_daily_budget_boundary_remaining_equals_need(monkeyp
     budget = check_courtlistener_daily_budget(8)
 
     assert budget["remaining"] == 8
+
+
+def test_courtlistener_minute_budget_picks_user_min_row():
+    budget = courtlistener_minute_budget(_usage_payload())
+
+    assert budget["used"] == 0
+    assert budget["limit"] == 5
+    assert budget["remaining"] == 5
+
+
+def test_courtlistener_minute_budget_returns_empty_when_absent():
+    # A payload with no minute row (e.g. a different tier) returns {} instead
+    # of raising — higher tiers may have wider windows we cannot read.
+    payload = {
+        "current_usage": [
+            {"scope": "user", "rate": "125/day", "used": 10, "limit": 125, "remaining": 115},
+        ]
+    }
+    assert courtlistener_minute_budget(payload) == {}
+
+
+def test_check_courtlistener_minute_budget_aborts_when_exhausted(monkeypatch):
+    # Minute window: 5 used of 5, 0 remaining — guard must abort.
+    payload = _usage_payload()
+    payload["current_usage"][1]["used"] = 5
+    payload["current_usage"][1]["remaining"] = 0
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage", lambda: payload
+    )
+
+    with pytest.raises(SearchError) as exc:
+        check_courtlistener_minute_budget(3)
+
+    message = str(exc.value)
+    assert "0 remaining" in message
+    assert "need 3" in message
+    assert "used 5/5" in message
+    assert "SEARCH_DELAY_SECONDS" in message
+    assert message.endswith("COURTLISTENER_USAGE_GUARD=0.")
+
+
+def test_check_courtlistener_minute_budget_passes_with_headroom(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage",
+        lambda: _usage_payload(),  # 5 remaining
+    )
+
+    budget = check_courtlistener_minute_budget(3)
+
+    assert budget["remaining"] == 5
+
+
+def test_check_courtlistener_minute_budget_skips_when_no_minute_row(monkeypatch):
+    payload = {
+        "current_usage": [
+            {"scope": "user", "rate": "125/day", "used": 10, "limit": 125, "remaining": 115},
+        ]
+    }
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage", lambda: payload
+    )
+
+    budget = check_courtlistener_minute_budget(6)
+
+    assert budget == {}  # skipped, not aborted
+
+
+def test_check_courtlistener_minute_budget_boundary_remaining_equals_need(monkeypatch):
+    # remaining == need is enough; off-by-one must not abort.
+    payload = _usage_payload()
+    payload["current_usage"][1]["used"] = 2
+    payload["current_usage"][1]["remaining"] = 3
+    monkeypatch.setattr(
+        "va_legal_agent.providers.fetch_courtlistener_usage", lambda: payload
+    )
+
+    budget = check_courtlistener_minute_budget(3)
+
+    assert budget["remaining"] == 3
 
 
 def test_parse_retry_after_forms():
