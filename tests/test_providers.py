@@ -1150,6 +1150,74 @@ def test_bva_session_impersonates_chrome_and_is_reused(monkeypatch):
     assert getattr(first, "impersonate", None) == "chrome"
 
 
+def test_bva_impersonation_never_sends_bot_user_agent(monkeypatch):
+    """The on-the-wire User-Agent is curl_cffi's Chrome UA, never the bot UA.
+
+    search.usa.gov's WAF challenges the TLS fingerprint of plain HTTP clients,
+    so the BVA provider reuses a ``curl_cffi`` Session impersonating Chrome.
+    An explicit ``User-Agent`` header would override the impersonated browser
+    header and re-trigger the block. Pin this at the header level by capturing
+    the real User-Agent a loopback server receives from the un-mocked session.
+    """
+    import http.server
+    import threading
+
+    from curl_cffi import requests as cffi_requests
+
+    # The hermetic fixture clears SEARCH_HTTP_PROXY (the app's own setting),
+    # but curl_cffi/libcurl also honors the standard proxy env vars; clear
+    # those too so the request reaches the loopback server directly.
+    for var in (
+        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+        "ALL_PROXY", "all_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    received: dict[str, str | None] = {"user_agent": None}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received["user_agent"] = self.headers.get("User-Agent")
+            body = b"<html><body></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # keep test output clean
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # Redirect the search.usa.gov endpoint to the loopback server and hand
+        # the provider a real impersonated session, so the browser handshake
+        # is exercised end-to-end (empty resultsData -> SearchError).
+        monkeypatch.setattr(
+            BVAProvider, "SEARCH_URL", f"http://127.0.0.1:{server.server_port}/search"
+        )
+        monkeypatch.setattr(
+            "va_legal_agent.providers._get_bva_session",
+            lambda: cffi_requests.Session(impersonate="chrome"),
+        )
+        with pytest.raises(SearchError):
+            BVAProvider().search("tinnitus")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    ua = received["user_agent"]
+    assert ua is not None, "the loopback server received the request"
+    # Browser Chrome UA on the wire...
+    assert "Chrome" in ua
+    # ...and never the app's bot-identifying USER_AGENT, which would re-trigger
+    # the WAF/TLS challenge the impersonation exists to bypass.
+    assert "VA-Legal-Agent" not in ua
+
+
 # --- BVA sitemap provider (direct va.gov index, WAF-free) ---
 
 _INDEX_XML = """<?xml version="1.0" encoding="UTF-8"?>
