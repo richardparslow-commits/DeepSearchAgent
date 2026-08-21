@@ -1127,13 +1127,24 @@ def _bva_local_build(
     manifest's ``[start, end)`` byte ranges never straddle a decision.
     Returns ``(corpus_path, manifest_rows)`` where each row is
     ``{"url": str, "title": str, "lastmod": str, "start": int, "end": int}``.
+
+    The three files are written to ``.tmp`` siblings and committed with
+    ``os.replace`` only after every temp is fully written. A full-corpus
+    build takes minutes-to-hours, so a hard interruption (Ctrl-C, crash,
+    power loss) mid-download must leave the previous index intact rather than
+    a truncated ``corpus.txt`` paired with a stale manifest — which the
+    freshness check would otherwise accept and silently serve wrong results.
     """
     os.makedirs(directory, exist_ok=True)
     corpus_path, manifest_path = _bva_local_index_paths(directory)
+    meta_path = _bva_local_meta_path(directory)
+    corpus_tmp = corpus_path + ".tmp"
+    manifest_tmp = manifest_path + ".tmp"
+    meta_tmp = meta_path + ".tmp"
     manifest: list[dict[str, object]] = []
     offset = 0
     window = leaf if max_files <= 0 else leaf[:max_files]
-    with open(corpus_path, "w", encoding="utf-8") as corpus:
+    with open(corpus_tmp, "w", encoding="utf-8") as corpus:
         for url, lastmod in window:
             _throttle("bvalocal")
             try:
@@ -1162,10 +1173,21 @@ def _bva_local_build(
                 }
             )
             offset = end
-    with open(manifest_path, "w", encoding="utf-8") as fh:
+    with open(manifest_tmp, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh)
     most_recent = leaf[0][1] if leaf else ""
-    _bva_local_write_meta(directory, most_recent)
+    with open(meta_tmp, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "build_time": datetime.now(timezone.utc).isoformat(),
+                "most_recent_lastmod": most_recent,
+            },
+            fh,
+        )
+    # Commit: atomically swap the real files in only after all temps are done.
+    os.replace(corpus_tmp, corpus_path)
+    os.replace(manifest_tmp, manifest_path)
+    os.replace(meta_tmp, meta_path)
     return corpus_path, manifest
 
 

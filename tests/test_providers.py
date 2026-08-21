@@ -3889,6 +3889,20 @@ class TestBvaLocalBuild:
         _, manifest = _bva_local_build(str(tmp_path), leaf, 3)
         assert len(manifest) == 3
 
+    def test_max_files_one_downloads_single_file(self, monkeypatch, tmp_path):
+        """max_files=1 downloads only the newest file (not the whole leaf)."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            return "tinnitus body"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [(f"https://va.gov/vetapp26/Files1/{i:08d}.txt", "2026-08-01") for i in range(3)]
+        _, manifest = _bva_local_build(str(tmp_path), leaf, 1)
+        assert len(manifest) == 1
+
     def test_download_failure_is_skipped(self, monkeypatch, tmp_path, caplog):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
 
@@ -3900,12 +3914,16 @@ class TestBvaLocalBuild:
         monkeypatch.setattr(
             "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
         )
+        # The failure is in the MIDDLE so a `continue` (skip and keep going)
+        # is distinguished from a `break` (abort the whole download): the
+        # third file must still be downloaded.
         leaf = [
             ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-01"),
             ("https://va.gov/vetapp26/Files4/26000002.txt", "2026-07-15"),
+            ("https://va.gov/vetapp26/Files4/26000003.txt", "2026-07-01"),
         ]
         _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
-        assert len(manifest) == 1
+        assert len(manifest) == 2  # 00001 and 00003; 00002 failed and was skipped
         assert any(
             "download failed" in r.getMessage() for r in caplog.records
         )
@@ -3922,6 +3940,53 @@ class TestBvaLocalBuild:
         leaf = [("https://va.gov/vetapp26/Files1/26_00_123.txt", "2026-08-01")]
         _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
         assert manifest[0]["title"] == "26_00_123"
+
+    def test_interrupted_build_leaves_old_index_intact(self, monkeypatch, tmp_path):
+        """A hard failure mid-download must not corrupt the committed index.
+
+        Build once, then start a rebuild whose second fetch raises a hard
+        (non-SearchError) exception — the loop only skips SearchError, so the
+        exception aborts the build before the temp files are swapped in. The
+        previously committed corpus/manifest must be byte-for-byte intact.
+        """
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        # First build: one decision, committed.
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text",
+            lambda url: "OLD tinnitus body",
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-01"),
+        ]
+        _bva_local_build(str(tmp_path), leaf, 0)
+        old_corpus = (tmp_path / "corpus.txt").read_text()
+        old_manifest = (tmp_path / "manifest.json").read_text()
+        old_meta = (tmp_path / "index.meta.json").read_text()
+
+        # Rebuild that crashes on the second file.
+        calls: list[str] = []
+
+        def crashing_fetch(url: str) -> str:
+            calls.append(url)
+            if len(calls) > 1:
+                raise RuntimeError("simulated hard crash")
+            return "NEW tinnitus body"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", crashing_fetch
+        )
+        leaf2 = [
+            ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-09-01"),
+            ("https://va.gov/vetapp26/Files4/26000002.txt", "2026-09-02"),
+        ]
+        with pytest.raises(RuntimeError, match="simulated hard crash"):
+            _bva_local_build(str(tmp_path), leaf2, 0)
+
+        # The committed files are unchanged (only .tmp scratch was touched).
+        assert (tmp_path / "corpus.txt").read_text() == old_corpus
+        assert (tmp_path / "manifest.json").read_text() == old_manifest
+        assert (tmp_path / "index.meta.json").read_text() == old_meta
 
 
 class TestBvaLocalIndexProvider:
