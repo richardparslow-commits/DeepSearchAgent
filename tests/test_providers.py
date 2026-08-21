@@ -4,6 +4,7 @@ import email.utils
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 import pytest
 import requests
@@ -13,7 +14,10 @@ from va_legal_agent.providers import (
     _bva_local_build,
     _bva_local_index_paths,
     _bva_local_load,
+    _bva_local_meta_path,
+    _bva_local_needs_rebuild,
     _bva_local_search_corpus,
+    _bva_local_write_meta,
     _bva_sitemap_index,
     _bva_text_matches,
     _courtlistener_query,
@@ -4089,3 +4093,299 @@ class TestBvaLocalIndexProvider:
         # full query which tokenizes to ['1110', 'tinnitus'].
         results = BvaLocalIndexProvider().search('"1110" tinnitus')
         assert len(results) == 1
+
+
+class TestBvaLocalMeta:
+    def test_meta_path_joins_correctly(self):
+        assert _bva_local_meta_path("/tmp/idx") == "/tmp/idx/index.meta.json"
+
+    def test_write_meta_creates_file(self, tmp_path):
+        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        assert os.path.exists(meta_path)
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        assert "build_time" in meta
+        assert meta["most_recent_lastmod"] == "2026-08-15"
+
+    def test_build_writes_meta(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            return "body"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15"),
+            ("https://va.gov/vetapp26/Files4/26000002.txt", "2026-08-10"),
+        ]
+        _bva_local_build(str(tmp_path), leaf, 0)
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        assert os.path.exists(meta_path)
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        assert meta["most_recent_lastmod"] == "2026-08-15"
+
+
+class TestBvaLocalNeedsRebuild:
+    def test_true_when_meta_missing(self, tmp_path):
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is True
+
+    def test_false_when_max_age_disabled(self, monkeypatch, tmp_path):
+        """max_age_hours=0 falls through to sitemap check; no newer content."""
+        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15"),
+            ],
+        )
+        assert (
+            _bva_local_needs_rebuild(str(tmp_path), 0) is False
+        )
+
+    def test_old_index_but_sitemap_no_newer_content(self, monkeypatch, tmp_path):
+        """Age exceeded but live sitemap has no newer lastmod → don't rebuild."""
+        meta = {
+            "build_time": "2000-01-01T00:00:00+00:00",
+            "most_recent_lastmod": "2026-08-15",
+        }
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15"),
+            ],
+        )
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is False
+
+    def test_true_when_age_exceeds_threshold(self, monkeypatch, tmp_path):
+        """A very old index triggers an age-based rebuild request."""
+        old_time = "2000-01-01T00:00:00+00:00"
+        meta = {"build_time": old_time, "most_recent_lastmod": "2000-01-01"}
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        # The live sitemap has a newer lastmod.
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15"),
+            ],
+        )
+        # Even age=1 hour should trigger and find newer content.
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
+
+    def test_fresh_index_within_age_threshold(
+        self, monkeypatch, tmp_path
+    ):
+        """A just-built index returns False without fetching the sitemap."""
+        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+        sitemap_calls = []
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: sitemap_calls.append(1) or [],
+        )
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is False
+        assert sitemap_calls == []  # sitemap was never fetched
+
+    def test_true_when_sitemap_has_newer_lastmod(self, monkeypatch, tmp_path):
+        """When the age threshold is passed, a newer sitemap triggers rebuild."""
+        # Write old meta so the age threshold is exceeded.
+        meta = {
+            "build_time": "2000-01-01T00:00:00+00:00",
+            "most_recent_lastmod": "2026-08-15",
+        }
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000099.txt", "2026-09-01"),
+            ],
+        )
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is True
+
+    def test_false_when_sitemap_fetch_fails(self, monkeypatch, tmp_path):
+        """When the sitemap is down, keep the existing index."""
+        meta = {
+            "build_time": "2000-01-01T00:00:00+00:00",
+            "most_recent_lastmod": "2026-08-15",
+        }
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+
+        def failing_leaf(self):
+            raise SearchError("sitemap down")
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            failing_leaf,
+        )
+        # Age exceeded + sitemap fails → return False (keep existing index).
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is False
+
+    def test_no_lastmod_returns_false_when_age_exceeded(self, tmp_path):
+        """Age exceeded but no stored_lastmod to compare → don't rebuild."""
+        meta = {"build_time": "2000-01-01T00:00:00+00:00"}
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        # stored_lastmod missing → falls through to return False.
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is False
+
+    def test_meta_without_lastmod_stays_fresh(self, monkeypatch, tmp_path):
+        """Meta missing most_recent_lastmod is not stale when age is within threshold."""
+        meta = {"build_time": datetime.now(timezone.utc).isoformat()}
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        # No lastmod → no live comparison → age check short-circuits to False.
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is False
+
+    def test_true_when_meta_json_corrupt(self, tmp_path):
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            fh.write("not json")
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is True
+
+    def test_true_when_build_time_unparseable(self, tmp_path):
+        meta = {"build_time": "garbage", "most_recent_lastmod": "2026-08-15"}
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
+
+
+class TestBvaLocalIndexAutoRebuild:
+    def test_rebuilds_when_stale(self, monkeypatch, tmp_path):
+        """Search triggers a rebuild when the meta reports the index is old."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "1")
+
+        # Pre-populate an old index.
+        _bva_local_write_meta(str(tmp_path), "2026-01-01")
+        # Monkeypatch needs_rebuild to return True (age exceeded for any realistic clock).
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "0")  # disable age to test the sitemap path
+        monkeypatch.setattr(
+            "va_legal_agent.providers._bva_local_needs_rebuild",
+            lambda d, h: True,
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "tinnitus service connection granted"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-09-01"),
+            ],
+        )
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+        assert len(results) == 1
+
+    def test_uses_stale_copy_when_sitemap_down(self, monkeypatch, tmp_path):
+        """When the sitemap is down, the stale index still serves results."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+
+        # Pre-populate a valid index.
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text",
+            lambda url: "tinnitus service connection granted",
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+        ]
+        _bva_local_build(str(tmp_path), leaf, 0)
+
+        # Now make needs_rebuild try to fetch the sitemap, but it fails.
+        monkeypatch.setattr(
+            "va_legal_agent.providers._bva_local_needs_rebuild",
+            lambda d, h: True,
+        )
+        def failing_leaf(self):
+            raise SearchError("sitemap down")
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            failing_leaf,
+        )
+
+        # The existing index on disk should still serve results.
+        results = BvaLocalIndexProvider().search("tinnitus")
+        assert len(results) == 1
+
+    def test_empty_leaf_with_existing_index_uses_stale_copy(self, monkeypatch, tmp_path):
+        """When rebuild is needed but sitemap returns empty leaf, use stale."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+
+        # Pre-populate a valid index.
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text",
+            lambda url: "tinnitus granted",
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+        ]
+        _bva_local_build(str(tmp_path), leaf, 0)
+
+        # Now make needs_rebuild return True, but the sitemap is empty.
+        monkeypatch.setattr(
+            "va_legal_agent.providers._bva_local_needs_rebuild",
+            lambda d, h: True,
+        )
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [],
+        )
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+        assert len(results) == 1
+
+    def test_no_rebuild_when_fresh(self, monkeypatch, tmp_path):
+        """A fresh index is reused without re-downloading."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "9999")
+
+        # Write a valid meta
+        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+        # Write matching corpus/manifest
+        corpus_path, manifest_path = _bva_local_index_paths(str(tmp_path))
+        with open(corpus_path, "w") as fh:
+            fh.write("tinnitus granted.\n\x00\n")
+        with open(manifest_path, "w") as fh:
+            json.dump(
+                [{"url": "u", "title": "t", "lastmod": "2026-08-15", "start": 0, "end": 21}],
+                fh,
+            )
+
+        # Mock the sitemap to return newer content — but it shouldn't be
+        # called because age is under the max.
+        sitemap_calls = []
+
+        def spy_leaf(self):
+            sitemap_calls.append(1)
+            return []
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            spy_leaf,
+        )
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+        assert len(results) == 1
+        assert sitemap_calls == []  # never checked the sitemap!

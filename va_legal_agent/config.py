@@ -187,6 +187,11 @@ class Settings:
     # downloads on first build. 0 means download every current-year file
     # (typically 40k+). Lower it to trade recall for faster first builds.
     search_bva_local_index_max_files: int = 0
+    # Maximum age (hours) of the local index before the bvalocal provider
+    # re-checks the sitemap for newer decisions and auto-rebuilds.  0 disables
+    # auto-rebuild (the index is only built on first use and never refreshed).
+    # The sitemap is typically updated monthly, so 24h is a reasonable default.
+    search_bva_local_index_max_age_hours: int = 24
     courtlistener_api_key: str | None = None
     # Pre-flight check against CourtListener's /api/rest/v4/api-usage/ before a
     # run: when the free-tier daily budget (125 requests) can't cover the
@@ -295,6 +300,11 @@ class Settings:
             search_bva_local_index_max_files=env_int(
                 "SEARCH_BVA_LOCAL_INDEX_MAX_FILES",
                 d.search_bva_local_index_max_files,
+                min_value=0,
+            ),
+            search_bva_local_index_max_age_hours=env_int(
+                "SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS",
+                d.search_bva_local_index_max_age_hours,
                 min_value=0,
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,

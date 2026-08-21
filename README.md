@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **833 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **850 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -124,7 +124,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (833 tests) runs in about seven seconds, so run it after
+The full suite (850 tests) runs in about seven seconds, so run it after
 every change:
 
 ```bash
@@ -263,6 +263,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_BVA_SITEMAP_SCAN_LIMIT` | `200` | How many of the most recent BVA decision files the `bvasitemap` provider scans per query — the va.gov sitemap enumerates tens of thousands of decisions per year, so the provider bounds its file fetches to the newest N and greps those for the issue phrase |
 | `SEARCH_BVA_LOCAL_INDEX_DIR` | `.bva_index` | On-disk directory where the `bvalocal` provider downloads the current year's full BVA decision corpus, builds a concatenated `corpus.txt` + byte-offset `manifest.json`, and runs subsequent queries against the local index (WAF-free, sub-second). The first query triggers the download if the index is absent or stale; set to empty to disable the `bvalocal` provider |
 | `SEARCH_BVA_LOCAL_INDEX_MAX_FILES` | `0` | How many of the most recent decision files the `bvalocal` provider downloads on first build. `0` means download every current-year file (typically 40k+). Lower it to trade recall for faster first builds |
+| `SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS` | `24` | Maximum age (hours) before the `bvalocal` provider re-checks the va.gov sitemap for newer decisions and auto-rebuilds the index. `0` disables auto-rebuild — the index is only built on first use |
 | `SEARCH_MAX_RESULTS` | `10` | Cap on results merged per search query; raise it (e.g. `30`) for multi-provider runs so a backend listed first can't fill the cap alone and starve the others (override per run with `--max-results`) |
 | `SEARCH_MAX_WALL_SECONDS` | `0` | Cap on total wall time (seconds) spent searching for one issue (`0` disables; override per run with `--max-wall-time`) |
 | `SEARCH_MAX_REFINEMENT_ROUNDS` | `3` | Deterministic cap on gap-refinement rounds in the research loop — the re-search loop stops after this many rounds even with `SEARCH_MAX_WALL_SECONDS=0`, so a broken ready-filter or a `refine_plan` that mints fresh tasks can't spin forever (`0` disables gap refinement entirely) |

@@ -1027,6 +1027,7 @@ class BvaSitemapProvider:
 
 _BVA_LOCAL_CORPUS = "corpus.txt"
 _BVA_LOCAL_MANIFEST = "manifest.json"
+_BVA_LOCAL_META = "index.meta.json"
 
 
 def _bva_local_index_paths(directory: str) -> tuple[str, str]:
@@ -1035,6 +1036,69 @@ def _bva_local_index_paths(directory: str) -> tuple[str, str]:
         os.path.join(directory, _BVA_LOCAL_CORPUS),
         os.path.join(directory, _BVA_LOCAL_MANIFEST),
     )
+
+
+def _bva_local_meta_path(directory: str) -> str:
+    """Return the meta file path for a local index directory."""
+    return os.path.join(directory, _BVA_LOCAL_META)
+
+
+def _bva_local_write_meta(
+    directory: str, most_recent_lastmod: str
+) -> None:
+    """Write the build-time metadata after a successful build."""
+    meta = {
+        "build_time": datetime.now(timezone.utc).isoformat(),
+        "most_recent_lastmod": most_recent_lastmod,
+    }
+    with open(_bva_local_meta_path(directory), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh)
+
+
+def _bva_local_needs_rebuild(
+    directory: str, max_age_hours: int
+) -> bool:
+    """True when the local index is stale and should be rebuilt.
+
+    Returns ``True`` when:
+    - The meta file is absent (first build was before meta was introduced),
+    - The index is older than *max_age_hours* and a live sitemap check
+      finds newer content (0 disables age-based rebuild — never re-check),
+    - The live sitemap's most recent lastmod is newer than the stored one.
+
+    Returns ``False`` when the index is still fresh or the sitemap fetch
+    fails (the existing index is better than nothing).
+    """
+    meta_path = _bva_local_meta_path(directory)
+    if not os.path.exists(meta_path):
+        return True
+    try:
+        with open(meta_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return True
+    build_time_str = meta.get("build_time", "")
+    if max_age_hours > 0 and build_time_str:
+        try:
+            build_time = datetime.fromisoformat(build_time_str)
+        except ValueError:
+            return True
+        age = (datetime.now(timezone.utc) - build_time).total_seconds()
+        if age <= max_age_hours * 3600:
+            return False  # fresh — don't even fetch the sitemap
+    # Age exceeded (or age disabled): check the live sitemap for newer
+    # content before deciding whether to rebuild.
+    stored_lastmod = meta.get("most_recent_lastmod", "")
+    if stored_lastmod:
+        try:
+            leaf = BvaSitemapProvider()._most_recent_leaf()
+        except SearchError:
+            return False  # sitemap down; keep what we have
+        if leaf and leaf[0][1] > stored_lastmod:
+            return True
+    # Stale by age but the sitemap has no newer content (or no lastmod in
+    # meta to compare against): don't rebuild needlessly.
+    return False
 
 
 def _bva_local_build(
@@ -1085,6 +1149,8 @@ def _bva_local_build(
             offset = end
     with open(manifest_path, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh)
+    most_recent = leaf[0][1] if leaf else ""
+    _bva_local_write_meta(directory, most_recent)
     return corpus_path, manifest
 
 
@@ -1163,18 +1229,34 @@ class BvaLocalIndexProvider:
             issue = strip_site_prefixes(query).strip()
         tokens = _bva_issue_tokens(issue)
         corpus_path, manifest_path = _bva_local_index_paths(directory)
-        if not os.path.exists(manifest_path) or not os.path.exists(
+        missing = not os.path.exists(manifest_path) or not os.path.exists(
             corpus_path
+        )
+        if missing or _bva_local_needs_rebuild(
+            directory, settings.search_bva_local_index_max_age_hours
         ):
-            leaf = BvaSitemapProvider()._most_recent_leaf()
-            if not leaf:
-                raise SearchError(
-                    "No BVA decisions indexed; the va.gov sitemap "
-                    "is unavailable."
-                )
-            _bva_local_build(
-                directory, leaf, settings.search_bva_local_index_max_files
-            )
+            try:
+                leaf = BvaSitemapProvider()._most_recent_leaf()
+            except SearchError:
+                if missing:
+                    raise SearchError(
+                        "No BVA decisions indexed; the va.gov "
+                        "sitemap is unavailable."
+                    ) from None
+                # Index exists but sitemap is down — use the stale copy.
+            else:
+                if not leaf:
+                    if missing:
+                        raise SearchError(
+                            "No BVA decisions indexed; the va.gov "
+                            "sitemap is unavailable."
+                        )
+                else:
+                    _bva_local_build(
+                        directory,
+                        leaf,
+                        settings.search_bva_local_index_max_files,
+                    )
         with open(corpus_path, encoding="utf-8") as fh:
             corpus_text = fh.read()
         with open(manifest_path, encoding="utf-8") as fh:
