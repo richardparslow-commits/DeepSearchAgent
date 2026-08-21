@@ -12,7 +12,15 @@ corrected resolution so the re-verification path can never regress.
 import importlib.util
 from pathlib import Path
 
-import libcst as cst
+import pytest
+
+# libcst and mutmut are dev-only tools installed by the `dev` extra, which the
+# regular CI job (pytest + pytest-cov + ruff only) does not install. Skip this
+# module rather than erroring at collection so `make test-w` stays green on the
+# CI runner; the mutation-kill-gate job installs the full dev extra and this
+# helper is exercised there.
+cst = pytest.importorskip("libcst")
+pytest.importorskip("mutmut")
 
 _SPEC = importlib.util.spec_from_file_location(
     "apply_mutant",
