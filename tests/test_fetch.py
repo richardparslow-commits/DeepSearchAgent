@@ -619,6 +619,62 @@ def test_fetch_case_details_requests_exact_args(monkeypatch):
     assert seen["impersonate"] == "chrome"
 
 
+@pytest.mark.filterwarnings("ignore::curl_cffi.utils.CurlCffiWarning")
+def test_fetch_impersonation_never_sends_bot_user_agent(monkeypatch):
+    """The on-the-wire User-Agent is curl_cffi's Chrome UA, never the bot UA.
+
+    ``impersonate="chrome"`` reproduces the Chrome TLS handshake, but an
+    explicit ``User-Agent`` header overrides the impersonated browser header —
+    the exact override that re-triggers the WAF block impersonation exists to
+    bypass. Pin this at the header level by capturing the real User-Agent a
+    loopback server receives from the un-mocked fetch call.
+    """
+    import http.server
+    import threading
+
+    # The hermetic fixture clears SEARCH_HTTP_PROXY (the app's own setting),
+    # but curl_cffi/libcurl also honors the standard proxy env vars; clear
+    # those too so the request reaches the loopback server directly.
+    for var in (
+        "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+        "ALL_PROXY", "all_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    received: dict[str, str | None] = {"user_agent": None}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received["user_agent"] = self.headers.get("User-Agent")
+            body = b"<html><body><p>No holding sentence here.</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass  # keep test output clean
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        fetch_case_details(f"http://127.0.0.1:{server.server_port}/test.html")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    ua = received["user_agent"]
+    assert ua is not None, "the loopback server received the request"
+    # Browser Chrome UA on the wire...
+    assert "Chrome" in ua
+    # ...and never the app's bot-identifying USER_AGENT, which would re-trigger
+    # the WAF/TLS challenge the impersonation exists to bypass.
+    assert "VA-Legal-Agent" not in ua
+
+
 def test_fetch_case_details_passes_proxy_when_configured(monkeypatch):
     monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
     captured: dict[str, object] = {}
