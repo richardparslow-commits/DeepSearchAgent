@@ -36,8 +36,20 @@ def _reverify_segfault(name: str, tests: list[str], target: str) -> str:
     """
     original = Path(target).read_bytes()
     try:
+        # Do NOT use `mutmut apply` here. Its apply_mutant resolves the target
+        # function with find_top_level_function_or_method(), which returns the
+        # FIRST same-named method in the module and ignores the class in the
+        # `xǁClassNameǁmethod__mutmut_N` key. providers.py has five `search`
+        # methods, so a `BvaLocalIndexProviderǁsearch` mutant would be applied
+        # to `SearchProvider.search` and the re-verification would test a
+        # corrupted file. scripts/_apply_mutant.py scopes the lookup to the
+        # class, so the mutant lands on the exact method mutmut mutated.
         applied = subprocess.run(
-            [sys.executable, "-m", "mutmut", "apply", name],
+            [
+                sys.executable,
+                str(Path(__file__).with_name("_apply_mutant.py")),
+                name,
+            ],
             capture_output=True,
         )
         if applied.returncode != 0:
