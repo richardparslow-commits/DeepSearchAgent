@@ -20,5 +20,8 @@ mutants/
 .venv/
 venv/
 
+# BVA local search index (downloaded decision corpus)
+.bva_index/
+
 # OS
 .DS_Store
