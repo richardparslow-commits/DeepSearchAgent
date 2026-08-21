@@ -1,16 +1,28 @@
 name: mutation-kill-gate
 
-# The mutation gate is deliberately not part of the per-push CI: a full
-# mutmut pass over the package takes minutes. It runs nightly (and on demand
-# via workflow_dispatch) and fails when any module's surviving-mutant count
-# exceeds the triaged baseline in .mutation-baseline.json - i.e. when a
-# killable mutant has slipped through, or a new survivor appears that has not
-# been triaged as provably equivalent. It also fails on any mutant that
-# reaches `timeout` status: a hung test run is never an equivalent, and must
-# be fixed to fail fast instead of being absorbed into baseline headroom.
+# The gate runs on every push to main that touches code, tests, the gate
+# scripts, or the baseline itself (docs-only pushes are excluded so a README
+# edit doesn't burn a full mutmut pass), plus nightly and on demand. Running
+# on push is what keeps the baseline honest: a commit that adds a new
+# surviving mutant fails *at that commit* instead of silently landing and
+# being caught up to 24h later by the schedule. It fails when any module's
+# surviving-mutant count exceeds the triaged baseline in
+# .mutation-baseline.json - i.e. when a killable mutant has slipped through,
+# or a new survivor appears that has not been triaged as provably equivalent.
+# It also fails on any mutant that reaches `timeout` status: a hung test run
+# is never an equivalent, and must be fixed to fail fast instead of being
+# absorbed into baseline headroom.
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+      - "**/*.md"
+      - ".env.example"
+      - ".gitignore"
   schedule:
-    - cron: "0 3 * * *"  # nightly at 03:00 UTC
+    - cron: "0 3 * * *"  # nightly at 03:00 UTC (backstop for any missed path)
   workflow_dispatch: {}
 
 jobs:

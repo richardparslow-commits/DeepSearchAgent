@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **850 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the nightly mutation gate is green on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **851 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -33,12 +33,12 @@ State as of August 2026: **850 tests at 100% line + branch coverage**, ruff clea
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 758 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 851 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every module at/under `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
 | CI (pushes + PRs) | `.github/workflows/ci.yml`, Python 3.11–3.14 | green |
-| Nightly mutation gate | `.github/workflows/mutation.yml`, cron 03:00 UTC + `workflow_dispatch` | green |
+| Mutation gate | `.github/workflows/mutation.yml`, on every code push + cron 03:00 UTC + `workflow_dispatch` | green |
 
 Two gate scripts carry the mutation enforcement: `scripts/mutmut_pass.py` runs a scoped pass over one module (survivor diffs land in `/tmp/mutmut_survivors_<module>.txt`) and hard-fails if mutmut reports no checked mutants, so a failed stats-collection run can never masquerade as a pass; `scripts/check_mutation_baseline.py` fails on any count above baseline or any timeout. When extending the app, keep coverage at 100% and hold the baselines — triage new survivors with the pass script before bumping `.mutation-baseline.json`.
 
@@ -124,7 +124,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (850 tests) runs in about seven seconds, so run it after
+The full suite (851 tests) runs in about seven seconds, so run it after
 every change:
 
 ```bash
@@ -163,16 +163,21 @@ limited to equivalent ones. Run it after adding features or tests to keep
 that property, and triage survivors with `python scripts/mutmut_pass.py
 <module> <test_file>` for a single module.
 
-The kill-property is enforced, not assumed: a nightly GitHub Actions job
-(`mutation-kill-gate`) runs `make mutate` and fails when any module's
-survivor count exceeds its entry in `.mutation-baseline.json` (the triaged,
-provably-equivalent survivors per module; a module at `0` fails on *any*
-survivor). When the gate reports a violation, triage the diff in
-`/tmp/mutmut_survivors_<module>.txt` — kill real gaps with stronger tests,
-and bump the baseline only for a newly-proven equivalent (e.g. a new log
-message). Run the same gate locally in one shot with `make mutate-check`
-(full pass + baseline check; it exits non-zero with a triage pointer on any
-untriaged survivor), or trigger the job on demand via `workflow_dispatch`.
+The kill-property is enforced, not assumed: a GitHub Actions job
+(`mutation-kill-gate`) runs `make mutate` on every push to `main` that
+touches code/tests (docs-only pushes are excluded) and fails when any
+module's survivor count exceeds its entry in `.mutation-baseline.json` (the
+triaged, provably-equivalent survivors per module; a module at `0` fails on
+*any* survivor). Because it runs on push, the baseline bump must land in the
+*same commit* as the code change that introduced the survivors — a feature
+commit that adds a new equivalent without moving the baseline goes red
+immediately instead of being caught up to 24h later. When the gate reports a
+violation, triage the diff in `/tmp/mutmut_survivors_<module>.txt` — kill
+real gaps with stronger tests, and bump the baseline only for a
+newly-proven equivalent (e.g. a new log message). Run the same gate locally
+in one shot with `make mutate-check` (full pass + baseline check; it exits
+non-zero with a triage pointer on any untriaged survivor), or trigger the
+job on demand via `workflow_dispatch`.
 
 ## Example usage
 
