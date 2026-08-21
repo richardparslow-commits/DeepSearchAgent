@@ -256,7 +256,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 |---|---|---|
 | `REQUEST_TIMEOUT_SECONDS` | `20` | Timeout for each outbound search/fetch request |
 | `MAX_FETCH_BYTES` | `20971520` | Cap on downloaded response size in bytes (20 MiB) |
-| `USER_AGENT` | `Mozilla/5.0 (compatible; VA-Legal-Agent/1.0; …)` | HTTP User-Agent sent by the fetch layer (enrichment / deep-read) and the CourtListener provider; **not** sent to DuckDuckGo or BVA, which use `curl_cffi` browser impersonation instead |
+| `USER_AGENT` | `Mozilla/5.0 (compatible; VA-Legal-Agent/1.0; …)` | HTTP User-Agent sent by the plain-`requests` clients on WAF-free endpoints — the CourtListener REST provider and the BVA sitemap / local-index fetches; **not** sent to DuckDuckGo, the BVA search index, or the fetch layer (enrichment / deep-read), which all use `curl_cffi` browser impersonation (whose Chrome User-Agent must not be overridden) |
 | `SEARCH_MAX_WORKERS` | `4` | Number of court-site search queries run concurrently |
 | `SEARCH_DELAY_SECONDS` | `0.5` | Stagger between starting consecutive search queries (`0` disables) |
 | `SEARCH_RETRY_ATTEMPTS` | `2` | Extra retries for throttled/transient DuckDuckGo responses (`0` disables) |

@@ -13,6 +13,8 @@ from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
+from curl_cffi import requests as cffi_requests
+from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
 from .search import http_proxy_kwargs
@@ -256,18 +258,26 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     """
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
-    headers = {"User-Agent": settings.user_agent}
     try:
-        response = requests.get(
+        # The search layer already bypasses TLS-fingerprint/WAF challenges by
+        # impersonating a real Chrome handshake via curl_cffi; the fetch layer
+        # must do the same, otherwise enrichment/deep-read of protected pages
+        # (CAVC, law-blog mirrors, DDG result targets) gets a 403/challenge
+        # body that plain ``requests`` cannot pass. The impersonation also
+        # supplies a browser User-Agent, so the app's bot-identifying
+        # USER_AGENT is deliberately NOT sent here (overriding the
+        # impersonation would re-trigger the block, exactly as with the
+        # DuckDuckGo and BVA providers).
+        response = cffi_requests.get(
             url,
-            headers=headers,
             timeout=timeout,
             stream=True,
+            impersonate="chrome",
             **http_proxy_kwargs(),
         )
         response.raise_for_status()
         content = _read_response_body(response, settings.max_fetch_bytes)
-    except requests.RequestException as exc:
+    except (requests.RequestException, CffiRequestException) as exc:
         raise FetchError(f"Failed to fetch {url}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")
@@ -292,18 +302,26 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     """
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
-    headers = {"User-Agent": settings.user_agent}
     try:
-        response = requests.get(
+        # The search layer already bypasses TLS-fingerprint/WAF challenges by
+        # impersonating a real Chrome handshake via curl_cffi; the fetch layer
+        # must do the same, otherwise enrichment/deep-read of protected pages
+        # (CAVC, law-blog mirrors, DDG result targets) gets a 403/challenge
+        # body that plain ``requests`` cannot pass. The impersonation also
+        # supplies a browser User-Agent, so the app's bot-identifying
+        # USER_AGENT is deliberately NOT sent here (overriding the
+        # impersonation would re-trigger the block, exactly as with the
+        # DuckDuckGo and BVA providers).
+        response = cffi_requests.get(
             url,
-            headers=headers,
             timeout=timeout,
             stream=True,
+            impersonate="chrome",
             **http_proxy_kwargs(),
         )
         response.raise_for_status()
         content = _read_response_body(response, settings.max_fetch_bytes)
-    except requests.RequestException as exc:
+    except (requests.RequestException, CffiRequestException) as exc:
         raise FetchError(f"Failed to fetch {url}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")

@@ -3,7 +3,6 @@
 import pytest
 import requests
 
-from va_legal_agent.config import get_settings
 from va_legal_agent.fetch import (
     FetchError,
     _extract_pdf_text,
@@ -137,8 +136,8 @@ def test_parsers_never_crash_on_adversarial_input():
 
 def test_fetch_case_details_from_html(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=HTML_PAGE, headers={"Content-Type": "text/html"}
         ),
     )
@@ -158,8 +157,8 @@ def test_fetch_case_details_from_plain_text(monkeypatch):
         "38 U.S.C. 1110, 5107; 38 C.F.R. 3.303.\n"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=bva_text, headers={"Content-Type": "text/plain"}
         ),
     )
@@ -174,8 +173,8 @@ def test_fetch_case_details_from_plain_text(monkeypatch):
 
 def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"%PDF-1.4 broken bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -194,10 +193,10 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
 
 
 def test_fetch_case_details_raises_fetch_error_on_network_failure(monkeypatch):
-    def failing_get(url, headers=None, timeout=None, stream=None):
+    def failing_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         raise requests.exceptions.ConnectionError("connection refused")
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", failing_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", failing_get)
 
     with pytest.raises(FetchError, match="Failed to fetch"):
         fetch_case_details("https://uscourts.cavc.gov/unreachable")
@@ -315,8 +314,8 @@ RICH_HTML_PAGE = """
 
 def test_fetch_case_details_extracts_rich_fields(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=RICH_HTML_PAGE, headers={"Content-Type": "text/html"}
         ),
     )
@@ -345,8 +344,8 @@ def test_fetch_case_details_from_pdf(monkeypatch):
     pdf_bytes = buffer.getvalue()
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=pdf_bytes, headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -367,8 +366,8 @@ def test_fetch_pdf_skips_pages_that_fail_extraction(monkeypatch):
 
     monkeypatch.setattr("pypdf.PdfReader", lambda stream: _BadReader())
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -380,8 +379,8 @@ def test_fetch_pdf_skips_pages_that_fail_extraction(monkeypatch):
 
 def test_fetch_case_details_handles_corrupt_pdf(monkeypatch, caplog):
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"definitely not a pdf",
             headers={"Content-Type": "application/pdf"},
         ),
@@ -400,8 +399,8 @@ def test_fetch_skips_empty_stream_chunks(monkeypatch):
             yield self.content
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: ChunkedResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: ChunkedResponse(
             content=b"<html><body><p>No holding sentence here.</p></body></html>",
             headers={"Content-Type": "text/html"},
         ),
@@ -415,8 +414,8 @@ def test_fetch_skips_empty_stream_chunks(monkeypatch):
 def test_fetch_case_details_rejects_oversized_content_length(monkeypatch):
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"",
             headers={"Content-Type": "application/pdf", "Content-Length": "11"},
         ),
@@ -593,38 +592,45 @@ def test_read_response_body_joins_chunks_exactly():
 def test_fetch_case_details_requests_exact_args(monkeypatch):
     seen: dict[str, object] = {}
 
-    def recording_get(url, headers=None, timeout=None, stream=None):
+    def recording_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         seen["url"] = url
         seen["headers"] = headers
         seen["timeout"] = timeout
         seen["stream"] = stream
+        seen["impersonate"] = impersonate
         return FakePageResponse(
             text="<html><body><p>No holding sentence here.</p></body></html>",
             headers={"Content-Type": "text/html"},
         )
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", recording_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", recording_get)
 
     fetch_case_details("https://uscourts.cavc.gov/exact.html")
 
     assert seen["url"] == "https://uscourts.cavc.gov/exact.html"
-    assert seen["headers"] == {"User-Agent": get_settings().user_agent}
+    # No explicit User-Agent: the chrome impersonation supplies a browser UA,
+    # and overriding it with the app's bot-identifying USER_AGENT would
+    # re-trigger the WAF block the impersonation is meant to bypass.
+    assert seen["headers"] is None
     assert seen["timeout"] == 20
     assert seen["stream"] is True
+    # The fetch layer must impersonate a browser like the search layer does,
+    # else protected result pages (CAVC, DDG targets) return WAF challenges.
+    assert seen["impersonate"] == "chrome"
 
 
 def test_fetch_case_details_passes_proxy_when_configured(monkeypatch):
     monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://user:pass@proxy.example:8080")
     captured: dict[str, object] = {}
 
-    def fake_get(url, headers=None, timeout=None, stream=None, proxies=None):
+    def fake_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         captured["proxies"] = proxies
         return FakePageResponse(
             text="<html><body><p>No holding sentence here.</p></body></html>",
             headers={"Content-Type": "text/html"},
         )
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", fake_get)
 
     fetch_case_details("https://uscourts.cavc.gov/proxied.html")
 
@@ -638,14 +644,14 @@ def test_fetch_full_text_passes_proxy_when_configured(monkeypatch):
     monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
     captured: dict[str, object] = {}
 
-    def fake_get(url, headers=None, timeout=None, stream=None, proxies=None):
+    def fake_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         captured["proxies"] = proxies
         return FakePageResponse(
             text="<html><body>Opinion text here.</body></html>",
             headers={"Content-Type": "text/html"},
         )
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", fake_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", fake_get)
 
     fetch_full_text("https://uscourts.cavc.gov/proxied-opinion.html")
 
@@ -666,8 +672,8 @@ def test_fetch_case_details_content_type_pdf_without_pdf_extension(monkeypatch):
 
     monkeypatch.setattr("pypdf.PdfReader", recording_reader)
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -682,8 +688,8 @@ def test_fetch_case_details_query_string_pdf(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -697,8 +703,8 @@ def test_fetch_case_details_pdf_uppercase_extension(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -718,8 +724,8 @@ def test_fetch_case_details_encoding_falls_back_to_utf8(monkeypatch):
             yield b"Decided: March 15, 2011."  # bytes already utf-8
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: NoEncodingResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: NoEncodingResponse(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -736,8 +742,8 @@ def test_fetch_case_details_decode_replaces_bad_bytes(monkeypatch):
             self.content = b"Decided: March 15, 2011. \xff\xfe"
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: Latin1Response(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: Latin1Response(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -748,8 +754,8 @@ def test_fetch_case_details_decode_replaces_bad_bytes(monkeypatch):
 
 def test_fetch_case_details_plain_text_path_taken_without_txt_extension(monkeypatch):
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="Citation Nr: 2100634", headers={"Content-Type": "text/plain"}
         ),
     )
@@ -761,8 +767,8 @@ def test_fetch_case_details_plain_text_path_taken_without_txt_extension(monkeypa
 def test_fetch_case_details_title_is_used_when_present(monkeypatch):
     html = "<html><head><title>Doe v. McDonough, 23 Vet.App. 1 (2011)</title></head><body><p>No citations here.</p></body></html>"
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -778,8 +784,8 @@ def test_fetch_case_details_meta_description_holding_fallback(monkeypatch):
         "</head><body><p>Procedural history only.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -795,8 +801,8 @@ def test_fetch_case_details_og_description_holding_fallback(monkeypatch):
         "</head><body><p>Procedural history only.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -838,8 +844,8 @@ def test_extract_pdf_text_corrupt_logs_exception_text(monkeypatch, caplog):
 def test_fetch_case_details_without_content_type_header(monkeypatch):
     # No Content-Type: the header default must be "" so the HTML path still runs.
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="<html><body><p>No holding sentence here.</p></body></html>", headers={}
         ),
     )
@@ -855,8 +861,8 @@ def test_fetch_case_details_pdf_by_url_with_query_string_no_pdf_header(monkeypat
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
         ),
     )
@@ -876,8 +882,8 @@ def test_fetch_case_details_latin1_holding_preserved(monkeypatch):
             self.content = content
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: Latin1Response(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: Latin1Response(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -894,8 +900,8 @@ def test_fetch_case_details_invalid_utf8_under_utf8_replaced(monkeypatch):
             self.content = b"Decided: March 15, 2011. \xff\xfe"
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: Utf8Response(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: Utf8Response(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -909,8 +915,8 @@ def test_fetch_case_details_text_plain_without_txt_extension_and_tags(monkeypatc
     # numbers must NOT be parsed as HTML (which would strip the tags and find
     # the docket).
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
             headers={"Content-Type": "text/plain"},
         ),
@@ -925,8 +931,8 @@ def test_fetch_case_details_txt_extension_triggers_text_path_without_content_typ
     # A .txt URL takes the text path even when the content-type is not
     # text/plain; HTML-tagged dockets must not be parsed as HTML.
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
             headers={"Content-Type": "text/html"},
         ),
@@ -945,8 +951,8 @@ def test_fetch_case_details_meta_description_after_charset_meta(monkeypatch):
         "</head><body><p>Procedural history only.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -962,8 +968,8 @@ def test_fetch_case_details_og_description_after_charset_meta(monkeypatch):
         "</head><body><p>Procedural history only.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -979,8 +985,8 @@ def test_fetch_case_details_meta_with_empty_content(monkeypatch):
         "</head><body><p>Procedural history only.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -992,8 +998,8 @@ def test_fetch_case_details_meta_with_empty_content(monkeypatch):
 def test_fetch_case_details_rejects_oversized_body(monkeypatch):
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"",
             headers={"Content-Type": "application/pdf", "Content-Length": "10"},
         ),
@@ -1006,8 +1012,8 @@ def test_fetch_case_details_rejects_oversized_body(monkeypatch):
 def test_fetch_case_details_rejects_undeclared_oversized_body(monkeypatch):
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"x" * 11,
             headers={"Content-Type": "application/pdf"},
         ),
@@ -1024,8 +1030,8 @@ def test_fetch_full_text_from_html_returns_whole_body(monkeypatch):
         "<p>Second paragraph, far beyond the snippet.</p></body></html>"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -1042,8 +1048,8 @@ def test_fetch_full_text_from_plain_text_returns_verbatim(monkeypatch):
         "for tinnitus is granted.\n"
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=bva_text, headers={"Content-Type": "text/plain"}
         ),
     )
@@ -1059,8 +1065,8 @@ def test_fetch_full_text_from_pdf_reads_all_pages(monkeypatch):
         lambda stream: _FakePdfReader([_FakePdfPage("Page one"), _FakePdfPage("Page two")]),
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1076,8 +1082,8 @@ def test_fetch_full_text_pdf_respects_max_pages(monkeypatch):
         lambda stream: _FakePdfReader([_FakePdfPage(str(i)) for i in range(4)]),
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1088,10 +1094,10 @@ def test_fetch_full_text_pdf_respects_max_pages(monkeypatch):
 
 
 def test_fetch_full_text_raises_on_network_failure(monkeypatch):
-    def failing_get(url, headers=None, timeout=None, stream=None):
+    def failing_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         raise requests.exceptions.ConnectionError("connection refused")
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", failing_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", failing_get)
 
     with pytest.raises(FetchError, match="Failed to fetch"):
         fetch_full_text("https://uscourts.cavc.gov/unreachable")
@@ -1100,8 +1106,8 @@ def test_fetch_full_text_raises_on_network_failure(monkeypatch):
 def test_fetch_full_text_rejects_oversized_body(monkeypatch):
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"x" * 11,
             headers={"Content-Type": "text/plain"},
         ),
@@ -1115,37 +1121,39 @@ def test_fetch_full_text_requests_exact_args(monkeypatch):
     """The request carries url, User-Agent, timeout, and stream=True."""
     seen: dict[str, object] = {}
 
-    def recording_get(url, headers=None, timeout=None, stream=None):
+    def recording_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         seen["url"] = url
         seen["headers"] = headers
         seen["timeout"] = timeout
         seen["stream"] = stream
+        seen["impersonate"] = impersonate
         return FakePageResponse(
             text="<html><body><p>No holding sentence here.</p></body></html>",
             headers={"Content-Type": "text/html"},
         )
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", recording_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", recording_get)
 
     fetch_full_text("https://uscourts.cavc.gov/exact.html", timeout=42)
 
     assert seen["url"] == "https://uscourts.cavc.gov/exact.html"
-    assert seen["headers"] == {"User-Agent": get_settings().user_agent}
+    assert seen["headers"] is None
     assert seen["timeout"] == 42
     assert seen["stream"] is True
+    assert seen["impersonate"] == "chrome"
 
 
 def test_fetch_full_text_timeout_defaults_from_settings(monkeypatch):
     """Without an explicit timeout, REQUEST_TIMEOUT_SECONDS supplies it."""
     seen: dict[str, object] = {}
 
-    def recording_get(url, headers=None, timeout=None, stream=None):
+    def recording_get(url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None):
         seen["timeout"] = timeout
         return FakePageResponse(
             text="<html><body><p>x</p></body></html>", headers={"Content-Type": "text/html"}
         )
 
-    monkeypatch.setattr("va_legal_agent.fetch.requests.get", recording_get)
+    monkeypatch.setattr("va_legal_agent.fetch.cffi_requests.get", recording_get)
 
     fetch_full_text("https://uscourts.cavc.gov/default-timeout.html")
 
@@ -1162,8 +1170,8 @@ def test_fetch_full_text_pdf_by_content_type_without_extension(monkeypatch):
 
     monkeypatch.setattr("pypdf.PdfReader", recording_reader)
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1180,8 +1188,8 @@ def test_fetch_full_text_content_type_key_exact(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1193,8 +1201,8 @@ def test_fetch_full_text_content_type_key_exact(monkeypatch):
 def test_fetch_full_text_without_content_type_header_takes_html_path(monkeypatch):
     """No Content-Type header: the default must be '' so HTML parsing still runs."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="<html><body><p>First paragraph.</p></body></html>", headers={}
         ),
     )
@@ -1210,8 +1218,8 @@ def test_fetch_full_text_query_string_pdf(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1226,8 +1234,8 @@ def test_fetch_full_text_lowercases_url_for_pdf_detection(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
         ),
     )
@@ -1245,8 +1253,8 @@ def test_fetch_full_text_uses_response_encoding(monkeypatch):
             self.content = "caf\u00e9 decision text".encode("latin-1")
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: Latin1Response(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: Latin1Response(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -1267,8 +1275,8 @@ def test_fetch_full_text_encoding_falls_back_to_utf8(monkeypatch):
             yield "plain text body".encode("utf-8")
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: NoEncodingResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: NoEncodingResponse(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -1284,8 +1292,8 @@ def test_fetch_full_text_decode_replaces_bad_bytes(monkeypatch):
             self.content = b"plain body \xff\xfe"
 
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: BadBytesResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: BadBytesResponse(
             headers={"Content-Type": "text/plain"}
         ),
     )
@@ -1297,8 +1305,8 @@ def test_fetch_full_text_decode_replaces_bad_bytes(monkeypatch):
 def test_fetch_full_text_plain_text_without_txt_extension(monkeypatch):
     """Content-Type text/plain alone takes the text path (or/and mutant)."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="Citation Nr: 2100634", headers={"Content-Type": "text/plain"}
         ),
     )
@@ -1310,8 +1318,8 @@ def test_fetch_full_text_plain_text_without_txt_extension(monkeypatch):
 def test_fetch_full_text_plain_text_without_content_type_via_txt_extension(monkeypatch):
     """A .txt URL takes the text path even without a text/plain content-type."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="Citation Nr: 2100634", headers={"Content-Type": "text/html"}
         ),
     )
@@ -1323,8 +1331,8 @@ def test_fetch_full_text_plain_text_without_content_type_via_txt_extension(monke
 def test_fetch_full_text_html_joins_blocks_with_single_space_stripped(monkeypatch):
     html = "<html><body><p>  First paragraph.  </p><p>Second paragraph.</p></body></html>"
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -1340,8 +1348,8 @@ def test_fetch_full_text_html_multiple_blocks_single_space_separator(monkeypatch
     """get_text uses a single space separator (not XX XX or a dropped one)."""
     html = "<html><body><p>A</p><p>B</p></body></html>"
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text=html, headers={"Content-Type": "text/html"}
         ),
     )
@@ -1356,8 +1364,8 @@ def test_fetch_full_text_pdf_detected_by_url_query_string_only(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
         ),
     )
@@ -1372,8 +1380,8 @@ def test_fetch_full_text_pdf_detected_by_url_extension_only(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
         ),
     )
@@ -1388,8 +1396,8 @@ def test_fetch_full_text_pdf_detected_by_uppercase_url_extension(monkeypatch):
         "pypdf.PdfReader", lambda stream: _FakePdfReader([_FakePdfPage("Cite as 23 Vet.App. 1")])
     )
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             content=b"pdf-bytes", headers={"Content-Type": "application/octet-stream"}
         ),
     )
@@ -1401,8 +1409,8 @@ def test_fetch_full_text_pdf_detected_by_uppercase_url_extension(monkeypatch):
 def test_fetch_full_text_text_plain_path_keeps_raw_tags(monkeypatch):
     """The text/plain path returns the body verbatim, not HTML-parsed."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
             headers={"Content-Type": "text/plain"},
         ),
@@ -1419,8 +1427,8 @@ def test_fetch_full_text_text_plain_path_keeps_raw_tags(monkeypatch):
 def test_fetch_full_text_txt_extension_path_keeps_raw_tags(monkeypatch):
     """A .txt URL takes the text path even with a non-text/plain content-type."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="DOCKET NO. <b>19-4433</b> and Citation Nr: 2100634",
             headers={"Content-Type": "text/html"},
         ),
@@ -1434,8 +1442,8 @@ def test_fetch_full_text_txt_extension_path_keeps_raw_tags(monkeypatch):
 def test_fetch_full_text_uppercase_txt_extension(monkeypatch):
     """A .TXT URL is detected after lowercasing (the .TXT mutant would miss it)."""
     monkeypatch.setattr(
-        "va_legal_agent.fetch.requests.get",
-        lambda url, headers=None, timeout=None, stream=None: FakePageResponse(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
             text="Citation Nr: 2100634", headers={"Content-Type": "text/html"}
         ),
     )
