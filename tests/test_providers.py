@@ -2,6 +2,7 @@
 
 import email.utils
 import json
+import os
 import time
 
 import pytest
@@ -9,6 +10,10 @@ import requests
 
 from va_legal_agent.providers import (
     _bva_leaf_sitemap,
+    _bva_local_build,
+    _bva_local_index_paths,
+    _bva_local_load,
+    _bva_local_search_corpus,
     _bva_sitemap_index,
     _bva_text_matches,
     _courtlistener_query,
@@ -18,6 +23,7 @@ from va_legal_agent.providers import (
     _parse_bva_sitemap_index,
     _parse_retry_after,
     BVAProvider,
+    BvaLocalIndexProvider,
     BvaSitemapProvider,
     CourtListenerProvider,
     DuckDuckGoProvider,
@@ -67,6 +73,7 @@ def test_get_provider_known_names():
     assert isinstance(get_provider("courtlistener"), CourtListenerProvider)
     assert isinstance(get_provider("bva"), BVAProvider)
     assert isinstance(get_provider("bvasitemap"), BvaSitemapProvider)
+    assert isinstance(get_provider("bvalocal"), BvaLocalIndexProvider)
 
 
 def test_get_provider_unknown_name():
@@ -3328,7 +3335,7 @@ def test_validate_search_providers_warns_exact_message(monkeypatch, caplog):
 
     expected = (
         "Unknown search provider in SEARCH_PROVIDERS: 'google'; available: bva, "
-        "bvasitemap, courtlistener, duckduckgo. Skipping it."
+        "bvalocal, bvasitemap, courtlistener, duckduckgo. Skipping it."
     )
     assert any(r.message == expected for r in caplog.records)
 
@@ -3744,3 +3751,341 @@ def test_traverse_citations_skips_failed_node(monkeypatch, caplog):
         r.getMessage() == "Citation traversal skipped opinion 1: rate limited"
         for r in caplog.records
     )
+
+
+# ── BVA local-index provider ────────────────────────────────────────────
+
+
+class TestBvaLocalIndexPaths:
+    def test_returns_corpus_and_manifest(self):
+        c, m = _bva_local_index_paths("/tmp/bva_idx")
+        assert c.endswith("/corpus.txt")
+        assert m.endswith("/manifest.json")
+        assert c.startswith("/tmp/bva_idx")
+
+    def test_relative_path(self):
+        c, m = _bva_local_index_paths("idx")
+        assert c == "idx/corpus.txt"
+        assert m == "idx/manifest.json"
+
+
+class TestBvaLocalSearchCorpus:
+    def test_no_tokens_returns_empty(self):
+        assert _bva_local_search_corpus("any text", [], [], 10) == []
+
+    def test_single_token_non_match(self, tmp_path):
+        manifest = [{"url": "u", "title": "t", "lastmod": "", "start": 0, "end": 4}]
+        assert _bva_local_search_corpus("hello", manifest, ["zzz"], 10) == []
+
+    def test_single_token_match(self, tmp_path):
+        text = "HELLO tinnitus world"
+        manifest = [{"url": "u", "title": "t", "lastmod": "", "start": 0, "end": len(text)}]
+        results = _bva_local_search_corpus(text, manifest, ["tinnitus"], 10)
+        assert len(results) == 1
+        assert results[0]["url"] == "u"
+        assert "tinnitus" in results[0]["snippet"].lower()
+
+    def test_all_tokens_must_match(self, tmp_path):
+        text = "service connection for hearing loss"
+        manifest = [{"url": "u", "title": "t", "lastmod": "", "start": 0, "end": len(text)}]
+        # "tinnitus" is not present, so the AND fails even though "hearing" is.
+        assert _bva_local_search_corpus(text, manifest, ["hearing", "tinnitus"], 10) == []
+        # Both "hearing" and "loss" are present.
+        results = _bva_local_search_corpus(text, manifest, ["hearing", "loss"], 10)
+        assert len(results) == 1
+
+    def test_multiple_decisions_in_corpus(self, tmp_path):
+        text = "A: tinnitus granted.\n\x00\nB: hearing loss denied.\n\x00\nC: tinnitus remanded."
+        manifest = [
+            {"url": "a", "title": "A", "lastmod": "", "start": 0, "end": 21},
+            {"url": "b", "title": "B", "lastmod": "", "start": 21, "end": 44},
+            {"url": "c", "title": "C", "lastmod": "", "start": 44, "end": len(text)},
+        ]
+        results = _bva_local_search_corpus(text, manifest, ["tinnitus"], 10)
+        assert [r["url"] for r in results] == ["a", "c"]
+
+    def test_max_results_truncates(self, tmp_path):
+        text = "tinnitus A.\n\x00\ntinnitus B.\n\x00\ntinnitus C."
+        manifest = [
+            {"url": "a", "title": "A", "lastmod": "", "start": 0, "end": 13},
+            {"url": "b", "title": "B", "lastmod": "", "start": 13, "end": 26},
+            {"url": "c", "title": "C", "lastmod": "", "start": 26, "end": 39},
+        ]
+        results = _bva_local_search_corpus(text, manifest, ["tinnitus"], 2)
+        assert len(results) == 2
+
+    def test_snippet_falls_back_when_token_absent(self):
+        """Snippet uses the first token, but when none match it falls back."""
+        text = "no match for any token at all here"
+        manifest = [{"url": "u", "title": "t", "lastmod": "", "start": 0, "end": len(text)}]
+        results = _bva_local_search_corpus(text, manifest, ["zzz"], 10)
+        assert results == []  # no match at all
+
+
+class TestBvaLocalBuild:
+    def test_build_and_load_roundtrip(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        # Mock the download so no real HTTP is made.
+        fetches: list[tuple[str, str]] = []
+
+        def fake_fetch(url: str) -> str:
+            fetches.append((url, "body"))
+            # Simulate two real-looking decision files.
+            body_map = {
+                "https://www.va.gov/vetapp26/Files4/26000001.txt": "The Board granted service connection for tinnitus.",
+                "https://www.va.gov/vetapp26/Files4/26000002.txt": "Hearing loss denied. No nexus shown.",
+                "https://www.va.gov/vetapp26/Files4/26000003.txt": "  ",  # blank body → skipped
+            }
+            return body_map.get(url, "fallback for " + url)
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+
+        leaf = [
+            ("https://www.va.gov/vetapp26/Files4/26000001.txt", "2026-08-01"),
+            ("https://www.va.gov/vetapp26/Files4/26000002.txt", "2026-07-15"),
+            ("https://www.va.gov/vetapp26/Files4/26000003.txt", "2026-07-01"),
+        ]
+        corpus_path, manifest = _bva_local_build(str(tmp_path), leaf, 0)
+
+        assert len(manifest) == 2  # blank skipped
+        assert manifest[0]["title"] == "26000001"
+        assert manifest[1]["title"] == "26000002"
+        assert os.path.exists(corpus_path)
+
+        # Load it back and verify.
+        loaded_corpus, loaded_manifest = _bva_local_load(str(tmp_path))
+        assert loaded_corpus == corpus_path
+        assert len(loaded_manifest) == 2
+
+    def test_max_files_caps_downloads(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            return "tinnitus body"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [(f"https://va.gov/vetapp26/Files1/{i:08d}.txt", "2026-08-01") for i in range(5)]
+        _, manifest = _bva_local_build(str(tmp_path), leaf, 3)
+        assert len(manifest) == 3
+
+    def test_download_failure_is_skipped(self, monkeypatch, tmp_path, caplog):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            if "00002" in url:
+                raise SearchError("rate limited")
+            return "tinnitus granted"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-01"),
+            ("https://va.gov/vetapp26/Files4/26000002.txt", "2026-07-15"),
+        ]
+        _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
+        assert len(manifest) == 1
+        assert any(
+            "download failed" in r.getMessage() for r in caplog.records
+        )
+
+    def test_txt_extension_stripped_from_title(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            return "body"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [("https://va.gov/vetapp26/Files1/26_00_123.txt", "2026-08-01")]
+        _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
+        assert manifest[0]["title"] == "26_00_123"
+
+
+class TestBvaLocalIndexProvider:
+    def test_disabled_when_dir_empty(self, monkeypatch):
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", "")
+        with pytest.raises(SearchError, match="disabled"):
+            BvaLocalIndexProvider().search("tinnitus")
+
+    def test_error_when_sitemap_unavailable(self, monkeypatch):
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", "/tmp/nonexistent_bva_idx")
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def empty_index():
+            raise SearchError("sitemap down")
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._bva_sitemap_index", empty_index
+        )
+        with pytest.raises(SearchError, match="sitemap"):
+            BvaLocalIndexProvider().search("tinnitus")
+
+    def test_builds_on_first_query(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+                ("https://va.gov/vetapp26/Files4/26000101.txt", "2026-08-02"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "The Board granted service connection for tinnitus."
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+        assert len(results) == 2
+        from va_legal_agent.topics import COURT_BVA  # noqa: F811
+
+        assert all(r["court"] == COURT_BVA for r in results)
+        # Second call (index already built) must hit the disk, not re-download.
+        results2 = BvaLocalIndexProvider().search("tinnitus", max_results=1)
+        assert len(results2) == 1
+
+    def test_raises_on_no_results(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "hearing loss denied"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+
+        with pytest.raises(SearchError, match="No search results"):
+            BvaLocalIndexProvider().search("tinnitus")
+
+    def test_query_minimization(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "service connection tinnitus denied"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        # Full query with "for" stopword — minimized to the issue phrase.
+        results = BvaLocalIndexProvider().search("service connection for tinnitus")
+        assert len(results) == 1
+
+    def test_adapt_query_strips_site(self, monkeypatch):
+        from va_legal_agent.queries import adapt_query_for_provider
+
+        result = adapt_query_for_provider('site:va.gov tinnitus', 'bvalocal')
+        assert 'site:' not in result
+
+    def test_empty_issue_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "some text"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        # "for" is a stopword, so after minimization we get empty tokens.
+        with pytest.raises(SearchError, match="No search results"):
+            BvaLocalIndexProvider().search("for")
+
+    def test_empty_issue_falls_back_to_site_stripped(self, monkeypatch, tmp_path):
+        """When minimization produces nothing, fall back to site-stripped query."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "service connection tinnitus granted"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        # After minimization + strip_site_prefixes, we get "tinnitus".
+        results = BvaLocalIndexProvider().search("site:bva.va.gov tinnitus")
+        assert len(results) == 1
+
+    def test_empty_leaf_raises(self, monkeypatch, tmp_path):
+        """When the sitemap index is empty, search raises."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [],
+        )
+        with pytest.raises(SearchError, match="No BVA decisions indexed"):
+            BvaLocalIndexProvider().search("tinnitus")
+
+    def test_non_txt_extension_preserves_title_as_is(self, monkeypatch, tmp_path):
+        """URLs without a .txt extension keep their basename as the title."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+
+        def fake_fetch(url: str) -> str:
+            return "tinnitus granted"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        leaf = [
+            ("https://va.gov/vetapp26/Files1/decision", "2026-08-01"),
+        ]
+        _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
+        assert manifest[0]["title"] == "decision"
+
+    def test_minimize_returns_empty_falls_back_to_strip(self, monkeypatch, tmp_path):
+        """When _minimize_bva_query returns empty but strip_site_prefixes doesn't."""
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+
+        def fake_fetch(url: str) -> str:
+            return "1110 tinnitus granted"
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+        # "1110" is a statute phrase (skipped by minimize), leading text is
+        # empty → minimize returns "", but strip_site_prefixes returns the
+        # full query which tokenizes to ['1110', 'tinnitus'].
+        results = BvaLocalIndexProvider().search('"1110" tinnitus')
+        assert len(results) == 1

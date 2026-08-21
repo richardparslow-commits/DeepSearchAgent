@@ -1,4 +1,4 @@
-"""Search provider abstraction: DuckDuckGo (default), CourtListener, BVA, and the BVA sitemap.
+"""Search provider abstraction: DuckDuckGo (default), CourtListener, BVA, BVA sitemap, and BVA local index.
 
 The research pipeline calls :func:`search_all`, which runs every configured
 provider (``SEARCH_PROVIDERS``) across up to ``SEARCH_PAGES_PER_QUERY`` pages
@@ -16,6 +16,7 @@ import email.utils
 import html as html_module
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -1024,11 +1025,176 @@ class BvaSitemapProvider:
         return results
 
 
+_BVA_LOCAL_CORPUS = "corpus.txt"
+_BVA_LOCAL_MANIFEST = "manifest.json"
+
+
+def _bva_local_index_paths(directory: str) -> tuple[str, str]:
+    """Return the (corpus, manifest) file paths for a local index directory."""
+    return (
+        os.path.join(directory, _BVA_LOCAL_CORPUS),
+        os.path.join(directory, _BVA_LOCAL_MANIFEST),
+    )
+
+
+def _bva_local_build(
+    directory: str,
+    leaf: list[tuple[str, str]],
+    max_files: int,
+) -> tuple[str, list[dict[str, object]]]:
+    """Download decision files into ``corpus.txt`` + byte-offset manifest.
+
+    Concatenates each body separated by a ``\\n\\x00\\n`` sentinel so the
+    manifest's ``[start, end)`` byte ranges never straddle a decision.
+    Returns ``(corpus_path, manifest_rows)`` where each row is
+    ``{"url": str, "title": str, "lastmod": str, "start": int, "end": int}``.
+    """
+    os.makedirs(directory, exist_ok=True)
+    corpus_path, manifest_path = _bva_local_index_paths(directory)
+    manifest: list[dict[str, object]] = []
+    offset = 0
+    window = leaf if max_files <= 0 else leaf[:max_files]
+    with open(corpus_path, "w", encoding="utf-8") as corpus:
+        for url, lastmod in window:
+            _throttle("bvalocal")
+            try:
+                text = _fetch_bva_decision_text(url)
+            except SearchError as exc:
+                logger.warning(
+                    "BVA local-index download failed for %s: %s", url, exc
+                )
+                continue
+            if not text.strip():
+                continue
+            title = url.rsplit("/", 1)[-1]
+            if title.lower().endswith(".txt"):
+                title = title[:-4]
+            start = offset
+            corpus.write(text)
+            corpus.write("\n\x00\n")
+            end = start + len(text) + 3
+            manifest.append(
+                {
+                    "url": url,
+                    "title": title,
+                    "lastmod": lastmod,
+                    "start": start,
+                    "end": end,
+                }
+            )
+            offset = end
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+    return corpus_path, manifest
+
+
+def _bva_local_load(directory: str) -> tuple[str, list[dict[str, object]]]:
+    """Read the local index from disk."""
+    corpus_path, manifest_path = _bva_local_index_paths(directory)
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    return corpus_path, manifest
+
+
+def _bva_local_search_corpus(
+    corpus_text: str,
+    manifest: list[dict[str, object]],
+    tokens: list[str],
+    max_results: int,
+) -> list[dict[str, str]]:
+    """Grep the in-memory corpus for decisions containing every token.
+
+    Tokens are already lowercased; the search lowercases the corpus once
+    and does contain-checks in O(manifest) time.
+    """
+    if not tokens:
+        return []
+    corpus_lower = corpus_text.lower()
+    results: list[dict[str, str]] = []
+    for row in manifest:
+        start = int(row["start"])
+        end = int(row["end"])
+        body_slice = corpus_lower[start:end]
+        if all(token in body_slice for token in tokens):
+            text = corpus_text[start:end]
+            results.append(
+                {
+                    "title": str(row["title"]),
+                    "url": str(row["url"]),
+                    "snippet": _bva_snippet(text, " ".join(tokens)),
+                    "court": COURT_BVA,
+                    "citation": str(row["title"]),
+                }
+            )
+            if len(results) >= max_results:
+                break
+    return results
+
+
+class BvaLocalIndexProvider:
+    """Sub-second, WAF-free BVA search from an on-disk local index.
+
+    On first use it downloads every decision file enumerated by the
+    current year's leaf sitemap (optionally capped by
+    ``SEARCH_BVA_LOCAL_INDEX_MAX_FILES``), concatenates their bodies
+    into one ``corpus.txt`` with a byte-offset ``manifest.json``, and
+    then serves every later query by reading the corpus once into
+    memory — no per-query HTTP at all.
+
+    Subsequent queries are instantaneous (sub-second even for 40k+
+    decisions).  Set ``SEARCH_BVA_LOCAL_INDEX_DIR`` to an empty string
+    to disable this provider.
+    """
+
+    name = "bvalocal"
+
+    def search(
+        self, query: str, max_results: int = 10, page: int = 1
+    ) -> list[dict[str, str]]:
+        settings = get_settings()
+        directory = settings.search_bva_local_index_dir
+        if not directory:
+            raise SearchError(
+                "bvalocal provider is disabled "
+                "(SEARCH_BVA_LOCAL_INDEX_DIR is empty)."
+            )
+        issue = _minimize_bva_query(query).strip()
+        if not issue:
+            issue = strip_site_prefixes(query).strip()
+        tokens = _bva_issue_tokens(issue)
+        corpus_path, manifest_path = _bva_local_index_paths(directory)
+        if not os.path.exists(manifest_path) or not os.path.exists(
+            corpus_path
+        ):
+            leaf = BvaSitemapProvider()._most_recent_leaf()
+            if not leaf:
+                raise SearchError(
+                    "No BVA decisions indexed; the va.gov sitemap "
+                    "is unavailable."
+                )
+            _bva_local_build(
+                directory, leaf, settings.search_bva_local_index_max_files
+            )
+        with open(corpus_path, encoding="utf-8") as fh:
+            corpus_text = fh.read()
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        results = _bva_local_search_corpus(
+            corpus_text, manifest, tokens, max_results
+        )
+        if not results:
+            raise SearchError(
+                f"No search results returned for query: {query}"
+            )
+        return results
+
+
 _PROVIDERS: dict[str, type[SearchProvider]] = {
     "duckduckgo": DuckDuckGoProvider,
     "courtlistener": CourtListenerProvider,
     "bva": BVAProvider,
     "bvasitemap": BvaSitemapProvider,
+    "bvalocal": BvaLocalIndexProvider,
 }
 
 

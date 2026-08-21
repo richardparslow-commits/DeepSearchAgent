@@ -177,6 +177,16 @@ class Settings:
     # decisions per year, so the provider bounds its per-query file fetches
     # to the newest N and greps those for the issue phrase.
     search_bva_sitemap_scan_limit: int = 200
+    # On-disk directory where the bvalocal provider downloads the current
+    # year's full BVA decision corpus, builds a concatenated corpus + offset
+    # manifest, and runs subsequent queries against the local index (WAF-free,
+    # sub-second). The first query triggers the download if the index is
+    # absent or stale; set to empty to disable the local-index provider.
+    search_bva_local_index_dir: str = ".bva_index"
+    # How many of the most recent decision files the local-index provider
+    # downloads on first build. 0 means download every current-year file
+    # (typically 40k+). Lower it to trade recall for faster first builds.
+    search_bva_local_index_max_files: int = 0
     courtlistener_api_key: str | None = None
     # Pre-flight check against CourtListener's /api/rest/v4/api-usage/ before a
     # run: when the free-tier daily budget (125 requests) can't cover the
@@ -278,6 +288,14 @@ class Settings:
                 "SEARCH_BVA_SITEMAP_SCAN_LIMIT",
                 d.search_bva_sitemap_scan_limit,
                 min_value=1,
+            ),
+            search_bva_local_index_dir=os.getenv(
+                "SEARCH_BVA_LOCAL_INDEX_DIR", d.search_bva_local_index_dir
+            ),
+            search_bva_local_index_max_files=env_int(
+                "SEARCH_BVA_LOCAL_INDEX_MAX_FILES",
+                d.search_bva_local_index_max_files,
+                min_value=0,
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,
             courtlistener_usage_guard=env_bool(
