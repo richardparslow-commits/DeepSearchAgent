@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Protocol
@@ -1028,6 +1029,10 @@ class BvaSitemapProvider:
 _BVA_LOCAL_CORPUS = "corpus.txt"
 _BVA_LOCAL_MANIFEST = "manifest.json"
 _BVA_LOCAL_META = "index.meta.json"
+# Serializes index build/load so the agent's worker-pool fan-out can't race
+# concurrent ``corpus.txt`` writes (build truncates with "w" while another
+# thread reads) or trigger several redundant first-use downloads.
+_bva_local_lock = threading.Lock()
 
 
 def _bva_local_index_paths(directory: str) -> tuple[str, str]:
@@ -1060,15 +1065,22 @@ def _bva_local_needs_rebuild(
 ) -> bool:
     """True when the local index is stale and should be rebuilt.
 
+    ``max_age_hours <= 0`` disables auto-rebuild entirely: the index is built
+    once on first use and never refreshed, so this returns ``False`` without
+    touching the sitemap (the caller still builds when the index is *missing*,
+    which is the "first use"). Otherwise:
+
     Returns ``True`` when:
     - The meta file is absent (first build was before meta was introduced),
     - The index is older than *max_age_hours* and a live sitemap check
-      finds newer content (0 disables age-based rebuild — never re-check),
+      finds newer content,
     - The live sitemap's most recent lastmod is newer than the stored one.
 
     Returns ``False`` when the index is still fresh or the sitemap fetch
     fails (the existing index is better than nothing).
     """
+    if max_age_hours <= 0:
+        return False  # auto-rebuild disabled — never refresh
     meta_path = _bva_local_meta_path(directory)
     if not os.path.exists(meta_path):
         return True
@@ -1078,7 +1090,7 @@ def _bva_local_needs_rebuild(
     except (json.JSONDecodeError, OSError):
         return True
     build_time_str = meta.get("build_time", "")
-    if max_age_hours > 0 and build_time_str:
+    if build_time_str:
         try:
             build_time = datetime.fromisoformat(build_time_str)
         except ValueError:
@@ -1086,8 +1098,8 @@ def _bva_local_needs_rebuild(
         age = (datetime.now(timezone.utc) - build_time).total_seconds()
         if age <= max_age_hours * 3600:
             return False  # fresh — don't even fetch the sitemap
-    # Age exceeded (or age disabled): check the live sitemap for newer
-    # content before deciding whether to rebuild.
+    # Age exceeded: check the live sitemap for newer content before deciding
+    # whether to rebuild.
     stored_lastmod = meta.get("most_recent_lastmod", "")
     if stored_lastmod:
         try:
@@ -1217,6 +1229,9 @@ class BvaLocalIndexProvider:
     def search(
         self, query: str, max_results: int = 10, page: int = 1
     ) -> list[dict[str, str]]:
+        # ``page`` is accepted for the provider protocol but ignored here: the
+        # local index is a whole-corpus grep (no pagination window), so every
+        # page scans the same corpus and returns the top *max_results* matches.
         settings = get_settings()
         directory = settings.search_bva_local_index_dir
         if not directory:
@@ -1229,38 +1244,45 @@ class BvaLocalIndexProvider:
             issue = strip_site_prefixes(query).strip()
         tokens = _bva_issue_tokens(issue)
         corpus_path, manifest_path = _bva_local_index_paths(directory)
-        missing = not os.path.exists(manifest_path) or not os.path.exists(
-            corpus_path
-        )
-        if missing or _bva_local_needs_rebuild(
-            directory, settings.search_bva_local_index_max_age_hours
-        ):
-            try:
-                leaf = BvaSitemapProvider()._most_recent_leaf()
-            except SearchError:
-                if missing:
-                    raise SearchError(
-                        "No BVA decisions indexed; the va.gov "
-                        "sitemap is unavailable."
-                    ) from None
-                # Index exists but sitemap is down — use the stale copy.
-            else:
-                if not leaf:
+        # The agent fans queries out across a worker pool, so several threads
+        # can reach here at once. Build/load is serialized under the process
+        # lock so a first-use build (which truncates corpus.txt with "w") can
+        # never race a concurrent read, and so only one thread performs the
+        # download. Double-check the stale/missing condition inside the lock:
+        # the first thread may have already built it while the others queued.
+        with _bva_local_lock:
+            missing = not os.path.exists(manifest_path) or not os.path.exists(
+                corpus_path
+            )
+            if missing or _bva_local_needs_rebuild(
+                directory, settings.search_bva_local_index_max_age_hours
+            ):
+                try:
+                    leaf = BvaSitemapProvider()._most_recent_leaf()
+                except SearchError:
                     if missing:
                         raise SearchError(
                             "No BVA decisions indexed; the va.gov "
                             "sitemap is unavailable."
-                        )
+                        ) from None
+                    # Index exists but sitemap is down — use the stale copy.
                 else:
-                    _bva_local_build(
-                        directory,
-                        leaf,
-                        settings.search_bva_local_index_max_files,
-                    )
-        with open(corpus_path, encoding="utf-8") as fh:
-            corpus_text = fh.read()
-        with open(manifest_path, encoding="utf-8") as fh:
-            manifest = json.load(fh)
+                    if not leaf:
+                        if missing:
+                            raise SearchError(
+                                "No BVA decisions indexed; the va.gov "
+                                "sitemap is unavailable."
+                            )
+                    else:
+                        _bva_local_build(
+                            directory,
+                            leaf,
+                            settings.search_bva_local_index_max_files,
+                        )
+            with open(corpus_path, encoding="utf-8") as fh:
+                corpus_text = fh.read()
+            with open(manifest_path, encoding="utf-8") as fh:
+                manifest = json.load(fh)
         results = _bva_local_search_corpus(
             corpus_text, manifest, tokens, max_results
         )

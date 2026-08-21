@@ -3,6 +3,7 @@
 import email.utils
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -4133,18 +4134,34 @@ class TestBvaLocalNeedsRebuild:
     def test_true_when_meta_missing(self, tmp_path):
         assert _bva_local_needs_rebuild(str(tmp_path), 24) is True
 
-    def test_false_when_max_age_disabled(self, monkeypatch, tmp_path):
-        """max_age_hours=0 falls through to sitemap check; no newer content."""
-        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+    def test_missing_build_time_falls_through_to_sitemap_check(
+        self, monkeypatch, tmp_path
+    ):
+        """Meta without a build_time can't be aged, so it compares lastmods."""
+        meta = {"most_recent_lastmod": "2026-08-15"}
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
         monkeypatch.setattr(
             "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
             lambda self: [
-                ("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15"),
+                ("https://va.gov/vetapp26/Files4/26000099.txt", "2026-09-01"),
             ],
+        )
+        assert _bva_local_needs_rebuild(str(tmp_path), 24) is True
+
+    def test_false_when_max_age_disabled(self, monkeypatch, tmp_path):
+        """max_age_hours=0 disables auto-rebuild and never touches the sitemap."""
+        _bva_local_write_meta(str(tmp_path), "2026-08-15")
+        sitemap_calls = []
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: sitemap_calls.append(1) or [],
         )
         assert (
             _bva_local_needs_rebuild(str(tmp_path), 0) is False
         )
+        assert sitemap_calls == []  # disabled: no sitemap fetch at all
 
     def test_old_index_but_sitemap_no_newer_content(self, monkeypatch, tmp_path):
         """Age exceeded but live sitemap has no newer lastmod → don't rebuild."""
@@ -4389,3 +4406,61 @@ class TestBvaLocalIndexAutoRebuild:
         results = BvaLocalIndexProvider().search("tinnitus")
         assert len(results) == 1
         assert sitemap_calls == []  # never checked the sitemap!
+
+
+class TestBvaLocalConcurrency:
+    def test_concurrent_cold_start_builds_once(self, monkeypatch, tmp_path):
+        """Fan-out threads racing a cold index trigger exactly one build.
+
+        The agent fans queries out across a worker pool, so several threads
+        can reach ``BvaLocalIndexProvider.search`` at once on a first-use
+        index. The process lock must serialize the build so the corpus file
+        is written once (not truncated by concurrent ``"w"`` opens) and only
+        one download happens.
+        """
+        import va_legal_agent.providers as prov
+
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "0")
+        monkeypatch.setattr(
+            prov.BvaSitemapProvider,
+            "_most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            ],
+        )
+        monkeypatch.setattr(
+            prov,
+            "_fetch_bva_decision_text",
+            lambda url: "tinnitus service connection granted",
+        )
+
+        build_calls: list[int] = []
+        real_build = prov._bva_local_build
+
+        def counting_build(directory, leaf, max_files):
+            build_calls.append(1)
+            return real_build(directory, leaf, max_files)
+
+        monkeypatch.setattr(prov, "_bva_local_build", counting_build)
+
+        results: list[list[dict[str, str]]] = []
+        errors: list[Exception] = []
+
+        def run():
+            try:
+                results.append(prov.BvaLocalIndexProvider().search("tinnitus"))
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=run) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors
+        assert build_calls == [1]  # exactly one build despite 8 concurrent cold starts
+        assert len(results) == 8
+        assert all(len(r) == 1 for r in results)
