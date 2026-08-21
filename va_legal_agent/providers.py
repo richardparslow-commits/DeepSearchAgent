@@ -1,4 +1,4 @@
-"""Search provider abstraction: DuckDuckGo (default), CourtListener, and BVA.
+"""Search provider abstraction: DuckDuckGo (default), CourtListener, BVA, and the BVA sitemap.
 
 The research pipeline calls :func:`search_all`, which runs every configured
 provider (``SEARCH_PROVIDERS``) across up to ``SEARCH_PAGES_PER_QUERY`` pages
@@ -788,10 +788,247 @@ class BVAProvider:
         return results
 
 
+_SITEMAP_INDEX_URL = "https://www.va.gov/sitemap_bva.xml"
+# Process-wide caches: the sitemap index and each year's leaf are fetched once
+# per run (they are stable within a run), and decision bodies are cached per
+# URL so repeated queries over the same recent window don't re-fetch files.
+_bva_sitemap_cache: dict[str, object] = {}
+# Stopwords dropped when tokenizing the issue phrase for decision matching;
+# the remaining significant tokens must all appear in a decision's text.
+_BVA_MATCH_STOPWORDS = frozenset(
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+        "in", "is", "it", "of", "on", "or", "that", "the", "to", "was",
+        "were", "with",
+    }
+)
+
+
+def _parse_bva_sitemap_index(xml_text: str) -> list[tuple[str, str]]:
+    """Parse ``sitemap_bva.xml`` into ``[(year_code, leaf_url), ...]``.
+
+    Each ``<sitemap><loc>https://www.va.gov/vetapp26/sitemap.xml</loc>``
+    entry maps a two-digit year code (``26``) to its leaf sitemap URL.
+    """
+    index: list[tuple[str, str]] = []
+    for loc in re.findall(r"<loc>([^<]+)</loc>", xml_text):
+        match = re.search(r"/vetapp(\d{2})/sitemap\.xml$", loc)
+        if match:
+            index.append((match.group(1), loc))
+    return index
+
+
+def _parse_bva_leaf_sitemap(xml_text: str) -> list[tuple[str, str]]:
+    """Parse a year leaf sitemap into ``[(decision_url, lastmod), ...]``.
+
+    Each ``<url><loc>...txt</loc><lastmod>YYYY-MM-DD</lastmod>`` entry is a
+    single Board decision file. The list is sorted newest-first by lastmod
+    (ties broken by URL descending, which mirrors the sitemap's own order
+    within a month) so the provider scans the most recent decisions first.
+    """
+    entries = re.findall(r"<loc>([^<]+)</loc>\s*<lastmod>([^<]+)</lastmod>", xml_text)
+    return sorted(entries, key=lambda pair: (pair[1], pair[0]), reverse=True)
+
+
+def _bva_sitemap_index() -> list[tuple[str, str]]:
+    """Fetch and cache the BVA sitemap index (once per process).
+
+    Raises :class:`SearchError` on network failure, so the caller can surface
+    a clean provider error instead of a bare request exception.
+    """
+    cached = _bva_sitemap_cache.get("index")
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    settings = get_settings()
+    try:
+        response = requests.get(
+            _SITEMAP_INDEX_URL,
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+            **http_proxy_kwargs(),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SearchError(f"BVA sitemap index fetch failed: {exc}") from exc
+    index = _parse_bva_sitemap_index(response.text)
+    _bva_sitemap_cache["index"] = index
+    return index
+
+
+def _bva_leaf_sitemap(year_code: str) -> list[tuple[str, str]]:
+    """Fetch and cache one year's leaf sitemap (once per process per year)."""
+    cache_key = f"leaf:{year_code}"
+    cached = _bva_sitemap_cache.get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    index = _bva_sitemap_index()
+    url = next((leaf_url for code, leaf_url in index if code == year_code), None)
+    if url is None:
+        return []
+    settings = get_settings()
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+            **http_proxy_kwargs(),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SearchError(f"BVA leaf sitemap fetch failed for {url}: {exc}") from exc
+    leaf = _parse_bva_leaf_sitemap(response.text)
+    _bva_sitemap_cache[cache_key] = leaf
+    return leaf
+
+
+def _fetch_bva_decision_text(url: str) -> str:
+    """Fetch one Board decision body, cached per URL across the process.
+
+    Decision files on va.gov are WAF-free plain text; the app's fetch layer
+    reads them the same way. Raises :class:`SearchError` on network failure.
+    """
+    cached = _bva_sitemap_cache.get(f"text:{url}")
+    if cached is not None:
+        return str(cached)
+    settings = get_settings()
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+            **http_proxy_kwargs(),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SearchError(f"BVA decision fetch failed for {url}: {exc}") from exc
+    _bva_sitemap_cache[f"text:{url}"] = response.text
+    return response.text
+
+
+def _bva_issue_tokens(issue: str) -> list[str]:
+    """Significant, lowercase tokens of the minimized issue phrase."""
+    return [
+        word
+        for word in re.findall(r"[a-z0-9]+", issue.lower())
+        if word not in _BVA_MATCH_STOPWORDS
+    ]
+
+
+def _bva_text_matches(text: str, issue: str) -> bool:
+    """True when every significant issue token appears in the decision text."""
+    tokens = _bva_issue_tokens(issue)
+    if not tokens:
+        return False
+    lowered = text.lower()
+    return all(token in lowered for token in tokens)
+
+
+def _bva_snippet(text: str, issue: str) -> str:
+    """A short excerpt of the decision around the first significant issue token."""
+    tokens = _bva_issue_tokens(issue)
+    if tokens:
+        idx = text.lower().find(tokens[0])
+        if idx >= 0:
+            start = max(0, idx - 120)
+            return " ".join(text[start : idx + 300].split())[:280]
+    return " ".join(text.split())[:280]
+
+
+class BvaSitemapProvider:
+    """Board of Veterans' Appeals decisions straight from the va.gov sitemap.
+
+    BVA publishes every decision as a plain-text ``.txt`` file under
+    ``https://www.va.gov/vetappYY/FilesN/``. The official sitemap index
+    (``sitemap_bva.xml``, the ``Described By`` target of the data.va.gov
+    catalog entry) enumerates those files by year, WAF-free — no
+    search.usa.gov, no challenge pages. This provider fetches the index and
+    the current year's leaf sitemap once per run, scans the most recent
+    ``SEARCH_BVA_SITEMAP_SCAN_LIMIT`` decision files for the issue phrase,
+    and returns matching decisions.
+
+    It complements :class:`BVAProvider` (the full-corpus search.usa.gov
+    index): the sitemap path is reliable and unblocked but covers only the
+    most recent decisions of the current year, so it is best used alongside
+    the search index rather than as a complete replacement.
+    """
+
+    name = "bvasitemap"
+    INDEX_URL = _SITEMAP_INDEX_URL
+
+    @staticmethod
+    def _current_year_code() -> str:
+        return f"{datetime.now(timezone.utc).year % 100:02d}"
+
+    def _most_recent_leaf(self) -> list[tuple[str, str]]:
+        """The current year's leaf sitemap, newest-first.
+
+        Early in a year the current year's leaf may not exist yet; fall back
+        to the most recent year present in the index. Returns ``[]`` only
+        when the index itself is empty.
+        """
+        year_code = self._current_year_code()
+        leaf = _bva_leaf_sitemap(year_code)
+        if leaf:
+            return leaf
+        index = _bva_sitemap_index()
+        if not index:
+            return []
+        # Year codes are the last two digits of the decision year (vetapp92 is
+        # 1992, vetapp26 is 2026). Codes 92-99 are therefore 19xx and codes
+        # 00-91 are 20xx; comparing the two-digit code itself (numerically or
+        # lexicographically) would pick 99 (1999) over 26 (2026), so map each
+        # code to its full year before taking the max.
+        def _full_year(code: str) -> int:
+            two_digit = int(code)
+            return 1900 + two_digit if two_digit >= 92 else 2000 + two_digit
+
+        newest_year = max(index, key=lambda pair: _full_year(pair[0]))[0]
+        return _bva_leaf_sitemap(newest_year)
+
+    def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
+        settings = get_settings()
+        issue = _minimize_bva_query(query).strip()
+        if not issue:
+            issue = strip_site_prefixes(query).strip()
+        leaf = self._most_recent_leaf()
+        if not leaf:
+            raise SearchError("No BVA decisions indexed; the va.gov sitemap is unavailable.")
+        scan_limit = max(settings.search_bva_sitemap_scan_limit, 1)
+        window = leaf[(page - 1) * scan_limit : page * scan_limit]
+        results: list[dict[str, str]] = []
+        for url, _lastmod in window:
+            _throttle(self.name)
+            try:
+                text = _fetch_bva_decision_text(url)
+            except SearchError as exc:
+                logger.warning("BVA sitemap decision fetch failed for %s: %s", url, exc)
+                continue
+            if not _bva_text_matches(text, issue):
+                continue
+            title = url.rsplit("/", 1)[-1]
+            if title.lower().endswith(".txt"):
+                title = title[:-4]
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "snippet": _bva_snippet(text, issue),
+                    "court": COURT_BVA,
+                    "citation": title,
+                }
+            )
+            if len(results) >= max_results:
+                break
+        if not results:
+            raise SearchError(f"No search results returned for query: {query}")
+        return results
+
+
 _PROVIDERS: dict[str, type[SearchProvider]] = {
     "duckduckgo": DuckDuckGoProvider,
     "courtlistener": CourtListenerProvider,
     "bva": BVAProvider,
+    "bvasitemap": BvaSitemapProvider,
 }
 
 

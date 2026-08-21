@@ -172,6 +172,11 @@ class Settings:
     # actual HTTP requests for that provider, on top of the global
     # SEARCH_MIN_INTERVAL_SECONDS. Providers not listed have no budget.
     search_max_rpm_by_provider: dict[str, int] = field(default_factory=dict)
+    # How many of the most recent BVA decision files the sitemap provider
+    # scans per query. The va.gov sitemap enumerates tens of thousands of
+    # decisions per year, so the provider bounds its per-query file fetches
+    # to the newest N and greps those for the issue phrase.
+    search_bva_sitemap_scan_limit: int = 200
     courtlistener_api_key: str | None = None
     # Pre-flight check against CourtListener's /api/rest/v4/api-usage/ before a
     # run: when the free-tier daily budget (125 requests) can't cover the
@@ -268,6 +273,11 @@ class Settings:
             ),
             search_max_rpm_by_provider=env_provider_int_map(
                 os.getenv("SEARCH_MAX_RPM_BY_PROVIDER", ""), min_value=0
+            ),
+            search_bva_sitemap_scan_limit=env_int(
+                "SEARCH_BVA_SITEMAP_SCAN_LIMIT",
+                d.search_bva_sitemap_scan_limit,
+                min_value=1,
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,
             courtlistener_usage_guard=env_bool(

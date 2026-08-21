@@ -100,6 +100,6 @@ def adapt_query_for_provider(query: str, provider_name: str) -> str:
     CourtListener and BVA have their own court/decision filters, so ``site:``
     tokens are noise there; DuckDuckGo keeps them.
     """
-    if provider_name in ("courtlistener", "bva"):
+    if provider_name in ("courtlistener", "bva", "bvasitemap"):
         return strip_site_prefixes(query)
     return query

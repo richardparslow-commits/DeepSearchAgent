@@ -8,10 +8,17 @@ import pytest
 import requests
 
 from va_legal_agent.providers import (
+    _bva_leaf_sitemap,
+    _bva_sitemap_index,
+    _bva_text_matches,
     _courtlistener_query,
+    _fetch_bva_decision_text,
     _minimize_bva_query,
+    _parse_bva_leaf_sitemap,
+    _parse_bva_sitemap_index,
     _parse_retry_after,
     BVAProvider,
+    BvaSitemapProvider,
     CourtListenerProvider,
     DuckDuckGoProvider,
     SearchError,
@@ -59,6 +66,7 @@ def test_get_provider_known_names():
     assert isinstance(get_provider("duckduckgo"), DuckDuckGoProvider)
     assert isinstance(get_provider("courtlistener"), CourtListenerProvider)
     assert isinstance(get_provider("bva"), BVAProvider)
+    assert isinstance(get_provider("bvasitemap"), BvaSitemapProvider)
 
 
 def test_get_provider_unknown_name():
@@ -1128,6 +1136,788 @@ def test_bva_session_impersonates_chrome_and_is_reused(monkeypatch):
     # brand-new anonymous client.
     assert first is second
     assert getattr(first, "impersonate", None) == "chrome"
+
+
+# --- BVA sitemap provider (direct va.gov index, WAF-free) ---
+
+_INDEX_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.va.gov/vetapp26/sitemap.xml</loc><lastmod>2026-08-04</lastmod></sitemap>
+  <sitemap><loc>https://www.va.gov/vetapp25/sitemap.xml</loc><lastmod>2026-03-05</lastmod></sitemap>
+</sitemapindex>
+"""
+
+_LEAF_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://www.va.gov/vetapp26/Files1/26000001.txt</loc><lastmod>2026-03-31</lastmod></url>
+  <url><loc>https://www.va.gov/vetapp26/Files1/26000002.txt</loc><lastmod>2026-03-31</lastmod></url>
+  <url><loc>https://www.va.gov/vetapp26/Files4/A26042155.txt</loc><lastmod>2026-07-01</lastmod></url>
+</urlset>
+"""
+
+
+def _clear_bva_sitemap_cache(monkeypatch):
+    monkeypatch.setattr("va_legal_agent.providers._bva_sitemap_cache", {})
+
+
+def _mock_bva_requests(monkeypatch, bodies: dict[str, str]):
+    """Route requests.get for the sitemap provider to canned XML/text bodies."""
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        for key, body in bodies.items():
+            if key in url:
+                return FakeResponse(body)
+        raise requests.HTTPError(f"unexpected URL {url}")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+
+def test_parse_bva_sitemap_index():
+    assert _parse_bva_sitemap_index(_INDEX_XML) == [
+        ("26", "https://www.va.gov/vetapp26/sitemap.xml"),
+        ("25", "https://www.va.gov/vetapp25/sitemap.xml"),
+    ]
+    # Non-sitemap <loc> entries are ignored.
+    assert _parse_bva_sitemap_index("<loc>https://example.com/other</loc>") == []
+
+
+def test_parse_bva_leaf_sitemap_sorts_newest_first():
+    leaf = _parse_bva_leaf_sitemap(_LEAF_XML)
+    assert leaf[0] == (
+        "https://www.va.gov/vetapp26/Files4/A26042155.txt",
+        "2026-07-01",
+    )
+    assert len(leaf) == 3
+
+
+def test_parse_bva_leaf_sitemap_sorts_by_lastmod_not_url():
+    # A URL that sorts AFTER another lexicographically but carries a LATER
+    # lastmod must still win: the key is (lastmod, url), not the raw tuple.
+    # (B0000002 > A0000001 lexicographically, but A0000001 has the later date.)
+    xml = (
+        "<urlset><url><loc>https://www.va.gov/vetapp26/Files1/A0000001.txt</loc>"
+        "<lastmod>2026-07-01</lastmod></url>"
+        "<url><loc>https://www.va.gov/vetapp26/Files1/B0000002.txt</loc>"
+        "<lastmod>2026-03-31</lastmod></url></urlset>"
+    )
+    leaf = _parse_bva_leaf_sitemap(xml)
+    assert leaf[0][0].endswith("A0000001.txt")
+    assert leaf[0][1] == "2026-07-01"
+
+
+def test_parse_bva_leaf_sitemap_newest_first_within_month():
+    # Within the same lastmod, the newest decision (higher file number) sorts
+    # first by URL tie-break.
+    xml = (
+        "<urlset><url><loc>https://www.va.gov/vetapp26/Files1/26000001.txt</loc>"
+        "<lastmod>2026-03-31</lastmod></url>"
+        "<url><loc>https://www.va.gov/vetapp26/Files1/26000002.txt</loc>"
+        "<lastmod>2026-03-31</lastmod></url></urlset>"
+    )
+    leaf = _parse_bva_leaf_sitemap(xml)
+    assert leaf[0][0].endswith("26000002.txt")
+
+
+def test_bva_text_matches_significant_tokens():
+    assert _bva_text_matches("the veteran's tinnitus is chronic", "tinnitus")
+    assert _bva_text_matches(
+        "service connection for tinnitus was granted", "service connection for tinnitus"
+    )
+    # Case-insensitive, and every significant token must be present.
+    assert not _bva_text_matches("hearing loss only", "tinnitus")
+    assert not _bva_text_matches("", "tinnitus")
+    # A stopword-only issue matches nothing (no significant tokens).
+    assert not _bva_text_matches("for the of", "for the of")
+
+
+def test_bva_sitemap_index_fetched_and_cached(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        return FakeResponse(_INDEX_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    assert _bva_sitemap_index() == [
+        ("26", "https://www.va.gov/vetapp26/sitemap.xml"),
+        ("25", "https://www.va.gov/vetapp25/sitemap.xml"),
+    ]
+    assert _bva_sitemap_index() == _bva_sitemap_index()  # cached: same object
+    assert calls["n"] == 1  # fetched once per process
+
+
+def test_bva_sitemap_index_raises_on_fetch_error(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        raise requests.ConnectionError("no network")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="sitemap index fetch failed"):
+        _bva_sitemap_index()
+
+
+def test_bva_sitemap_index_sends_user_agent_timeout_and_proxy(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        captured["proxies"] = kwargs.get("proxies")
+        return FakeResponse(_INDEX_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    from va_legal_agent.config import get_settings
+
+    _bva_sitemap_index()
+
+    assert captured["headers"] == {"User-Agent": get_settings().user_agent}
+    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["proxies"] == {
+        "http": "http://proxy.example:8080",
+        "https": "http://proxy.example:8080",
+    }
+
+
+def test_bva_leaf_sitemap_fetched_and_cached(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        return FakeResponse(_INDEX_XML if "sitemap_bva" in url else _LEAF_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    leaf = _bva_leaf_sitemap("26")
+    assert leaf and leaf[0][0].endswith("A26042155.txt")
+    _bva_leaf_sitemap("26")
+    assert calls["n"] == 2  # index + one leaf fetch, then cached
+
+
+def test_bva_leaf_sitemap_missing_year_returns_empty(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        return FakeResponse(_INDEX_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    assert _bva_leaf_sitemap("99") == []
+
+
+def test_bva_leaf_sitemap_cache_is_per_year(monkeypatch):
+    # Different year codes must not share a cache slot: fetching 26 then 25
+    # returns each year's own leaf.
+    _clear_bva_sitemap_cache(monkeypatch)
+    leaf25 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp25/Files1/25000001.txt</loc>"
+        "<lastmod>2026-03-05</lastmod></url></urlset>"
+    )
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        if "vetapp25" in url:
+            return FakeResponse(leaf25)
+        if "vetapp26" in url:
+            return FakeResponse(_LEAF_XML)
+        return FakeResponse(_INDEX_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    leaf26 = _bva_leaf_sitemap("26")
+    leaf25 = _bva_leaf_sitemap("25")
+    assert leaf26[0][0].endswith("A26042155.txt")
+    assert leaf25[0][0].endswith("25000001.txt")
+
+
+def test_bva_leaf_sitemap_sends_user_agent_timeout_and_proxy(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        captured["proxies"] = kwargs.get("proxies")
+        return FakeResponse(_INDEX_XML if "sitemap_bva" in url else _LEAF_XML)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    from va_legal_agent.config import get_settings
+
+    _bva_leaf_sitemap("26")
+
+    assert captured["headers"] == {"User-Agent": get_settings().user_agent}
+    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["proxies"] == {
+        "http": "http://proxy.example:8080",
+        "https": "http://proxy.example:8080",
+    }
+
+
+def test_bva_fetch_decision_text_cached(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        return FakeResponse("decision body")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    assert _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/26000001.txt") == "decision body"
+    assert _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/26000001.txt") == "decision body"
+    assert calls["n"] == 1
+
+
+def test_bva_fetch_decision_text_sends_user_agent_timeout_and_proxy(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://proxy.example:8080")
+    captured: dict[str, object] = {}
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        captured["proxies"] = kwargs.get("proxies")
+        return FakeResponse("decision body")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    from va_legal_agent.config import get_settings
+
+    _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/26000001.txt")
+
+    assert captured["headers"] == {"User-Agent": get_settings().user_agent}
+    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["proxies"] == {
+        "http": "http://proxy.example:8080",
+        "https": "http://proxy.example:8080",
+    }
+
+
+def test_bva_fetch_decision_text_error_message_mentions_url(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="BVA decision fetch failed for https://www.va.gov/vetapp26/Files1/26000001.txt"):
+        _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/26000001.txt")
+
+
+def test_bva_sitemap_search_returns_matching_decisions(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    monkeypatch.setenv("SEARCH_BVA_SITEMAP_SCAN_LIMIT", "10")
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            "26000001.txt": "service connection for tinnitus was granted.",
+            "26000002.txt": "hearing loss only.",
+            "A26042155.txt": "tinnitus not shown as chronic in service.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus", max_results=5)
+
+    assert len(results) == 2
+    titles = {r["title"] for r in results}
+    assert titles == {"26000001", "A26042155"}
+    assert all(r["court"] == "Board of Veterans' Appeals" for r in results)
+    assert all(r["url"].startswith("https://www.va.gov/vetapp26/") for r in results)
+    assert all(r["citation"] == r["title"] for r in results)
+    # Newest match (A26042155, lastmod 2026-07-01) surfaces first.
+    assert results[0]["title"] == "A26042155"
+    assert "tinnitus" in results[0]["snippet"]
+
+
+def test_bva_sitemap_search_raises_when_no_matches(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            ".txt": "unrelated text about hearing loss.",
+        },
+    )
+
+    with pytest.raises(SearchError, match="No search results"):
+        BvaSitemapProvider().search("tinnitus")
+
+
+def test_bva_sitemap_search_raises_when_index_unavailable(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        raise requests.ConnectionError("no network")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="sitemap"):
+        BvaSitemapProvider().search("tinnitus")
+
+
+def test_bva_leaf_sitemap_raises_on_fetch_error(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        if "sitemap_bva" in url:
+            return FakeResponse(_INDEX_XML)
+        raise requests.ConnectionError("leaf down")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="leaf sitemap fetch failed"):
+        _bva_leaf_sitemap("26")
+
+
+def test_bva_sitemap_search_raises_when_index_has_no_years(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # An index that parses to zero year entries leaves nothing to scan.
+    empty_index = "<sitemapindex><sitemap><loc>https://example.com/x.xml</loc></sitemap></sitemapindex>"
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        return FakeResponse(empty_index)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(
+        SearchError,
+        match=r"^No BVA decisions indexed; the va\.gov sitemap is unavailable\.$",
+    ):
+        BvaSitemapProvider().search("tinnitus")
+
+
+def test_bva_sitemap_search_default_max_results(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    leaf_xml = "".join(
+        f"<url><loc>https://www.va.gov/vetapp26/Files1/{i:08d}.txt</loc><lastmod>2026-07-01</lastmod></url>"
+        for i in range(1, 12)
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": leaf_xml,
+            ".txt": "tinnitus tinnitus tinnitus",
+        },
+    )
+
+    # Default max_results is 10: a window of 11 matches caps at 10.
+    results = BvaSitemapProvider().search("tinnitus")
+    assert len(results) == 10
+
+
+def test_bva_sitemap_search_falls_back_when_current_year_absent(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # Force the provider to look for a year that is not in the index, so the
+    # ``newest year present`` fallback path in _most_recent_leaf runs. The
+    # index includes 99 (1999) so the fallback must compare year codes
+    # numerically — a string max would pick 99 and scan a decade-old year.
+    index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.va.gov/vetapp99/sitemap.xml</loc><lastmod>2000-01-01</lastmod></sitemap>
+  <sitemap><loc>https://www.va.gov/vetapp26/sitemap.xml</loc><lastmod>2026-08-04</lastmod></sitemap>
+</sitemapindex>
+"""
+    monkeypatch.setattr(
+        BvaSitemapProvider, "_current_year_code", staticmethod(lambda: "27")
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": index_xml,
+            "vetapp26/sitemap": _LEAF_XML,
+            "vetapp99/sitemap": _LEAF_XML,
+            "26000001.txt": "tinnitus granted.",
+            "26000002.txt": "tinnitus denied.",
+            "A26042155.txt": "tinnitus remanded.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus")
+    assert results and results[0]["title"] == "A26042155"
+
+
+def test_bva_sitemap_most_recent_leaf_numeric_max_wins_over_lexicographic(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # Index holds 99 (1999) and 26 (2026); current year 27 is absent. The
+    # fallback must pick 26 by numeric comparison — a lexicographic max
+    # would pick "99" and scan a decade-old year. The two years return
+    # different leaf bodies so the chosen year is observable.
+    index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.va.gov/vetapp99/sitemap.xml</loc><lastmod>2000-01-01</lastmod></sitemap>
+  <sitemap><loc>https://www.va.gov/vetapp26/sitemap.xml</loc><lastmod>2026-08-04</lastmod></sitemap>
+</sitemapindex>
+"""
+    monkeypatch.setattr(
+        BvaSitemapProvider, "_current_year_code", staticmethod(lambda: "27")
+    )
+    leaf26 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp26/Files1/26000001.txt</loc>"
+        "<lastmod>2026-07-01</lastmod></url></urlset>"
+    )
+    leaf99 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp99/Files1/99000001.txt</loc>"
+        "<lastmod>2000-01-01</lastmod></url></urlset>"
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": index_xml,
+            "vetapp26/sitemap": leaf26,
+            "vetapp99/sitemap": leaf99,
+            "26000001.txt": "tinnitus granted.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus")
+    assert results and results[0]["title"] == "26000001"
+
+
+def test_bva_sitemap_year_boundary_maps_92_99_to_19xx(monkeypatch):
+    # Codes 92-99 are 1992-1999 and codes 00-91 are 2000-20xx; the fallback
+    # must map to the full year before comparing, so a mixed index with 99
+    # (1999) and 00 (2000) picks 00 as newest.
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    index_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://www.va.gov/vetapp92/sitemap.xml</loc><lastmod>1993-01-01</lastmod></sitemap>
+  <sitemap><loc>https://www.va.gov/vetapp99/sitemap.xml</loc><lastmod>2000-01-01</lastmod></sitemap>
+  <sitemap><loc>https://www.va.gov/vetapp00/sitemap.xml</loc><lastmod>2000-06-01</lastmod></sitemap>
+</sitemapindex>
+"""
+    monkeypatch.setattr(
+        BvaSitemapProvider, "_current_year_code", staticmethod(lambda: "27")
+    )
+    # 92 (1992), 99 (1999), and 00 (2000): a boundary slip like ``>= 93`` or
+    # ``> 92`` would mis-map 92 to 2092 and wrongly pick it as newest, so the
+    # match must come from the 00 leaf (2000), not the 92 leaf (1992).
+    leaf92 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp92/Files1/92000001.txt</loc>"
+        "<lastmod>1993-01-01</lastmod></url></urlset>"
+    )
+    leaf99 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp99/Files1/99000001.txt</loc>"
+        "<lastmod>2000-01-01</lastmod></url></urlset>"
+    )
+    leaf00 = (
+        "<urlset><url><loc>https://www.va.gov/vetapp00/Files1/00000001.txt</loc>"
+        "<lastmod>2000-06-01</lastmod></url></urlset>"
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": index_xml,
+            "vetapp92/sitemap": leaf92,
+            "vetapp99/sitemap": leaf99,
+            "vetapp00/sitemap": leaf00,
+            "00000001.txt": "tinnitus granted.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus")
+    assert results and results[0]["title"] == "00000001"
+
+
+def test_bva_sitemap_search_empty_issue_after_minimization(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            ".txt": "a decision body without issues",
+        },
+    )
+
+    # The minimize step reduces a statute-anchor-only query to the empty
+    # string; search then falls back to the site-stripped query (also empty)
+    # and finds no matches, surfacing the standard no-results error.
+    with pytest.raises(SearchError, match="No search results"):
+        BvaSitemapProvider().search('site:bva.va.gov "1110"')
+
+
+def test_bva_sitemap_search_uses_minimized_issue_for_matching(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # A court-recall query minimizes to the issue phrase; matching must use
+    # that minimized phrase, not the site-stripped full recall string (which
+    # would require every word — claims type, statute — in the text).
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            ".txt": "service connection for tinnitus was granted.",
+        },
+    )
+
+    results = BvaSitemapProvider().search(
+        'site:bva.va.gov "service connection for tinnitus" "Compensation" '
+        "veterans compensation"
+    )
+    assert results
+
+
+def test_bva_sitemap_search_minimized_empty_falls_back_to_stripped(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # "1110" minimizes to the empty string, so search falls back to the
+    # site-stripped query — which here still carries the statute text and
+    # therefore matches a decision that cites it.
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            ".txt": "service connection is granted under 38 U.S.C. 1110.",
+        },
+    )
+
+    results = BvaSitemapProvider().search('"1110"')
+    assert results
+
+
+def test_bva_sitemap_search_non_txt_url_keeps_title(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    leaf_xml = (
+        "<urlset><url><loc>https://www.va.gov/vetapp26/Files1/26000001.html</loc>"
+        "<lastmod>2026-07-01</lastmod></url></urlset>"
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": leaf_xml,
+            ".html": "tinnitus granted.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus")
+    assert results[0]["title"] == "26000001.html"
+
+
+def test_bva_snippet_falls_back_when_no_tokens_found():
+    from va_legal_agent.providers import _bva_snippet
+
+    # Stopword-only issue: no significant tokens, snippet is the text head.
+    assert _bva_snippet("some decision text here", "for the of") == "some decision text here"
+    # Token absent from the text (cannot happen via search, but the helper
+    # must not raise): same fallback, capped at 280 chars even for long text
+    # (a [:281] slip would keep one extra character).
+    long_body = "z" * 500
+    assert len(_bva_snippet(long_body, "no match here")) == 280
+    assert _bva_snippet("no mention at all", "tinnitus") == "no mention at all"
+
+
+def test_bva_snippet_exact_window_around_token():
+    from va_legal_agent.providers import _bva_snippet
+
+    # A controlled text pins the exact windowing arithmetic: the excerpt
+    # starts 120 chars before the first token and runs 300 chars past it,
+    # whitespace-collapsed and capped at 280 chars. The same text must not
+    # produce the raw head (which would mean the token lookup was skipped or
+    # the case folding changed).
+    # The token sits 200 chars in, so the 120-char back-window starts at 80
+    # and the excerpt is a strict slice of the text, not the raw head.
+    body = "x" * 200 + "tinnitus the veteran's symptom" + "y" * 200
+    idx = body.find("tinnitus")
+    expected = " ".join(body[max(0, idx - 120) : idx + 300].split())[:280]
+    assert _bva_snippet(body, "tinnitus") == expected
+    assert _bva_snippet(body, "tinnitus") != " ".join(body.split())[:280]
+
+
+def test_bva_snippet_uses_first_occurrence_not_last():
+    from va_legal_agent.providers import _bva_snippet
+
+    # Two occurrences: the excerpt anchors on the FIRST token (find), not the
+    # last (rfind), so the window covers the first mention's context.
+    body = "p" * 50 + "tinnitus first" + "q" * 400 + "tinnitus second" + "r" * 50
+    first = body.find("tinnitus")
+    expected = " ".join(body[max(0, first - 120) : first + 300].split())[:280]
+    assert _bva_snippet(body, "tinnitus") == expected
+    assert "tinnitus first" in _bva_snippet(body, "tinnitus")
+    assert "tinnitus second" not in _bva_snippet(body, "tinnitus")
+
+
+def test_bva_snippet_anchors_when_token_at_position_zero():
+    from va_legal_agent.providers import _bva_snippet
+
+    # The token is the very first text: idx == 0 must still select the window
+    # (>= 0), not fall through to the head fallback (which would require the
+    # token at a strictly positive index). The long run of spaces collapses in
+    # the window's join but not in the head's, so the two outputs differ.
+    body = "tinnitus" + " " * 300 + "tail text beyond the window"
+    assert _bva_snippet(body, "tinnitus") == "tinnitus"
+    assert _bva_snippet(body, "tinnitus") != " ".join(body.split())[:280]
+
+
+def test_bva_snippet_window_width_is_exactly_300():
+    from va_legal_agent.providers import _bva_snippet
+
+    # The window runs exactly idx + 300 (not + 301): with the token at 50 and
+    # a long tail that keeps the joined excerpt under the 280 cap, one extra
+    # character changes the excerpt's length, so a width slip is observable.
+    body = "x" * 50 + "tinnitus" + " " * 100 + "y" * 300
+    idx = body.find("tinnitus")
+    expected = " ".join(body[0 : idx + 300].split())
+    assert _bva_snippet(body, "tinnitus") == expected
+    assert len(_bva_snippet(body, "tinnitus")) == len(" ".join(body[0 : idx + 300].split()))
+
+
+def test_bva_current_year_code_matches_calendar_year(monkeypatch):
+    from datetime import datetime, timezone
+
+    # % 101 would produce a different two-digit code for 2026 (6 vs 26); the
+    # code must always equal the UTC calendar year mod 100.
+    assert BvaSitemapProvider()._current_year_code() == f"{datetime.now(timezone.utc).year % 100:02d}"
+
+
+def test_bva_sitemap_search_caps_at_max_results(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    leaf_xml = "".join(
+        f"<url><loc>https://www.va.gov/vetapp26/Files1/{i:08d}.txt</loc><lastmod>2026-07-01</lastmod></url>"
+        for i in range(1, 11)
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": leaf_xml,
+            ".txt": "tinnitus is service connected.",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus", max_results=3)
+    assert len(results) == 3
+
+
+def test_bva_sitemap_search_skips_failed_fetches(monkeypatch, caplog):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # Newest file (scanned first) fails to fetch; the scan must continue past
+    # it and still surface the later matches.
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        if "sitemap_bva" in url:
+            return FakeResponse(_INDEX_XML)
+        if "vetapp26/sitemap" in url:
+            return FakeResponse(_LEAF_XML)
+        if "A26042155.txt" in url:
+            raise requests.ConnectionError("failed")
+        return FakeResponse("tinnitus granted.")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = BvaSitemapProvider().search("tinnitus", max_results=5)
+    assert [r["title"] for r in results] == ["26000002", "26000001"]
+    assert any(
+        r.message.startswith(
+            "BVA sitemap decision fetch failed for "
+            "https://www.va.gov/vetapp26/Files4/A26042155.txt:"
+        )
+        for r in caplog.records
+    )
+
+
+def test_bva_sitemap_search_uses_scan_limit_window(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    monkeypatch.setenv("SEARCH_BVA_SITEMAP_SCAN_LIMIT", "2")
+    leaf_xml = "".join(
+        f"<url><loc>https://www.va.gov/vetapp26/Files1/{i:08d}.txt</loc><lastmod>2026-07-01</lastmod></url>"
+        for i in range(1, 5)
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": leaf_xml,
+            ".txt": "tinnitus tinnitus tinnitus",
+        },
+    )
+
+    provider = BvaSitemapProvider()
+    page1 = provider.search("tinnitus", max_results=5, page=1)
+    page2 = provider.search("tinnitus", max_results=5, page=2)
+
+    # Window of 2 per page: page 1 sees the two newest files, page 2 the next.
+    assert [r["title"] for r in page1] == ["00000004", "00000003"]
+    assert [r["title"] for r in page2] == ["00000002", "00000001"]
+
+
+def test_bva_sitemap_search_scan_limit_floor_of_one(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    # SEARCH_BVA_SITEMAP_SCAN_LIMIT=1 (config's floor) must yield exactly a
+    # 1-file window — the provider's own max(scan_limit, 1) floor keeps it at
+    # 1 rather than 2, so the newest file is scanned and nothing more.
+    monkeypatch.setenv("SEARCH_BVA_SITEMAP_SCAN_LIMIT", "1")
+    leaf_xml = "".join(
+        f"<url><loc>https://www.va.gov/vetapp26/Files1/{i:08d}.txt</loc><lastmod>2026-07-01</lastmod></url>"
+        for i in range(1, 4)
+    )
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": leaf_xml,
+            ".txt": "tinnitus tinnitus tinnitus",
+        },
+    )
+
+    results = BvaSitemapProvider().search("tinnitus", max_results=5)
+    # Exactly the newest file is scanned: 00000003 only.
+    assert [r["title"] for r in results] == ["00000003"]
+
+
+def test_bva_sitemap_search_throttles_with_provider_name(monkeypatch):
+    _clear_bva_sitemap_cache(monkeypatch)
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
+    captured: list[object] = []
+
+    def fake_throttle(provider=None):
+        captured.append(provider)
+
+    monkeypatch.setattr("va_legal_agent.providers._throttle", fake_throttle)
+    _mock_bva_requests(
+        monkeypatch,
+        {
+            "sitemap_bva": _INDEX_XML,
+            "vetapp26/sitemap": _LEAF_XML,
+            ".txt": "tinnitus granted.",
+        },
+    )
+
+    BvaSitemapProvider().search("tinnitus")
+    # Every decision fetch is paced under the provider's own name so a
+    # SEARCH_MAX_RPM_BY_PROVIDER=bvasitemap budget applies.
+    assert captured and all(name == "bvasitemap" for name in captured)
+
+
+def test_bva_sitemap_adapt_query_strips_site_prefix():
+    from va_legal_agent.queries import adapt_query_for_provider
+
+    assert adapt_query_for_provider("site:bva.va.gov tinnitus", "bvasitemap") == "tinnitus"
 
 
 def test_adapt_query_for_provider_strips_site_for_bva():
@@ -2538,7 +3328,7 @@ def test_validate_search_providers_warns_exact_message(monkeypatch, caplog):
 
     expected = (
         "Unknown search provider in SEARCH_PROVIDERS: 'google'; available: bva, "
-        "courtlistener, duckduckgo. Skipping it."
+        "bvasitemap, courtlistener, duckduckgo. Skipping it."
     )
     assert any(r.message == expected for r in caplog.records)
 
