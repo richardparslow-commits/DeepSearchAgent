@@ -3826,6 +3826,18 @@ class TestBvaLocalSearchCorpus:
         results = _bva_local_search_corpus(text, manifest, ["zzz"], 10)
         assert results == []  # no match at all
 
+    def test_snippet_never_leaks_separator_null_byte(self):
+        """A token near the body end must not leak the separator's \\x00 into the snippet."""
+        body = ("x" * 100) + " tinnitus granted"
+        text = body + "\n\x00\n"
+        manifest = [
+            {"url": "u", "title": "t", "lastmod": "", "start": 0, "end": len(text)}
+        ]
+        results = _bva_local_search_corpus(text, manifest, ["tinnitus"], 10)
+        assert len(results) == 1
+        assert "\x00" not in results[0]["snippet"]
+        assert "tinnitus" in results[0]["snippet"]
+
 
 class TestBvaLocalBuild:
     def test_build_and_load_roundtrip(self, monkeypatch, tmp_path):

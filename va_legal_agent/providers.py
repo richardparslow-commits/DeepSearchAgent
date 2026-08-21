@@ -1029,6 +1029,9 @@ class BvaSitemapProvider:
 _BVA_LOCAL_CORPUS = "corpus.txt"
 _BVA_LOCAL_MANIFEST = "manifest.json"
 _BVA_LOCAL_META = "index.meta.json"
+# Byte separator written between decision bodies in corpus.txt so a
+# manifest row's [start, end) range can never straddle two decisions.
+_BVA_LOCAL_SEPARATOR = "\n\x00\n"
 # Serializes index build/load so the agent's worker-pool fan-out can't race
 # concurrent ``corpus.txt`` writes (build truncates with "w" while another
 # thread reads) or trigger several redundant first-use downloads.
@@ -1147,8 +1150,8 @@ def _bva_local_build(
                 title = title[:-4]
             start = offset
             corpus.write(text)
-            corpus.write("\n\x00\n")
-            end = start + len(text) + 3
+            corpus.write(_BVA_LOCAL_SEPARATOR)
+            end = start + len(text) + len(_BVA_LOCAL_SEPARATOR)
             manifest.append(
                 {
                     "url": url,
@@ -1187,14 +1190,18 @@ def _bva_local_search_corpus(
     """
     if not tokens:
         return []
-    corpus_lower = corpus_text.lower()
     results: list[dict[str, str]] = []
     for row in manifest:
         start = int(row["start"])
         end = int(row["end"])
-        body_slice = corpus_lower[start:end]
-        if all(token in body_slice for token in tokens):
-            text = corpus_text[start:end]
+        text = corpus_text[start:end]
+        # Strip the inter-decision separator so matching and the snippet see
+        # the clean body (the separator's \x00 would otherwise leak into a
+        # snippet window that reaches the end of the decision).
+        if text.endswith(_BVA_LOCAL_SEPARATOR):
+            text = text[: -len(_BVA_LOCAL_SEPARATOR)]
+        body_lower = text.lower()
+        if all(token in body_lower for token in tokens):
             results.append(
                 {
                     "title": str(row["title"]),
