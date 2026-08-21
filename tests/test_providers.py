@@ -4393,14 +4393,29 @@ class TestBvaLocalNeedsRebuild:
         # Age exceeded + sitemap fails → return False (keep existing index).
         assert _bva_local_needs_rebuild(str(tmp_path), 1) is False
 
-    def test_no_lastmod_returns_false_when_age_exceeded(self, tmp_path):
-        """Age exceeded but no stored_lastmod to compare → don't rebuild."""
+    def test_no_lastmod_returns_false_when_age_exceeded(self, monkeypatch, tmp_path):
+        """Age exceeded but no stored_lastmod to compare → don't rebuild.
+
+        The sitemap must never be fetched: without a stored lastmod there is
+        nothing to compare against, so the decision is made from the meta file
+        alone. Mocking ``_most_recent_leaf`` and asserting it is never called
+        both makes this hermetic (no va.gov network call) and pins the
+        short-circuit — a mutant that flips the guard would invoke the mocked
+        sitemap and fail this test.
+        """
         meta = {"build_time": "2000-01-01T00:00:00+00:00"}
         meta_path = _bva_local_meta_path(str(tmp_path))
         with open(meta_path, "w") as fh:
             json.dump(meta, fh)
-        # stored_lastmod missing → falls through to return False.
+        sitemap_calls = []
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: sitemap_calls.append(1) or [],
+        )
+        # stored_lastmod missing → falls through to return False without
+        # touching the live sitemap.
         assert _bva_local_needs_rebuild(str(tmp_path), 1) is False
+        assert sitemap_calls == []  # sitemap was never fetched
 
     def test_meta_without_lastmod_stays_fresh(self, monkeypatch, tmp_path):
         """Meta missing most_recent_lastmod is not stale when age is within threshold."""
