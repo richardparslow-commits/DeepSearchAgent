@@ -27,11 +27,20 @@ class ElementSpec:
     description: str
     guidance: str
     step: str
+    # Analytical weight for the coverage-score denominator: a nexus finding
+    # is the contested element in most VA claims, so it carries more scoring
+    # weight than e.g. the duty-to-assist check.  Weights are relative within
+    # whatever subset of elements is detected for a given issue.
+    weight: float = 0.1
 
 
-# Claimant guidance per topic, keyed by Topic.name. Topic names and detection
-# phrases live in topics.TOPICS; this table only adds the interpretation text.
-_ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
+# Claimant guidance per topic, keyed by Topic.name. Each entry is
+# (description, guidance, step, weight). The weight reflects how often this
+# element is the *contested* question in VA claims practice: nexus is the
+# battleground in ~40% of service-connection appeals, the umbrella
+# service-connection topic drives most filings, and the procedural checks
+# (duty to assist, reasons and bases) rarely decide cases on their own.
+_ELEMENT_DETAILS: dict[str, tuple[str, str, str, float]] = {
     "service connection": (
         "The Caluza elements: a current diagnosed disability, an in-service "
         "event or aggravation, and a nexus linking the two.",
@@ -39,12 +48,14 @@ _ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
         "event, and (3) a medical nexus opinion connecting the two.",
         "Map the record to the three Caluza elements (diagnosis, in-service "
         "event, nexus) and identify which element is contested.",
+        0.30,
     ),
     "nexus": (
         "A medical or factual link between the current disability and military service.",
         "Obtain a supporting medical nexus opinion that addresses the "
         "'at least as likely as not' standard.",
         "Secure a nexus opinion that explicitly applies the 'at least as likely as not' standard.",
+        0.40,
     ),
     "benefit of the doubt": (
         "When the evidence for and against the claim is in relative balance, the "
@@ -52,23 +63,27 @@ _ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
         "Highlight areas where favorable and unfavorable evidence are roughly in "
         "balance, and request that the benefit of the doubt be applied.",
         "Identify issues where the evidence is in equipoise and argue the benefit of the doubt.",
+        0.10,
     ),
     "reasons and bases": (
         "The Board must provide an adequate statement of the reasons and bases "
         "for its decision (38 U.S.C. § 7104(d)(1)).",
         "Point out any findings the Board failed to explain or evidence it failed to address.",
         "Check the decision for findings that lack reasons-and-bases support.",
+        0.05,
     ),
     "evidence evaluation": (
         "Evidence must be competent, credible, and properly weighed under VA standards.",
         "Gather competent evidence supporting the claim, and challenge any "
         "improper weighing of lay or medical evidence.",
         "Audit whether VA weighed the competent and lay evidence properly.",
+        0.05,
     ),
     "presumption": (
         "Presumptive service connection may apply to certain conditions for qualifying veterans.",
         "Confirm whether the condition and service history qualify for any presumptions.",
         "Check whether presumptive service connection applies.",
+        0.03,
     ),
     "rating": (
         "Disability evaluation applies the rating schedule to the symptoms and "
@@ -76,16 +91,19 @@ _ELEMENT_DETAILS: dict[str, tuple[str, str, str]] = {
         "Compare the veteran's symptoms against the rating criteria to argue "
         "for the appropriate evaluation.",
         "Compare the symptoms against the rating schedule criteria.",
+        0.02,
     ),
     "aggravation": (
         "A pre-existing condition aggravated by service may be service-connected.",
         "Document the pre-service baseline and the worsening during service.",
         "Document the pre-service baseline and the in-service worsening.",
+        0.02,
     ),
     "duty to assist": (
         "VA has a duty to assist the claimant in developing evidence relevant to the claim.",
         "Identify records or exams that VA failed to obtain or provide.",
         "Identify any evidence that VA failed to help develop.",
+        0.03,
     ),
 }
 
@@ -105,8 +123,8 @@ def _build_element_library() -> tuple[ElementSpec, ...]:
         )
     specs = []
     for topic in TOPICS:
-        description, guidance, step = _ELEMENT_DETAILS[topic.name]
-        specs.append(ElementSpec(topic.name, topic.phrases, description, guidance, step))
+        description, guidance, step, weight = _ELEMENT_DETAILS[topic.name]
+        specs.append(ElementSpec(topic.name, topic.phrases, description, guidance, step, weight))
     return tuple(specs)
 
 
@@ -365,6 +383,7 @@ def build_interpretive_analysis(
                 name=spec.name,
                 description=spec.description,
                 guidance=spec.guidance,
+                weight=spec.weight,
                 covered_by=covered_by,
             )
         )
@@ -389,7 +408,9 @@ def build_interpretive_analysis(
 
     # ``detect_claim_elements`` now falls back to the full library for a bare
     # issue, so ``detected`` is never empty here and the divisor is safe.
-    coverage_score = sum(1 for element in detected if element.covered_by) / len(detected)
+    covered_weight = sum(element.weight for element in detected if element.covered_by)
+    total_weight = sum(element.weight for element in detected)
+    coverage_score = covered_weight / total_weight if total_weight > 0 else 0.0
 
     next_steps = [spec.step for spec in element_specs]
     next_steps.extend(GENERIC_NEXT_STEPS)

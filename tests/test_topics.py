@@ -46,6 +46,7 @@ def test_element_library_mirrors_topics():
     for spec, topic in zip(ELEMENT_LIBRARY, TOPICS):
         assert spec.phrases == topic.phrases
         assert spec.description and spec.guidance and spec.step
+        assert spec.weight > 0  # every element carries a real analytical weight
 
 
 def test_issue_tag_patterns_derive_from_topics():

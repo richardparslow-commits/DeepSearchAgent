@@ -68,6 +68,10 @@ class ClaimElement(BaseModel):
     name: str
     description: str
     guidance: str
+    # Analytical weight for the coverage-score denominator. Higher-weight
+    # elements (nexus, service connection) matter more when calculating how
+    # well the retrieved authorities cover the claim.
+    weight: float = 0.1
     covered_by: list[str] = Field(default_factory=list)
 
 

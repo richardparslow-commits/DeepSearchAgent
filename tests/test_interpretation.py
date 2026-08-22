@@ -490,7 +490,9 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
     ]
     assert result.detected_elements[0].covered_by == ["Smith v. Wilkie"]
     assert result.detected_elements[1].covered_by == []
-    assert result.coverage_score == 0.5
+    # service connection covered (weight 0.30), presumption not (weight 0.03)
+    # → 0.30 / 0.33 ≈ 0.909
+    assert abs(result.coverage_score - (0.30 / 0.33)) < 0.001
     assert any("service connection" in strength for strength in result.strengths)
     assert any("presumption" in gap for gap in result.gaps)
     assert result.interpretation_source == "template"
@@ -600,7 +602,10 @@ def test_build_analysis_falls_back_to_full_library_for_bare_issue():
         topic.name for topic in TOPICS
     ]
     assert result.detected_elements[0].covered_by == ["Doe v. VA"]  # service connection
-    assert result.coverage_score == 2 / 9  # service connection + nexus of 9
+    # Full library: service connection (0.30) + nexus (0.40) covered out of
+    # all nine elements (total weight 1.00).  Previously every element was 1/9;
+    # now nexus is 0.40 and everything else shares the remaining 0.60.
+    assert result.coverage_score == 0.70
     # The fallback still yields actionable element steps (not an empty list).
     assert result.next_steps[0] == (
         "Map the record to the three Caluza elements (diagnosis, in-service "
@@ -791,3 +796,110 @@ def test_build_analysis_reasoning_falls_back_to_template_principles(monkeypatch)
     assert result.how_it_affects_va_claims == "Only a synthesis."
     assert result.likely_applicable_principles  # deterministic findings kept
     assert any("(see: Smith v. Wilkie)" in p for p in result.likely_applicable_principles)
+
+
+# ── Weighted coverage score ──────────────────────────────────────────────────
+
+
+def test_weighted_coverage_single_covered_high_weight_element():
+    """Covering nexus (weight 0.40) alone gives higher score than covering
+    a low-weight element alone."""
+    # Only nexus is detected and it is covered.
+    cases = [_case("Smith v. Wilkie", snippet="nexus opinion required")]
+
+    result = build_interpretive_analysis("nexus", "Compensation", cases)
+
+    # The single detected element has weight 0.40 and is covered → 1.0
+    assert result.detected_elements[0].weight == 0.40
+    assert result.coverage_score == 1.0
+
+
+def test_weighted_coverage_nexus_covered_rates_higher_than_duty_covered():
+    """Both elements fully covered produce 1.0, but the stored weight
+    differs — nexus is 0.40, duty-to-assist is 0.03."""
+    nexus_cases = [_case("Smith v. Wilkie", snippet="nexus opinion required")]
+    duty_cases = [_case("Jones v. VA", snippet="duty to assist was violated")]
+
+    nexus_result = build_interpretive_analysis("nexus", "Compensation", nexus_cases)
+    duty_result = build_interpretive_analysis("duty to assist", "Compensation", duty_cases)
+
+    # Both are single-element with full coverage.
+    assert nexus_result.coverage_score == 1.0
+    assert duty_result.coverage_score == 1.0
+    # The weight is stored on the element for downstream inspection (the
+    # strength/gap messages, CSV exports, and JSON output all carry it).
+    assert nexus_result.detected_elements[0].weight == 0.40
+    assert duty_result.detected_elements[0].weight == 0.03
+
+
+def test_weighted_coverage_two_elements_one_missing():
+    """When nexus (high weight) is covered but rating (low weight) is not,
+    the score is higher than the 0.5 the unweighted formula would give."""
+    cases = [_case("Smith v. Wilkie", snippet="nexus opinion and service connection")]
+
+    result = build_interpretive_analysis(
+        "nexus and rating", "Compensation", cases
+    )
+
+    # nexus (0.40) covered, rating (0.02) not → 0.40 / 0.42 ≈ 0.952
+    assert abs(result.coverage_score - (0.40 / 0.42)) < 0.001
+    assert result.detected_elements[0].covered_by == ["Smith v. Wilkie"]
+    assert result.detected_elements[1].covered_by == []
+
+
+def test_weighted_coverage_two_elements_high_weight_missing():
+    """When nexus is missing but rating is covered, the score drops sharply
+    because nexus carries 0.40 of the denominator's 0.42 total."""
+    cases = [_case("Smith v. Wilkie", snippet="rating schedule criteria apply")]
+
+    result = build_interpretive_analysis(
+        "nexus and rating", "Compensation", cases
+    )
+
+    # rating (0.02) covered, nexus (0.40) not → 0.02 / 0.42 ≈ 0.048
+    assert abs(result.coverage_score - (0.02 / 0.42)) < 0.001
+
+
+def test_weighted_coverage_all_covered():
+    """Full coverage across all nine elements yields 1.0 regardless of weights."""
+    cases = [
+        _case(
+            "Omni Case",
+            snippet=(
+                "service connection nexus benefit of the doubt reasons and bases "
+                "evidence evaluation presumption rating aggravation duty to assist"
+            ),
+        )
+    ]
+
+    result = build_interpretive_analysis("tinnitus", "Compensation", cases)
+
+    # Bare issue → full library fallback. All 9 elements covered.
+    assert result.coverage_score == 1.0
+    assert all(element.covered_by for element in result.detected_elements)
+
+
+def test_weighted_coverage_none_covered():
+    """No coverage yields 0.0 regardless of weights."""
+    cases = [_case("Smith v. Wilkie")]  # empty snippet/holding, no matches
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == 0.0
+
+
+def test_weighted_coverage_element_carries_weight_in_model():
+    """Every ClaimElement in the output carries its weight for downstream
+    inspection (CSV/JSON/strength-message consumers)."""
+    cases = [_case("Smith v. Wilkie", snippet="nexus opinion required")]
+
+    result = build_interpretive_analysis("tinnitus", "Compensation", cases)
+
+    # All 9 elements carry their declared weight.
+    for element in result.detected_elements:
+        assert element.weight > 0
+        assert element.weight <= 1.0
+    # Pin the two highest weights.
+    weights = {element.name: element.weight for element in result.detected_elements}
+    assert weights["nexus"] == 0.40
+    assert weights["service connection"] == 0.30

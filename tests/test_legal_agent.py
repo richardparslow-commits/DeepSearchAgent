@@ -2369,9 +2369,11 @@ def test_analyze_cases_for_claim_refines_before_analysis(monkeypatch):
     # forever with no deadline.
     analysis = analyze_cases_for_claim("service connection and rating", max_wall_seconds=1.0)
 
-    # The gap query ran, but the stub never covers "rating", so coverage stays half.
+    # The gap query ran, but the stub never covers "rating", so coverage
+    # is the weighted proportion: service connection (0.30) out of total
+    # 0.30 + 0.02 = 0.32 → 0.9375.
     assert '"rating" "service connection and rating" veterans law' in queries_seen
-    assert analysis.coverage_score == 0.5
+    assert analysis.coverage_score == pytest.approx(0.30 / 0.32)
     assert [e.name for e in analysis.detected_elements] == ["service connection", "rating"]
 
 
