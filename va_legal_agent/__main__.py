@@ -279,7 +279,7 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         _bullets("Gaps", analysis.gaps + _search_gaps(analysis.search_telemetry)),
         ([_matrix_header()] + _matrix_rows(analysis.statute_outcome_matrix))
         if analysis.statute_outcome_matrix else [],
-        [f"Coverage score: {analysis.coverage_score:.2f}"],
+        [f"Coverage score: {analysis.coverage_score:.2f} (confidence: {analysis.coverage_confidence})"],
         [f"Interpretation source: {analysis.interpretation_source}"],
         _bullets("Search telemetry", _telemetry_lines(analysis.search_telemetry)),
         [_quota_line(analysis.courtlistener_quota)] if analysis.courtlistener_quota else [],
@@ -360,7 +360,7 @@ def _matrix_rows(rows: list[StatuteOutcomeRow]) -> list[str]:
 def _analysis_to_csv(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a single-row CSV with a header."""
     header = [
-        "run_id", "issue", "coverage_score", "interpretation_source", "summary",
+        "run_id", "issue", "coverage_score", "coverage_confidence", "interpretation_source", "summary",
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
         "gaps", "detected_elements", "principle_findings",
@@ -370,6 +370,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         analysis.run_id,
         analysis.issue,
         analysis.coverage_score,
+        analysis.coverage_confidence,
         analysis.interpretation_source,
         analysis.summary,
         analysis.how_it_affects_va_claims,

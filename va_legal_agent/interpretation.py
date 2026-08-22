@@ -148,6 +148,7 @@ class InterpretiveAnalysis:
     strengths: list[str] = field(default_factory=list)
     gaps: list[str] = field(default_factory=list)
     coverage_score: float = 0.0
+    coverage_confidence: str = "low"
     interpretation_source: str = "template"
     statute_outcome_matrix: list[StatuteOutcomeRow] = field(default_factory=list)
 
@@ -474,6 +475,7 @@ def build_interpretive_analysis(
     total_weight = sum(element.weight for element in detected)
     coverage_score = covered_weight / total_weight if total_weight > 0 else 0.0
 
+    # ── Confidence heuristics ───────────────────────────────────────────
     next_steps = [spec.step for spec in element_specs]
     next_steps.extend(GENERIC_NEXT_STEPS)
 
@@ -514,6 +516,27 @@ def build_interpretive_analysis(
         contradictions = deterministic_contradictions
         source = "llm" if llm_text else "template"
 
+    # ── Coverage confidence ─────────────────────────────────────────────
+    confidence_points = 0
+    case_count = len(cases)
+    if case_count >= 10:
+        confidence_points += 2
+    elif case_count >= 5:
+        confidence_points += 1
+    if any(case.deep_summary for case in cases):
+        confidence_points += 1
+    if any(case.holding for case in cases):
+        confidence_points += 1
+    if source == "llm":
+        confidence_points += 1
+
+    if confidence_points >= 5:
+        coverage_confidence = "high"
+    elif confidence_points >= 3:
+        coverage_confidence = "medium"
+    else:
+        coverage_confidence = "low"
+
     return InterpretiveAnalysis(
         likely_applicable_principles=principles,
         how_it_affects_va_claims=narrative,
@@ -524,6 +547,7 @@ def build_interpretive_analysis(
         strengths=strengths,
         gaps=gaps,
         coverage_score=coverage_score,
+        coverage_confidence=coverage_confidence,
         interpretation_source=source,
         statute_outcome_matrix=build_statute_outcome_matrix(cases),
     )

@@ -1087,6 +1087,107 @@ def test_statute_outcome_matrix_appears_in_build_interpretive_analysis(monkeypat
     assert result.statute_outcome_matrix[0].unfavorable == 1
 
 
+# ── Coverage confidence ──────────────────────────────────────────────────────
+
+
+def test_confidence_low_with_few_cases_no_deep_no_holdings_no_llm(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [_case("Smith v. Wilkie")]  # no snippet, no holdings, no deep_summary
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "low"
+
+
+def test_confidence_medium_with_five_cases_deep_and_holdings(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case(f"Case {i}", snippet="service connection requires a nexus",
+              holding="The Board erred.", deep_summary="Full text.")
+        for i in range(5)
+    ]
+
+    # 5 cases (1) + deep (1) + holdings (1) = 3 → medium
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "medium"
+
+
+def test_confidence_high_with_ten_cases_deep_holdings_llm(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    from va_legal_agent.llm import ReasoningResult
+
+    reasoning = ReasoningResult(
+        reconciled_principles=["The Board must provide reasons and bases."],
+        synthesis="A synthesis.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+
+    cases = [
+        _case(f"Case {i}", snippet="service connection nexus",
+              holding="The Board erred.", deep_summary="Full-text summary.")
+        for i in range(10)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "high"
+
+
+def test_confidence_deep_read_contributes_one_point(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # 5 cases + deep_summaries → 1 (case count) + 1 (deep) = 2 → low
+    # Add holding → 3 → medium
+    cases = [
+        _case(f"Case {i}", deep_summary="Full text.", holding="The Board erred.")
+        for i in range(5)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "medium"
+
+
+def test_confidence_llm_contributes_one_point(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    from va_legal_agent.llm import ReasoningResult
+
+    reasoning = ReasoningResult(
+        reconciled_principles=["A principle."],
+        synthesis="A synthesis.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+
+    # 5 cases + holdings + LLM = 1 + 1 + 1 = 3 → medium
+    cases = [
+        _case(f"Case {i}", snippet="nexus required", holding="Remanded.")
+        for i in range(5)
+    ]
+
+    result = build_interpretive_analysis("nexus", "Compensation", cases)
+
+    assert result.coverage_confidence == "medium"
+
+
+def test_confidence_ten_cases_counts_two(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # 10 cases + holdings = 2 + 1 = 3 → medium
+    cases = [
+        _case(f"Case {i}", snippet="nexus required", holding="Remanded.")
+        for i in range(10)
+    ]
+
+    result = build_interpretive_analysis("nexus", "Compensation", cases)
+
+    assert result.coverage_confidence == "medium"
+
+
 def test_statute_outcome_matrix_unknown_court_sort():
     """An unknown court sorts after all known courts in the matrix."""
     cases = [

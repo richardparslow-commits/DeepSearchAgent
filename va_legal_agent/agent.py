@@ -914,6 +914,7 @@ def _build_analysis(
         strengths=interpretive.strengths,
         gaps=interpretive.gaps,
         coverage_score=interpretive.coverage_score,
+        coverage_confidence=interpretive.coverage_confidence,
         interpretation_source=interpretive.interpretation_source,
         search_telemetry=rolled_telemetry,
         search_flags=recall_flags(rolled_telemetry),
