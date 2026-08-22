@@ -6,6 +6,9 @@ import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
+import re
+from collections import Counter
+
 from .config import get_settings
 from .deep_read import deep_read_cases
 from .fetch import extract_case_details, fetch_case_details
@@ -125,6 +128,102 @@ def detect_court_name(url: str) -> str:
     return COURT_UNKNOWN
 
 
+# ---------------------------------------------------------------------------
+# Semantic similarity helpers
+# ---------------------------------------------------------------------------
+
+# Stopwords filtered from token streams so only content-bearing terms
+# contribute to the overlap score.
+_SEMANTIC_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+        "being", "have", "has", "had", "do", "does", "did", "will", "would",
+        "could", "should", "may", "might", "can", "shall", "it", "its", "that",
+        "this", "these", "those", "not", "no", "nor", "as", "if", "than",
+        "about", "into", "through", "during", "before", "after", "above",
+        "below", "between", "under", "again", "further", "then", "once",
+        "here", "there", "when", "where", "why", "how", "all", "both",
+        "each", "every", "any", "such", "only", "other", "some", "more",
+        "most", "also", "very", "just", "now", "up", "out", "so", "which",
+    }
+)
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase *text*, extract alphabetic tokens >= 3 chars, drop stopwords."""
+    tokens = re.findall(r"[a-z]{3,}", text.lower())
+    return [t for t in tokens if t not in _SEMANTIC_STOPWORDS]
+
+
+def _issue_term_weights(issue: str) -> dict[str, float]:
+    """Build weighted term vector from *issue* and matching ``TOPICS`` synonyms.
+
+    Issue tokens get weight 1.0.  Synonyms for topic entries whose ``keyword``
+    appears in the issue get weight 0.5 (they are semantically related but
+    not the exact issue phrase).
+    """
+    weights: dict[str, float] = {}
+    normalized_issue = issue.lower()
+
+    for term in _tokenize(issue):
+        weights[term] = max(weights.get(term, 0.0), 1.0)
+
+    for topic in TOPICS:
+        if topic.keyword and topic.keyword in normalized_issue:
+            for synonym in topic.synonyms:
+                for term in _tokenize(synonym):
+                    weights[term] = max(weights.get(term, 0.0), 0.5)
+
+    return weights
+
+
+def _cosine_similarity(vec_a: dict[str, float], vec_b: dict[str, float]) -> float:
+    """Cosine similarity between two sparse vectors (``{term: weight}`` dicts).
+
+    Returns 0.0 when either vector is empty.
+    """
+    if not vec_a or not vec_b:
+        return 0.0
+
+    dot = sum(vec_a.get(k, 0.0) * vec_b.get(k, 0.0) for k in set(vec_a) | set(vec_b))
+    mag_a = (sum(v ** 2 for v in vec_a.values())) ** 0.5
+    mag_b = (sum(v ** 2 for v in vec_b.values())) ** 0.5
+
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+
+    return dot / (mag_a * mag_b)
+
+
+def _semantic_similarity(case_text: str, issue: str) -> float:
+    """Weighted-term-overlap score in [0.0, 1.0] between *case_text* and *issue*.
+
+    Builds a weighted issue vector via :func:`_issue_term_weights`, converts
+    *case_text* into a relative-frequency vector (each term's count divided by
+    the most-frequent term's count in the text), and returns the cosine
+    similarity. Returns 0.0 when the issue yields no content terms.
+    """
+    issue_weights = _issue_term_weights(issue)
+    if not issue_weights:
+        return 0.0
+
+    case_terms = _tokenize(case_text)
+    if not case_terms:
+        return 0.0
+
+    case_tf = Counter(case_terms)
+    max_tf = max(case_tf.values())
+    case_vector = {term: count / max_tf for term, count in case_tf.items()}
+
+    return _cosine_similarity(issue_weights, case_vector)
+
+
+# ---------------------------------------------------------------------------
+# Relevance scoring
+# ---------------------------------------------------------------------------
+
+
 def score_case_relevance(case: CaseRecord, issue: str) -> int:
     text = f"{case.title} {case.snippet} {case.holding} {case.impact} {case.issue}".lower()
     score = 0
@@ -141,6 +240,14 @@ def score_case_relevance(case: CaseRecord, issue: str) -> int:
         score += 2
     if case.court and "Veterans" in case.court:
         score += 1
+    # Semantic similarity bonus: 0-4 points for paraphrased concept overlap.
+    # The bonus rewards cases whose vocabulary overlaps with the issue's
+    # weighted term set even when the exact issue phrase never appears.
+    similarity = _semantic_similarity(text, issue)
+    if similarity >= 0.3:
+        score += 2
+    if similarity >= 0.5:
+        score += 2
     return score
 
 

@@ -991,20 +991,21 @@ def test_score_case_relevance_reasons_and_bases_alone():
 
 
 def test_score_case_relevance_issue_match_exact():
-    """An issue that appears only via the case's own issue field scores exactly 2."""
+    """An issue that appears only via the case's own issue field scores 6
+    (2 exact + 4 semantic self-similarity)."""
     case = CaseRecord(title="T", court="", snippet="", holding="", impact="", issue="tinnitus")
-    assert score_case_relevance(case, "tinnitus") == 2
+    assert score_case_relevance(case, "tinnitus") == 6
 
 
 def test_score_case_relevance_topic_synonym_exact():
-    """A topic synonym match adds exactly 2 on top of the issue-match 2."""
+    """Topic synonym + semantic similarity: 2 exact + 2 synonym + 4 semantic."""
     case = CaseRecord(
         title="T",
         court="",
         snippet="The injury was aggravated by military service.",
         issue="aggravation",
     )
-    assert score_case_relevance(case, "aggravation") == 4
+    assert score_case_relevance(case, "aggravation") == 8
 
 
 def test_score_case_relevance_veterans_court_and_service_connection_exact():

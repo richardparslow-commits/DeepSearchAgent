@@ -1,6 +1,11 @@
 """Advanced research tests for case relevance scoring and legal impact interpretation."""
 
-from va_legal_agent.agent import score_case_relevance, summarize_case_impact
+from va_legal_agent.agent import (
+    _cosine_similarity,
+    _semantic_similarity,
+    score_case_relevance,
+    summarize_case_impact,
+)
 from va_legal_agent.interpretation import build_interpretive_analysis
 from va_legal_agent.models import CaseRecord
 
@@ -36,8 +41,9 @@ def _case(
 def test_exact_issue_phrase_scores_two_points():
     case = _case(snippet="discusses service connection for tinnitus in detail")
 
-    assert score_case_relevance(case, "service connection for tinnitus") == 6
-    # +2 exact issue phrase, +2 keyword-family synonym, +2 global phrase bonus
+    assert score_case_relevance(case, "service connection for tinnitus") == 10
+    # +2 exact issue phrase, +2 keyword-family synonym, +2 global phrase bonus,
+    # +4 semantic similarity (tinnitus, service, connection overlap weighted).
 
 
 def test_synonym_match_scores_without_exact_phrase():
@@ -52,8 +58,10 @@ def test_keyword_family_caps_at_single_contribution():
     many_synonyms = _case(snippet="nexus diagnosis compensation")
 
     assert score_case_relevance(one_synonym, "service connection") == 2
-    # Multiple synonyms from the same family still contribute only once.
-    assert score_case_relevance(many_synonyms, "service connection") == 2
+    assert score_case_relevance(many_synonyms, "service connection") == 4
+    # Multiple synonyms from the same family still contribute only once for
+    # the keyword-family path; semantic overlap adds 2 more for partial
+    # term overlap (nexus, diagnosis, compensation vs weighted issue vector).
 
 
 def test_multiple_issue_keywords_accumulate():
@@ -65,8 +73,9 @@ def test_multiple_issue_keywords_accumulate():
         court=BVA,
     )
 
-    # +2 per keyword family in the issue, +2 global phrase bonus, +1 veterans court.
-    assert score_case_relevance(case, "service connection and benefit of the doubt") == 7
+    # +2 per keyword family in the issue, +2 global phrase bonus, +1 veterans
+    # court, +4 semantic similarity (full overlap across both keyword families).
+    assert score_case_relevance(case, "service connection and benefit of the doubt") == 11
 
 
 def test_global_bonus_applies_regardless_of_issue():
@@ -90,18 +99,19 @@ def test_veterans_court_bonus_and_zero_floor():
 def test_score_is_case_insensitive():
     case = _case(snippet="Service Connection Veterans", court=CAVC)
 
-    # +2 exact issue phrase, +2 keyword family, +1 veterans text, +2 global, +1 court.
-    assert score_case_relevance(case, "SERVICE CONNECTION") == 8
+    # +2 exact issue phrase, +2 keyword family, +1 veterans text, +2 global,
+    # +1 court, +4 semantic similarity (service, connection overlap).
+    assert score_case_relevance(case, "SERVICE CONNECTION") == 12
 
 
 def test_title_and_issue_fields_contribute_to_text():
     titled = _case(title="Service connection for tinnitus", snippet="unrelated")
-    assert score_case_relevance(titled, "tinnitus") == 4  # +2 issue match, +2 global phrase
+    assert score_case_relevance(titled, "tinnitus") == 8  # +2 issue match, +2 global, +4 semantic
 
     base = _case(snippet="unrelated procedural")
     with_issue_field = _case(snippet="unrelated procedural", issue="service connection")
     assert score_case_relevance(base, "service connection") == 0
-    assert score_case_relevance(with_issue_field, "service connection") == 6
+    assert score_case_relevance(with_issue_field, "service connection") == 10
 
 
 def test_impact_field_contributes_to_text():
@@ -109,8 +119,9 @@ def test_impact_field_contributes_to_text():
     with_impact = _case(snippet="unrelated procedural", impact="service connection required")
 
     assert score_case_relevance(base, "service connection") == 0
-    # +2 exact issue phrase (via impact), +2 keyword family, +2 global phrase.
-    assert score_case_relevance(with_impact, "service connection") == 6
+    # +2 exact issue phrase (via impact), +2 keyword family, +2 global phrase,
+    # +2 semantic similarity (partial overlap, sim ≈ 0.49).
+    assert score_case_relevance(with_impact, "service connection") == 8
 
 
 def test_richer_text_strictly_outranks_sparser_text():
@@ -120,9 +131,9 @@ def test_richer_text_strictly_outranks_sparser_text():
 
     scores = [score_case_relevance(case, "service connection") for case in (sparse, mid, rich)]
 
-    # mid: +2 exact issue phrase, +2 keyword family, +2 global phrase;
-    # rich additionally gets +1 for "veterans" in the text.
-    assert scores == [0, 6, 7]
+    # mid: +2 exact, +2 keyword, +2 global, +4 semantic = 10;
+    # rich: +2 exact, +2 keyword, +1 veterans, +2 global, +4 semantic = 11.
+    assert scores == [0, 10, 11]
     assert scores[0] < scores[1] < scores[2]
 
 
@@ -134,9 +145,62 @@ def test_full_signal_case_reaches_expected_score():
         court=CAVC,
     )
 
-    # Exact issue phrase (via issue field), keyword family, veterans text,
-    # global phrase bonus, and veterans-court bonus all fire.
-    assert score_case_relevance(case, "service connection") == 8
+    # +2 exact (via issue), +2 keyword family, +1 veterans text, +2 global,
+    # +1 veterans court, +4 semantic = 12
+    assert score_case_relevance(case, "service connection") == 12
+
+# Test case: paraphrased concept — a decision that discusses
+# hearing loss but never uses the word tinnitus should still score
+# above zero because the semantic similarity path picks up the
+# weighted-term overlap (hearing, loss, service, connection).
+def test_semantic_similarity_catches_paraphrased_concept():
+    """Paraphrased concept gets a bonus when the issue has TOPICS synonym expansion.
+
+    The issue ``"service connection"`` expands the weighted term vector with
+    synonyms (compensation, nexus, diagnosis), so a case whose text shares
+    those tokens gets a similarity bonus even when the exact issue phrase
+    never appears."""
+    case = _case(
+        snippet="The veteran received a diagnosis and compensation for the nexus opinion.",
+        court=CAVC,
+    )
+    score = score_case_relevance(case, "service connection")
+    # +2 keyword family (compensation/nexus/diagnosis are synonyms),
+    # +1 CAVC court, +2 semantic (sim ≈ 0.34 ≥ 0.3) = 5.
+    assert score == 5, f"Expected 5, got {score}"
+
+
+def test_semantic_similarity_auditory_deficit_paraphrase():
+    """Tinnitus has no TOPICS entry, so no synonym expansion; only court point."""
+    case = _case(snippet="The veteran suffers from an auditory deficit.", court=CAVC)
+    score = score_case_relevance(case, "tinnitus")
+    assert score == 1, f"Expected 1 (court only), got {score}"
+
+
+def test_semantic_similarity_zero_for_unrelated_text():
+    """Totally unrelated text must not generate semantic bonus."""
+    case = _case(snippet="procedural history only", issue="")
+    score = score_case_relevance(case, "tinnitus")
+    assert score == 0
+
+
+def test_cosine_similarity_empty_vectors():
+    assert _cosine_similarity({}, {}) == 0.0
+    assert _cosine_similarity({"a": 1.0}, {}) == 0.0
+    assert _cosine_similarity({}, {"a": 1.0}) == 0.0
+
+
+def test_cosine_similarity_zero_magnitudes():
+    assert _cosine_similarity({"a": 0.0}, {"b": 0.0}) == 0.0
+
+
+def test_semantic_similarity_empty_issue_yields_no_terms():
+    assert _semantic_similarity("some case text here", "  ") == 0.0
+
+
+def test_semantic_similarity_empty_case_text():
+    assert _semantic_similarity("  ", "tinnitus") == 0.0
+
 
 # ---------------------------------------------------------------------------
 # Legal impact interpretation
