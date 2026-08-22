@@ -12,6 +12,7 @@ from va_legal_agent.planning import ResearchPlan, SubTask
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
+    _dedupe,
     _observe,
     _resolve_superseded_cases,
     analyze_cases_for_claim,
@@ -2628,6 +2629,130 @@ def test_resolve_superseded_only_first_overruling_stickpins():
     _resolve_superseded_cases([newer_a, newer_b, older])
 
     assert older.superseded_by == "Alpha v. VA"
+
+
+# ── _dedupe ─────────────────────────────────────────────────────────────────
+
+
+def test_dedupe_title_url_primary_key():
+    """Same (title, url) pair is deduped."""
+    cases = [
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=5),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=3),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+    # Highest relevance_score wins (sort order: authority_weight desc, relevance_score desc).
+    assert result[0].relevance_score == 5
+
+
+def test_dedupe_different_urls_same_title_kept():
+    """Different URLs with same title are NOT deduped on (title, url) alone."""
+    cases = [
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith"),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://b.com/smith"),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2
+
+
+def test_dedupe_citation_date_secondary_key():
+    """Same citation + date at different URLs is deduped via the secondary key."""
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie", court="CAVC",
+            url="https://courtlistener.com/opinion/1/",
+            citation="30 Vet.App. 1", decision_date="2018-01-15",
+            authority_weight=2, relevance_score=10,
+        ),
+        CaseRecord(
+            title="Smith v. Wilkie (Corrected)", court="CAVC",
+            url="https://uscourts.cavc.gov/opinions/smith.pdf",
+            citation="30 Vet.App. 1", decision_date="2018-01-15",
+            authority_weight=2, relevance_score=7,
+        ),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+    assert result[0].url == "https://courtlistener.com/opinion/1/"  # highest relevance_score
+
+
+def test_dedupe_citation_without_date_falls_back_to_title_url():
+    """When citation is present but date is missing, the secondary key is not
+    used and only (title, url) dedup applies."""
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie", court="CAVC",
+            url="https://a.com/smith", citation="30 Vet.App. 1",
+        ),
+        CaseRecord(
+            title="Smith v. Wilkie", court="CAVC",
+            url="https://b.com/smith", citation="30 Vet.App. 1",
+        ),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2  # different URLs, no date → secondary key not activated
+
+
+def test_dedupe_first_citation_added_to_citation_key_set():
+    """The first case with a citation+date populates the citation_key set, so
+    a later case with the same citation+date (but different title/url) is
+    caught by the secondary check."""
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie", court="CAVC",
+            url="https://courtlistener.com/opinion/1/",
+            citation="30 Vet.App. 1", decision_date="2018-01-15",
+        ),
+        CaseRecord(
+            title="Smith v. Wilkie (Mirror)", court="CAVC",
+            url="https://mirror.example.com/30-vet-app-1",
+            citation="30 Vet.App. 1", decision_date="2018-01-15",
+        ),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+
+
+def test_dedupe_different_citations_same_date_kept():
+    """Same date but different citations — not deduped."""
+    cases = [
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", citation="30 Vet.App. 1",
+                   decision_date="2018-01-15", url="https://a.com/30"),
+        CaseRecord(title="Jones v. VA", court="CAVC", citation="31 Vet.App. 2",
+                   decision_date="2018-01-15", url="https://a.com/31"),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2
+
+
+def test_dedupe_same_citation_different_date_kept():
+    """Same citation but different date — not deduped (different decisions)."""
+    cases = [
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", citation="30 Vet.App. 1",
+                   decision_date="2018-01-15", url="https://a.com/30"),
+        CaseRecord(title="Smith v. Wilkie (Rehearing)", court="CAVC",
+                   citation="30 Vet.App. 1", decision_date="2019-06-01",
+                   url="https://a.com/30-rehearing"),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2
+
+
+def test_dedupe_empty_list():
+    assert _dedupe([]) == []
+
+
+def test_dedupe_no_citations():
+    """When no case has a citation, only (title, url) dedup applies."""
+    cases = [
+        CaseRecord(title="A v. VA", court="BVA", url="https://a.com/a"),
+        CaseRecord(title="B v. VA", court="BVA", url="https://a.com/b"),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2
 
 
 def test_fetch_cases_no_sleep_when_delay_zero(monkeypatch):

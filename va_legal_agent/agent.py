@@ -403,14 +403,31 @@ def _raise_if_no_results(
 
 
 def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
-    """Dedupe *cases* by (title, url), pre-ranked by authority then relevance."""
+    """Dedupe *cases* by (title, url) and, when citation is available,
+    additionally by (citation, decision_date).
+
+    The same decision often appears at multiple URLs (CourtListener, CAVC,
+    law-blog mirrors) with slightly different titles.  The citation + date
+    pair is the stable identity of an opinion; the secondary key catches the
+    same case across mirrors so the result diversity isn't diluted.
+    """
     deduped: list[CaseRecord] = []
     seen: set[tuple[str, str]] = set()
     for case in sorted(cases, key=lambda c: (c.authority_weight, c.relevance_score), reverse=True):
         key = (case.title, case.url)
-        if key not in seen:
-            seen.add(key)
-            deduped.append(case)
+        if key in seen:
+            continue
+        # Citation + date is the canonical identity of an opinion.  When
+        # both fields are populated, also reject any later case that
+        # shares the same citation and date (same opinion at a different
+        # mirror URL).
+        if case.citation and case.decision_date:
+            citation_key = (case.citation, case.decision_date)
+            if citation_key in seen:
+                continue
+            seen.add(citation_key)
+        seen.add(key)
+        deduped.append(case)
     return deduped
 
 
