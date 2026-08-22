@@ -34,12 +34,25 @@ class CaseRecord(BaseModel):
     # analogous: a "clear error" affirmance is a weaker precedent than a
     # "de novo" reversal for the same statute.
     legal_standard: str = ""
+    # How this case treated its cited authorities. Each entry is a
+    # {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"}
+    # dict. Knowing whether a case follows, distinguishes, overrules, or
+    # criticizes prior authority tells you whether that line of precedent
+    # is live or dead.
+    citation_treatments: list[CitationTreatment] = Field(default_factory=list)
     authority_rank: int = 0
     authority_weight: int = 0
     relevance_score: int = 0
     composite_score: float = 0.0
     ranking_explanation: str = ""
     source_reliability: str = ""
+
+
+class CitationTreatment(BaseModel):
+    """How this case treated a cited authority: follow, distinguish, overrule, etc."""
+
+    cited_case: str
+    treatment: str
 
 
 class ClaimElement(BaseModel):

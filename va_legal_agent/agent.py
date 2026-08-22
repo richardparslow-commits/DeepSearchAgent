@@ -776,6 +776,9 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
         statutes = details.get("statutes") or []
         if statutes:
             case.statutes = list(statutes)
+        treatments = details.get("citation_treatments") or []
+        if treatments:
+            case.citation_treatments = list(treatments)
     return cases
 
 

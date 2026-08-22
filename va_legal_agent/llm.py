@@ -93,6 +93,10 @@ def _build_reasoning_messages(
             + (f"\n   Outcome: {case.outcome}" if case.outcome else "")
             + (f"\n   Standard of review: {case.legal_standard}" if case.legal_standard else "")
             + (f"\n   Statutes: {', '.join(case.statutes)}" if case.statutes else "")
+            + (
+                f"\n   Treatment of prior authority: {'; '.join(f'{t.cited_case}: {t.treatment}' for t in case.citation_treatments)}"
+                if case.citation_treatments else ""
+            )
         )
         for index, case in enumerate(cases, start=1)
     )

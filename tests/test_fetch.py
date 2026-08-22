@@ -12,6 +12,7 @@ from va_legal_agent.fetch import (
     extract_citation,
     extract_decision_date,
     extract_docket,
+    extract_citation_treatments,
     extract_holding_sentence,
     extract_holding_sentences,
     extract_judge,
@@ -195,6 +196,7 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
         "outcome": "",
         "appellant_role": "unknown",
         "legal_standard": "",
+        "citation_treatments": [],
     }
 
 
@@ -377,6 +379,138 @@ def test_extract_legal_standard_returns_first_match_only():
     """Only the first matched standard is returned, not the rest."""
     text = "We review for clear error. The court also reviews de novo."
     assert extract_legal_standard(text) == "clear error"
+
+
+# ---------------------------------------------------------------------------
+# Citation treatment extraction
+# ---------------------------------------------------------------------------
+
+
+def test_extract_citation_treatments_basic_detection():
+    assert extract_citation_treatments(
+        "We overruled the decision in Smith v. Wilkie, 30 Vet.App. 1."
+    ) == [{"cited_case": "Smith v. Wilkie", "treatment": "overruled"}]
+
+
+def test_extract_citation_treatments_distinguished():
+    assert extract_citation_treatments(
+        "We distinguished the case of Miller v. VA on its facts."
+    ) == [{"cited_case": "Miller v. VA", "treatment": "distinguished"}]
+
+
+def test_extract_citation_treatments_followed():
+    assert extract_citation_treatments(
+        "We follow our prior holding in Jones v. Brown, 29 Vet.App."
+    ) == [{"cited_case": "Jones v. Brown", "treatment": "followed"}]
+
+
+def test_extract_citation_treatments_declined_to_follow():
+    assert extract_citation_treatments(
+        "We declined to follow the decision in Green v. United States, 25 Vet.App."
+    ) == [{"cited_case": "Green v. United States", "treatment": "declined to follow"}]
+
+
+def test_extract_citation_treatments_questioned():
+    assert extract_citation_treatments(
+        "The court questioned the holding in Hamilton v. McDonald."
+    ) == [{"cited_case": "Hamilton v. McDonald", "treatment": "questioned"}]
+
+
+def test_extract_citation_treatments_reaffirmed():
+    assert extract_citation_treatments(
+        "We reaffirmed Garcia v. Wilkie which controls."
+    ) == [{"cited_case": "Garcia v. Wilkie", "treatment": "reaffirmed"}]
+
+
+def test_extract_citation_treatments_abrogated():
+    assert extract_citation_treatments(
+        "Congress abrogated the decision in Allen v. Principi."
+    ) == [{"cited_case": "Allen v. Principi", "treatment": "abrogated"}]
+
+
+def test_extract_citation_treatments_criticized():
+    assert extract_citation_treatments(
+        "The panel criticized the decision in Brown v. West."
+    ) == [{"cited_case": "Brown v. West", "treatment": "criticized"}]
+
+
+def test_extract_citation_treatments_covered_range_prevents_double_fire():
+    """'declined to follow' must not also fire the plain 'follow' term."""
+    result = extract_citation_treatments(
+        "We declined to follow the decision in Green v. United States."
+    )
+    treatments = [r["treatment"] for r in result]
+    assert "followed" not in treatments
+    assert "declined to follow" in treatments
+
+
+def test_extract_citation_treatments_nearest_case_name_chosen():
+    """Each treatment word pairs with the nearest case, not all in window."""
+    result = extract_citation_treatments(
+        "We distinguished Smith v. Wilkie but followed Jones v. Brown."
+    )
+    assert {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"} in result
+    assert {"cited_case": "Jones v. Brown", "treatment": "followed"} in result
+    assert {"cited_case": "Jones v. Brown", "treatment": "distinguished"} not in result
+
+
+def test_extract_citation_treatments_no_case_name_nearby():
+    """Treatment word without a nearby case name is ignored."""
+    assert extract_citation_treatments(
+        "We followed the reasoning of the lower court."
+    ) == []
+
+
+def test_extract_citation_treatments_empty_or_whitespace():
+    assert extract_citation_treatments("") == []
+    assert extract_citation_treatments("   ") == []
+
+
+def test_extract_citation_treatments_deduplicates():
+    """Multiple mentions of the same (case, treatment) pair dedupe."""
+    result = extract_citation_treatments(
+        "We distinguished Smith v. Wilkie. Smith v. Wilkie was also distinguished later."
+    )
+    assert len(result) == 1
+    assert result[0] == {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"}
+
+
+def test_extract_citation_treatments_multi_word_second_party():
+    result = extract_citation_treatments(
+        "We follow the reasoning of Brown v. West Publishing Co."
+    )
+    assert len(result) == 1
+    assert result[0]["cited_case"] == "Brown v. West Publishing Co"
+
+
+def test_extract_citation_treatments_year_parenthetical():
+    result = extract_citation_treatments(
+        "Overruled in part by Smith v. Wilkie (2024)."
+    )
+    assert result[0]["cited_case"] == "Smith v. Wilkie"
+
+
+def test_extract_citation_treatments_capped_at_max():
+    """Maximum of 8 treatments extracted."""
+    text = " ".join(
+        f"We distinguished Case{i} v. Defendant{i}." for i in range(20)
+    )
+    assert len(extract_citation_treatments(text)) == 8
+
+
+def test_extract_case_details_includes_citation_treatments():
+    details = extract_case_details(
+        "We distinguished the decision in Smith v. Wilkie. "
+        "We review for clear error."
+    )
+    assert details["citation_treatments"] == [
+        {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"}
+    ]
+
+
+def test_extract_case_details_no_citation_treatments():
+    details = extract_case_details("Procedural history only.")
+    assert details["citation_treatments"] == []
 
 
 @pytest.mark.parametrize(

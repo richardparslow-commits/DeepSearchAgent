@@ -298,6 +298,111 @@ def extract_appellant_role(text: str) -> str:
     return _APP_ROLE_UNKNOWN
 
 
+# --- Citation-treatment labels ---
+# Basic (word, standard_label) pairs. The extractor finds each word in the
+# text, then scans the surrounding 200-char window for the nearest case name.
+_TREATMENT_TERMS: tuple[tuple[str, str], ...] = (
+    ("overruled", "overruled"),
+    ("overrule", "overruled"),
+    ("overruling", "overruled"),
+    ("abrogated", "abrogated"),
+    ("abrogate", "abrogated"),
+    ("abrogating", "abrogated"),
+    ("distinguished", "distinguished"),
+    ("distinguish", "distinguished"),
+    ("distinguishing", "distinguished"),
+    ("declined to follow", "declined to follow"),
+    ("decline to follow", "declined to follow"),
+    ("declining to follow", "declined to follow"),
+    ("questioned", "questioned"),
+    ("questioning", "questioned"),
+    ("criticized", "criticized"),
+    ("criticize", "criticized"),
+    ("criticizing", "criticized"),
+    ("followed", "followed"),
+    ("follow", "followed"),
+    ("following", "followed"),
+    ("reaffirmed", "reaffirmed"),
+    ("reaffirm", "reaffirmed"),
+    ("reaffirming", "reaffirmed"),
+)
+
+
+_CASE_NAME_PATTERN = re.compile(
+    r"(?:^|[\s,;])"
+    r"("
+    r"[A-Z]\w+(?:,?\s+(?:Inc\.?|LLC|Corp\.?|Ltd\.?|Co\.?))?"
+    r"(?:\s+[a-z]+)?"
+    r"\s+v\.\s+[A-Z][A-Za-z'0-9]+"
+    r"(?:\s+[A-Z][A-Za-z'0-9]+)*"
+    r")"
+    r"(?:\s*\(\d{4}\))?"
+    r"(?=[.,;]|\s+(?:on|in|at|by|for|as|with|without|under|over|which|that|because|and|or|but|the)\b|$)"
+)
+
+# Maximum citation treatments extracted per decision.
+_MAX_TREATMENTS = 8
+
+# Characters on each side of a treatment-term hit that are scanned for a
+# nearby case name.
+_TREATMENT_WINDOW = 200
+
+
+def extract_citation_treatments(text: str) -> list[dict[str, str]]:
+    """Return how this decision treated its cited authorities.
+
+    Two-pass approach: first find treatment words ("overruled",
+    "distinguished", "followed", etc.) in *text*, then scan a window
+    around each hit for a case-name reference ("Word v. Word").
+    Returns a list of ``{"cited_case": "Smith v. Wilkie", "treatment":
+    "distinguished"}`` dicts in document order. Returns an empty list
+    when no treatments are found or *text* is empty.
+    """
+    if not text or not text.strip():
+        return []
+    treatments: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    # Tracks character ranges already claimed by a longer treatment term
+    # so shorter sub-terms don't double-fire ("follow" within
+    # "declined to follow").
+    covered_ranges: list[tuple[int, int]] = []
+
+    # Process longer terms first so "declined to follow" claims its range
+    # before the single-word "follow" term fires.
+    for term, label in sorted(_TREATMENT_TERMS, key=lambda t: -len(t[0])):
+        term_pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        for match in term_pattern.finditer(text):
+            idx = match.start()
+            idx_end = match.end()
+            # Skip if this position is already claimed by a longer term.
+            if any(s <= idx < e and s < idx_end <= e for s, e in covered_ranges):
+                continue
+            covered_ranges.append((idx, idx_end))
+            # Scan a window around the hit for the nearest case name.
+            start = max(0, idx - _TREATMENT_WINDOW)
+            end = min(len(text), idx + len(term) + _TREATMENT_WINDOW)
+            window = text[start:end + 1]
+            # Find ALL case names in the window, then pick the nearest one
+            # (smallest distance from the treatment word).
+            case_hits = [
+                (abs(cm.start() + start - idx), cm.group(1).strip())
+                for cm in _CASE_NAME_PATTERN.finditer(window)
+            ]
+            if not case_hits:
+                continue
+            # Pick the nearest case name.
+            _, raw_name = min(case_hits, key=lambda h: h[0])
+            case_name = re.sub(r"\s+", " ", raw_name)
+            key = (case_name, label)
+            if key not in seen:
+                seen.add(key)
+                treatments.append({"cited_case": case_name, "treatment": label})
+                if len(treatments) >= _MAX_TREATMENTS:
+                    return treatments
+
+    return treatments
+
+
 # Maximum number of holding sentences to extract from a single decision.
 # Veterans-law opinions often articulate multiple holdings (e.g. one on
 # nexus analysis and one on benefit-of-the-doubt); the cap bounds the field
@@ -517,4 +622,5 @@ def extract_case_details(text: str) -> dict[str, str | list[str]]:
         "outcome": extract_outcome(text),
         "appellant_role": extract_appellant_role(text),
         "legal_standard": extract_legal_standard(text),
+        "citation_treatments": extract_citation_treatments(text),
     }

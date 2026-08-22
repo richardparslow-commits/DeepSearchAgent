@@ -13,7 +13,7 @@ from va_legal_agent.llm import (
     interpret_cases,
     reason_cases,
 )
-from va_legal_agent.models import CaseRecord
+from va_legal_agent.models import CaseRecord, CitationTreatment
 
 
 def _case() -> CaseRecord:
@@ -255,6 +255,32 @@ def test_build_reasoning_messages_omit_legal_standard_when_empty():
     user_text = messages[1]["content"]
 
     assert "Standard of review" not in user_text
+
+
+def test_build_reasoning_messages_include_citation_treatments_when_present():
+    """Citation treatments are surfaced in the reasoning prompt."""
+    case = _case()
+    case.citation_treatments = [
+        CitationTreatment(cited_case="Smith v. Wilkie", treatment="distinguished"),
+        CitationTreatment(cited_case="Jones v. Brown", treatment="overruled"),
+    ]
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Treatment of prior authority:" in user_text
+    assert "Smith v. Wilkie: distinguished" in user_text
+    assert "Jones v. Brown: overruled" in user_text
+
+
+def test_build_reasoning_messages_omit_citation_treatments_when_empty():
+    """Empty treatments are omitted."""
+    case = _case()  # citation_treatments defaults to []
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Treatment of prior authority" not in user_text
 
 
 def test_build_reasoning_messages_prefers_deep_summary():

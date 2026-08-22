@@ -954,6 +954,48 @@ def test_enrich_populates_legal_standard_from_courtlistener_api(monkeypatch):
     assert case.holding
 
 
+def test_enrich_populates_citation_treatments(monkeypatch):
+    """Citation treatments are stored on the case during enrichment."""
+    case = CaseRecord(
+        title="Treatment Case",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/treatments",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: extract_case_details(
+            "We distinguished Smith v. Wilkie and followed Jones v. Brown. "
+            "The Board's finding is not clearly erroneous."
+        ),
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.legal_standard == "clear error"
+    assert len(case.citation_treatments) == 2
+    assert {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"} in case.citation_treatments
+    assert {"cited_case": "Jones v. Brown", "treatment": "followed"} in case.citation_treatments
+
+
+def test_enrich_skips_empty_citation_treatments(monkeypatch):
+    """Empty treatments list leaves the field at its default."""
+    case = CaseRecord(
+        title="No Treatments",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/no-treatments",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: {"citation_treatments": []},
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.citation_treatments == []
+
+
 def test_enrich_populates_legal_standard_from_generic_fetch(monkeypatch):
     """Legal standard is extracted from plain-page enrichment too."""
     case = CaseRecord(
