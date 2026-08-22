@@ -30,6 +30,54 @@ logger = logging.getLogger(__name__)
 
 _EMPTY_DIGEST = "(nothing relevant)"
 
+# Section headers that mark the start of the factual narrative in BVA and CAVC
+# decisions. Each marker is matched case-insensitively at the start of a line
+# with optional roman-numeral or letter-number prefix ("I.", "A.", "II.A.").
+_FACT_HEADERS = (
+    "BACKGROUND",
+    "FACTS",
+    "FACTUAL BACKGROUND",
+    "PROCEDURAL HISTORY",
+    "PROCEDURAL BACKGROUND",
+    "FACTS AND PROCEEDINGS",
+    "FINDINGS OF FACT",
+    "INTRODUCTION",
+)
+
+# Pre-compile the alternation: optional prefix ("I.", "II.A.", etc.) and then
+# one of the known section headers, consumed as its own line.
+_FACT_HEADER_RE = re.compile(
+    r"(?:(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+)?"
+    r"(" + "|".join(re.escape(h) for h in _FACT_HEADERS) + r")\s*\n"
+    r"(.*?)(?:\n\n|\n(?=(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+|(?:FINDINGS|CONCLUSIONS|ANALYSIS|DISCUSSION|ARGUMENT|REASONS|DETERMINATION|DECISION|ORDER)))",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_chunk_facts(chunk: str) -> str:
+    """Extract the first few factual-pattern sentences from a chunk.
+
+    Looks for section headers like "BACKGROUND", "FACTS", "FINDINGS OF FACT",
+    or "PROCEDURAL HISTORY" (common in BVA and CAVC decisions) and returns
+    the first 2-3 sentences (capped at ~300 characters) of the section body.
+    This captures the veteran's specific circumstances — what happened, what
+    condition was claimed, what the procedural posture was — which is the
+    information a practitioner compares to their own client's situation.
+    """
+    match = _FACT_HEADER_RE.search(chunk)
+    if not match:
+        return ""
+    body = match.group(2).strip()
+    if not body:
+        return ""
+    # Extract the first 2-3 sentences, capped at 300 chars.
+    sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", body, maxsplit=3)
+    selected = sentences[:3]
+    result = " ".join(s.strip() for s in selected)
+    if len(result) > 300:
+        result = result[:297] + "..."
+    return result
+
 
 def chunk_text(text: str, max_chars: int) -> list[str]:
     """Split *text* into chunks of at most *max_chars*, on paragraph boundaries.
@@ -68,6 +116,9 @@ def chunk_text(text: str, max_chars: int) -> list[str]:
 def _digest_chunk(chunk: str) -> str:
     """Map step: extract the chunk's salient facts deterministically."""
     parts: list[str] = []
+    facts = _extract_chunk_facts(chunk)
+    if facts:
+        parts.append(f"Facts: {facts}")
     holdings = extract_holding_sentences(chunk)
     if holdings:
         parts.append(f"Holdings: {' '.join(holdings)}")
@@ -91,8 +142,9 @@ def _build_reduce_prompt(
         "You are summarizing a U.S. veterans-law decision for legal research. "
         "The section digests below were extracted from one decision. Synthesize "
         "them into a single coherent summary (under 200 words) of what this "
-        "decision holds for the issue, preserving the holding, outcome, and "
-        "cited statutes. Cite the decision by name. Do not invent facts."
+        "decision holds for the issue, preserving the key factual circumstances, "
+        "holding, outcome, and cited statutes. Cite the decision by name. Do "
+        "not invent facts."
     )
     user = (
         f"Decision: {case_title}\nIssue: {issue}\n\nSection digests:\n{digest_lines}\n\n"

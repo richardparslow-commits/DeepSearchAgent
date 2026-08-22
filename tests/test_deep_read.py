@@ -4,6 +4,7 @@ from va_legal_agent.deep_read import (
     _EMPTY_DIGEST,
     _build_reduce_prompt,
     _digest_chunk,
+    _extract_chunk_facts,
     _synthesize_case,
     chunk_text,
     deep_read_case,
@@ -116,6 +117,138 @@ def test_digest_chunk_returns_empty_sentinel_on_no_salient_content():
     assert _digest_chunk("Procedural history only, no holdings or outcomes here.") == _EMPTY_DIGEST
 
 
+def test_extract_chunk_facts_background_header():
+    """A BACKGROUND section with roman-numeral prefix yields the body."""
+    text = (
+        "I. BACKGROUND\n"
+        "The veteran served on active duty from January 2010 to March 2014. "
+        "He reports ringing in his ears that began during service. "
+        "An audiometric evaluation in April 2012 showed bilateral hearing loss.\n\n"
+        "II. ANALYSIS"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "veteran served on active duty" in result
+    assert "ringing in his ears" in result
+
+
+def test_extract_chunk_facts_facts_header():
+    """A plain FACTS header (no roman numeral) yields the body."""
+    text = (
+        "FACTS\n"
+        "The veteran filed a claim for service connection for tinnitus in June 2021. "
+        "The RO denied the claim and the veteran appealed.\n\n"
+        "DISCUSSION"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "filed a claim for service connection" in result
+    assert "RO denied" in result
+
+
+def test_extract_chunk_facts_procedural_history_header():
+    """PROCEDURAL HISTORY header (common in CAVC opinions) yields the body."""
+    text = (
+        "A. PROCEDURAL HISTORY\n"
+        "The Regional Office denied the claim on January 5, 2022. "
+        "The Board of Veterans' Appeals affirmed the denial on March 15, 2023.\n\n"
+        "B. ARGUMENT"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "Regional Office denied" in result
+    assert "Board of Veterans' Appeals affirmed" in result
+
+
+def test_extract_chunk_facts_findings_of_fact_header():
+    """FINDINGS OF FACT header (common in BVA decisions) yields the body."""
+    text = (
+        "FINDINGS OF FACT\n"
+        "The veteran's DD-214 shows combat service in Iraq from 2004 to 2005. "
+        "The SMRs contain no complaints of hearing difficulty.\n\n"
+        "CONCLUSIONS OF LAW"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "combat service in Iraq" in result
+    assert "SMRs contain no complaints" in result
+
+
+def test_extract_chunk_facts_introduction_header():
+    """INTRODUCTION header (common in CAFC opinions) yields the body."""
+    text = (
+        "INTRODUCTION\n"
+        "Mr. Smith appeals the Board's decision finding no clear and unmistakable error. "
+        "He argues the Board failed to consider relevant evidence.\n\n"
+        "ANALYSIS"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "Mr. Smith appeals" in result
+
+
+def test_extract_chunk_facts_no_header_returns_empty():
+    """Text without any fact-header marker returns empty."""
+    text = (
+        "ANALYSIS\n"
+        "The Court reviews the Board's findings for clear error. "
+        "We conclude that the Board adequately explained its reasoning."
+    )
+    assert _extract_chunk_facts(text) == ""
+
+
+def test_extract_chunk_facts_header_but_empty_body():
+    """A FACTS header followed immediately by the next section returns empty."""
+    text = (
+        "FACTS\n\n"
+        "DISCUSSION\n"
+        "The Board erred in relying on an inadequate examination."
+    )
+    assert _extract_chunk_facts(text) == ""
+
+
+def test_extract_chunk_facts_capped_at_300_chars():
+    """The extracted facts are capped at ~300 characters."""
+    text = "BACKGROUND\n" + ("X " * 200) + ".\n\nANALYSIS\n"
+    result = _extract_chunk_facts(text)
+
+    assert len(result) <= 300
+    assert result.endswith("...")
+
+
+def test_extract_chunk_facts_sentences_capped_at_three():
+    """At most 3 sentences are extracted from the facts body."""
+    text = (
+        "FACTS\n"
+        "First sentence. Second sentence. Third sentence. Fourth sentence.\n\n"
+        "DISCUSSION"
+    )
+    result = _extract_chunk_facts(text)
+
+    assert "First sentence" in result
+    assert "Second sentence" in result
+    assert "Third sentence" in result
+    assert "Fourth sentence" not in result
+
+
+def test_digest_chunk_now_includes_facts():
+    """When a chunk carries a facts section, the digest includes it."""
+    chunk = (
+        "BACKGROUND\n"
+        "The veteran served in Vietnam and developed tinnitus during service. "
+        "He filed a claim in 2021.\n\n"
+        "ANALYSIS\n"
+        "The Court holds that the Board erred in weighing the evidence. "
+        "The decision is vacated and remanded. See 38 U.S.C. \u00a7 5107."
+    )
+    digest = _digest_chunk(chunk)
+
+    assert digest.startswith("Facts: ")
+    assert "veteran served in Vietnam" in digest
+    assert "Holdings:" in digest
+    assert "Board erred" in digest
+
+
 def test_build_reduce_prompt_system_is_exact():
     messages = _build_reduce_prompt("Fountain v. McDonald", "tinnitus", ["digest one"])
 
@@ -124,8 +257,9 @@ def test_build_reduce_prompt_system_is_exact():
         "You are summarizing a U.S. veterans-law decision for legal research. "
         "The section digests below were extracted from one decision. Synthesize "
         "them into a single coherent summary (under 200 words) of what this "
-        "decision holds for the issue, preserving the holding, outcome, and "
-        "cited statutes. Cite the decision by name. Do not invent facts."
+        "decision holds for the issue, preserving the key factual circumstances, "
+        "holding, outcome, and cited statutes. Cite the decision by name. Do "
+        "not invent facts."
     )
 
 
