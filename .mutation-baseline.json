@@ -1,11 +1,11 @@
 {
-  "agent.py": 101,
+  "agent.py": 87,
   "batch.py": 20,
   "config.py": 41,
   "deep_read.py": 7,
   "fetch.py": 49,
   "impact.py": 6,
-  "interpretation.py": 32,
+  "interpretation.py": 17,
   "llm.py": 30,
   "models.py": 0,
   "planning.py": 3,

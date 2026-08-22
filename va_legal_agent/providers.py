@@ -1192,7 +1192,7 @@ def _bva_local_needs_rebuild(
             meta = json.load(fh)
     except (json.JSONDecodeError, OSError):
         return True
-    build_time_str = meta.get("BUILD_TIME", "")
+    build_time_str = meta.get("build_time", "")
     if build_time_str:
         try:
             build_time = datetime.fromisoformat(build_time_str)
