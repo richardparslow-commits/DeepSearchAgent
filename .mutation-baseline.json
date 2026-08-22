@@ -11,8 +11,8 @@
     "config.py": 41,
     "models.py": 0,
     "topics.py": 0,
-    "interpretation.py": 1,
+    "interpretation.py": 9,
     "llm.py": 27,
-    "impact.py": 5,
+    "impact.py": 6,
     "ranking.py": 4
 }

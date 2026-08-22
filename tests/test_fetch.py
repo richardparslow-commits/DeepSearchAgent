@@ -7,6 +7,7 @@ from va_legal_agent.fetch import (
     FetchError,
     _extract_pdf_text,
     _read_response_body,
+    extract_appellant_role,
     extract_case_details,
     extract_citation,
     extract_decision_date,
@@ -191,6 +192,7 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
         "judge": "",
         "statutes": [],
         "outcome": "",
+        "appellant_role": "unknown",
     }
 
 
@@ -279,6 +281,43 @@ def test_extract_statutes_labels_mixed_us_usca_and_cfr_correctly():
 )
 def test_extract_outcome(text, expected):
     assert extract_outcome(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Secretary cross-appeal patterns
+        ("The Secretary's cross-appeal is affirmed.", "secretary"),
+        ("The Secretary appealed the grant.", "secretary"),
+        ("appellant, the Secretary, argues that.", "secretary"),
+        ("The VA is the appellant in this case.", "secretary"),
+        # Veteran appeal patterns
+        ("The veteran's appeal is denied.", "veteran"),
+        ("The veteran appealed the Board's denial.", "veteran"),
+        ("appellant, the veteran, contends that.", "veteran"),
+        # Ambiguous / unknown
+        ("The appellant filed a brief.", "unknown"),
+        ("No appeal language here.", "unknown"),
+    ],
+)
+def test_extract_appellant_role(text, expected):
+    assert extract_appellant_role(text) == expected
+
+
+def test_extract_appellant_role_secretary_wins_over_veteran():
+    # When both appear, Secretary is checked first (cross-appeal is the
+    # disambiguating signal: a veteran can appeal AND the Secretary can
+    # cross-appeal, but the Secretary's cross-appeal determines the
+    # direction of "affirmed" / "dismissed").
+    text = "The veteran appealed the denial. The Secretary's cross-appeal is affirmed."
+    assert extract_appellant_role(text) == "secretary"
+
+
+def test_extract_case_details_includes_appellant_role():
+    text = "The Secretary's cross-appeal is affirmed."
+    details = extract_case_details(text)
+    assert details["appellant_role"] == "secretary"
+    assert details["outcome"] == "affirmed"
 
 
 @pytest.mark.parametrize(

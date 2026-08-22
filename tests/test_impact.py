@@ -25,6 +25,7 @@ def _case(
     court=CAFC,
     outcome="",
     statutes=None,
+    appellant_role="",
 ):
     return CaseRecord(
         title=title,
@@ -36,6 +37,7 @@ def _case(
         issue=issue,
         outcome=outcome,
         statutes=statutes or [],
+        appellant_role=appellant_role,
     )
 
 
@@ -88,6 +90,51 @@ def test_outcome_note_mapping():
     assert outcome_note_for("vacated and remanded").startswith("The decision below was vacated")
     assert outcome_note_for("") == ""
     assert outcome_note_for("certiorari granted") == ""
+
+
+def test_outcome_note_secretary_override_affirmed():
+    # When the Secretary cross-appealed, "affirmed" flips to favorable.
+    note = outcome_note_for("affirmed", appellant_role="secretary")
+    assert "Secretary's cross-appeal was affirmed" in note
+    assert "favorable" in note
+
+
+def test_outcome_note_secretary_override_dismissed():
+    note = outcome_note_for("dismissed", appellant_role="secretary")
+    assert "Secretary's cross-appeal was dismissed" in note
+
+
+def test_outcome_note_no_override_for_veteran():
+    # When the veteran appealed, "affirmed" stays unfavorable.
+    note = outcome_note_for("affirmed", appellant_role="veteran")
+    assert "affirmed, reinforcing" in note
+
+
+def test_outcome_note_no_override_for_unknown():
+    note = outcome_note_for("affirmed", appellant_role="unknown")
+    assert "affirmed, reinforcing" in note
+
+
+def test_analyze_case_impact_secretary_affirmed_is_favorable():
+    case = _case(
+        snippet="service connection",
+        holding="affirmed",
+        outcome="affirmed",
+        appellant_role="secretary",
+    )
+    profile = analyze_case_impact(case)
+    assert "Secretary's cross-appeal was affirmed" in profile.outcome_note
+
+
+def test_analyze_case_impact_veteran_affirmed_is_unfavorable():
+    case = _case(
+        snippet="service connection",
+        holding="affirmed",
+        outcome="affirmed",
+        appellant_role="veteran",
+    )
+    profile = analyze_case_impact(case)
+    assert "affirmed, reinforcing" in profile.outcome_note
 
 
 def test_detect_statutes_prefer_record_and_scan_fallback():

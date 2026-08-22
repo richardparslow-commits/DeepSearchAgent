@@ -116,6 +116,30 @@ _CFR_PATTERN = re.compile(
 _USCA_PREFIX = re.compile(r"\b38\s*U\.?\s*S\.?\s*C\.?\s*A\b", re.IGNORECASE)
 # Checked in priority order; most appellate dispositions lead with vacatur/remand.
 OUTCOME_SIGNALS: tuple[str, ...] = ("vacated", "remanded", "affirmed", "dismissed", "granted", "denied")
+
+# Party-role detection: who appealed? In VA law, "affirmed" means very
+# different things depending on the appellant. When the veteran appeals a
+# denial and the court affirms, that's unfavorable. When the Secretary
+# cross-appeals a grant and the court affirms, that's favorable to the
+# veteran. These patterns detect the appellant from the text surrounding
+# "appeal" / "appellant" / "cross-appeal".
+_SECRETARY_PATTERNS = (
+    re.compile(r"\b(?:Secretary|VA|Department of Veterans Affairs)\'s?\s+(?:cross-?)?appeal\b", re.IGNORECASE),
+    re.compile(r"\b(?:Secretary|VA)\s+(?:cross-?)?appealed\b", re.IGNORECASE),
+    re.compile(r"\bappellant[, ]+(?:the\s+)?Secretary\b", re.IGNORECASE),
+    re.compile(r"\b(?:Secretary|VA)\s+is\s+(?:the\s+)?appellant\b", re.IGNORECASE),
+)
+_VETERAN_PATTERNS = (
+    re.compile(r"\b(?:veteran|claimant|appellant)\'s?\s+appeal\b", re.IGNORECASE),
+    re.compile(r"\bveteran\s+appealed\b", re.IGNORECASE),
+    re.compile(r"\bappellant[, ]+(?:the\s+)?veteran\b", re.IGNORECASE),
+    re.compile(r"\bveteran\s+is\s+(?:the\s+)?appellant\b", re.IGNORECASE),
+)
+# "appellant" alone (without a Secretary/veteran qualifier) is ambiguous; we
+# only classify when the text explicitly identifies the appellant.
+_APP_ROLE_VETERAN = "veteran"
+_APP_ROLE_SECRETARY = "secretary"
+_APP_ROLE_UNKNOWN = "unknown"
 _HOLDING_PATTERN = re.compile(
     r"\b(?:we|this court|the court|the board|this decision|the panel)\s+"
     r"(?:\w+\s+)?"  # allow one optional adverb ("also", "further", "therefore")
@@ -179,6 +203,29 @@ def extract_outcome(text: str, limit: int = 2) -> str:
     lowered = text.lower()
     hits = [signal for signal in OUTCOME_SIGNALS if re.search(rf"\b{signal}\b", lowered)]
     return " and ".join(hits[:limit])
+
+
+def extract_appellant_role(text: str) -> str:
+    """Return who appealed: 'veteran', 'secretary', or 'unknown'.
+
+    In VA law, the same outcome signal can mean opposite things depending on
+    the appellant. ``"affirmed"`` when the veteran appealed a denial is
+    unfavorable, but ``"affirmed"`` when the Secretary cross-appealed a grant
+    is favorable to the veteran. Without this, the deterministic
+    contradiction detector and the impact-note layer would classify every
+    ``"affirmed"`` as unfavorable, missing the Secretary-appeal case.
+
+    Detection is conservative: only explicit textual identification of the
+    appellant (``"the veteran's appeal"``, ``"the Secretary's cross-appeal"``,
+    ``"appellant, the Secretary"``) triggers a classification. ``"appellant"``
+    alone without a qualifier returns ``'unknown'`` so the caller falls back
+    to the default outcome classification rather than guessing.
+    """
+    if any(pat.search(text) for pat in _SECRETARY_PATTERNS):
+        return _APP_ROLE_SECRETARY
+    if any(pat.search(text) for pat in _VETERAN_PATTERNS):
+        return _APP_ROLE_VETERAN
+    return _APP_ROLE_UNKNOWN
 
 
 # Maximum number of holding sentences to extract from a single decision.
@@ -398,4 +445,5 @@ def extract_case_details(text: str) -> dict[str, str | list[str]]:
         "judge": extract_judge(text),
         "statutes": extract_statutes(text),
         "outcome": extract_outcome(text),
+        "appellant_role": extract_appellant_role(text),
     }

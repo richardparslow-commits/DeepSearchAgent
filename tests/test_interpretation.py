@@ -21,6 +21,7 @@ def _case(
     outcome: str = "",
     statutes: list[str] | None = None,
     deep_summary: str = "",
+    appellant_role: str = "",
 ) -> CaseRecord:
     return CaseRecord(
         title=title,
@@ -31,6 +32,7 @@ def _case(
         outcome=outcome,
         statutes=statutes or [],
         deep_summary=deep_summary,
+        appellant_role=appellant_role,
     )
 
 
@@ -109,6 +111,59 @@ def test_outcome_direction_classifies_favorable_unfavorable_unknown():
     assert _outcome_direction("granted and denied") == 0
     assert _outcome_direction("reversed") == 0
     assert _outcome_direction("") == 0
+
+
+def test_outcome_direction_secretary_flips_affirmed_and_dismissed():
+    # When the Secretary cross-appealed, "affirmed" and "dismissed" flip
+    # to favorable (the veteran's grant stands).
+    assert _outcome_direction("affirmed", appellant_role="secretary") == 1
+    assert _outcome_direction("dismissed", appellant_role="secretary") == 1
+
+
+def test_outcome_direction_veteran_stays_unfavorable_for_affirmed():
+    # When the veteran appealed, "affirmed" stays unfavorable.
+    assert _outcome_direction("affirmed", appellant_role="veteran") == -1
+    assert _outcome_direction("dismissed", appellant_role="veteran") == -1
+
+
+def test_outcome_direction_secretary_does_not_flip_denied():
+    # "denied" is always unfavorable regardless of appellant.
+    assert _outcome_direction("denied", appellant_role="secretary") == -1
+
+
+def test_outcome_direction_secretary_does_not_flip_favorable():
+    # "granted"/"vacated"/"remanded" are always favorable regardless.
+    assert _outcome_direction("granted", appellant_role="secretary") == 1
+    assert _outcome_direction("vacated", appellant_role="secretary") == 1
+
+
+def test_outcome_direction_unknown_role_stays_default():
+    assert _outcome_direction("affirmed", appellant_role="unknown") == -1
+    assert _outcome_direction("affirmed", appellant_role="") == -1
+
+
+def test_detect_contradictions_party_aware_affirmed():
+    # Two cases on the same statute: one veteran-appeal affirmed
+    # (unfavorable), one Secretary-appeal affirmed (favorable). The
+    # detector should flag them as contradictory because the same
+    # outcome word means opposite things.
+    cases = [
+        _case("Smith v. Wilkie", outcome="affirmed", statutes=["38 U.S.C. § 5107(b)"], appellant_role="veteran"),
+        _case("Jones v. McDonough", outcome="affirmed", statutes=["38 U.S.C. § 5107(b)"], appellant_role="secretary"),
+    ]
+    contradictions = detect_contradictions(cases)
+    assert len(contradictions) == 1
+    assert "affirmed" in contradictions[0].statement
+
+
+def test_detect_contradictions_both_secretary_affirmed_no_flag():
+    # Two Secretary-appeal affirmed cases on the same statute: both
+    # favorable, no contradiction.
+    cases = [
+        _case("Smith v. Wilkie", outcome="affirmed", statutes=["38 U.S.C. § 5107(b)"], appellant_role="secretary"),
+        _case("Jones v. McDonough", outcome="affirmed", statutes=["38 U.S.C. § 5107(b)"], appellant_role="secretary"),
+    ]
+    assert detect_contradictions(cases) == []
 
 
 def test_detect_contradictions_flags_opposite_outcomes_on_shared_statute():

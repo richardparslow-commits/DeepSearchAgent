@@ -153,24 +153,47 @@ def _case_text(case: CaseRecord) -> str:
 _FAVORABLE_OUTCOMES = frozenset({"granted", "vacated", "remanded"})
 _UNFAVORABLE_OUTCOMES = frozenset({"denied", "affirmed", "dismissed"})
 
+# Outcomes that *flip* when the Secretary is the appellant (i.e. the same
+# disposition that's unfavorable to the veteran when the veteran appealed
+# becomes favorable when the Secretary cross-appealed). "affirmed" when the
+# Secretary appealed means the veteran's grant was upheld; "dismissed" when
+# the Secretary's cross-appeal was dismissed means the veteran wins. Only
+# these two flip: "denied" is always unfavorable (the veteran's claim was
+# denied), and "granted"/"vacated"/"remanded" are always favorable regardless
+# of appellant.
+_SECRETARY_FLIPPED = frozenset({"affirmed", "dismissed"})
 
-def _outcome_direction(outcome: str) -> int:
+
+def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
     """Classify an outcome as favorable (+1), unfavorable (-1), or unknown (0).
 
     ``extract_outcome`` joins multiple signals with " and " (e.g. "vacated and
     remanded"). A compound that mixes directions ("granted and denied") or an
     unrecognized signal resolves to 0 rather than guessing, so the deterministic
     detector never flags on ambiguous postures.
+
+    When *appellant_role* is ``"secretary"``, the outcomes ``affirmed`` and
+    ``dismissed`` flip to favorable: a Secretary cross-appeal that was affirmed
+    or dismissed means the veteran's grant stands. Without this, every
+    ``"affirmed"`` was classified as unfavorable, which is wrong half the time
+    in VA law (the Secretary appeals grants far more often than veterans
+    appeal denials in the CAVC dataset).
     """
     signals = outcome.lower().split(" and ")
     if not signals or any(not signal for signal in signals):
         return 0
+    is_secretary = appellant_role == "secretary"
     directions: set[int] = set()
     for signal in signals:
         if signal in _FAVORABLE_OUTCOMES:
             directions.add(1)
         elif signal in _UNFAVORABLE_OUTCOMES:
-            directions.add(-1)
+            # When the Secretary is the appellant, "affirmed" and "dismissed"
+            # flip: they mean the veteran's grant was upheld.
+            if is_secretary and signal in _SECRETARY_FLIPPED:
+                directions.add(1)
+            else:
+                directions.add(-1)
         else:
             return 0
     if len(directions) == 1:
@@ -195,7 +218,10 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
     mixed postures never trigger a flag.
     """
     outcomes = [detect_outcome(case) for case in cases]
-    directions = [_outcome_direction(outcome) for outcome in outcomes]
+    directions = [
+        _outcome_direction(outcome, case.appellant_role)
+        for outcome, case in zip(outcomes, cases)
+    ]
     contradictions: list[Contradiction] = []
     seen: set[tuple[str, str]] = set()
     for i, first in enumerate(cases):

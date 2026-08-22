@@ -22,6 +22,12 @@ class CaseRecord(BaseModel):
     deep_summary: str = ""
     statutes: list[str] = Field(default_factory=list)
     outcome: str = ""
+    # Who appealed: "veteran", "secretary", or "unknown" (empty = not
+    # extracted). In VA law, "affirmed" means opposite things depending on
+    # the appellant: unfavorable when the veteran appealed, favorable when
+    # the Secretary cross-appealed. The contradiction detector and impact
+    # note layer use this to make outcome classification party-aware.
+    appellant_role: str = ""
     authority_rank: int = 0
     authority_weight: int = 0
     relevance_score: int = 0

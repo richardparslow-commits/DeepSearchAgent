@@ -660,6 +660,12 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             value = details.get(key) or getattr(case, key)
             if value:
                 setattr(case, key, value)
+        # Populate appellant_role from enrichment so the contradiction detector
+        # and impact notes are party-aware (e.g. "affirmed" when the Secretary
+        # cross-appealed is favorable to the veteran, not unfavorable).
+        role = details.get("appellant_role") or ""
+        if role and role != "unknown":
+            case.appellant_role = role
         statutes = details.get("statutes") or []
         if statutes:
             case.statutes = list(statutes)

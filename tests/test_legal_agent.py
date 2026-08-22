@@ -360,6 +360,7 @@ def test_fetch_cases_enriches_top_case_details(monkeypatch):
             "judge": "Mary J. Smith",
             "statutes": ["38 U.S.C. § 7104(d)(1)"],
             "outcome": "vacated and remanded",
+            "appellant_role": "secretary",
         },
     )
 
@@ -372,6 +373,7 @@ def test_fetch_cases_enriches_top_case_details(monkeypatch):
     assert cases[0].judge == "Mary J. Smith"
     assert cases[0].statutes == ["38 U.S.C. § 7104(d)(1)"]
     assert cases[0].outcome == "vacated and remanded"
+    assert cases[0].appellant_role == "secretary"  # party-aware enrichment
     assert cases[0].impact  # impact summary assigned after enrichment
 
 

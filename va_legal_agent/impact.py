@@ -49,6 +49,21 @@ OUTCOME_NOTES: dict[str, str] = {
     "denied": "The request was denied, which may counsel caution when relying on the theory discussed.",
 }
 
+# Party-aware overrides: when the Secretary cross-appealed, "affirmed" and
+# "dismissed" flip to favorable (the veteran's grant stands). These notes
+# replace the default unfavorable phrasing above so the impact narrative
+# reflects the actual claimant position.
+_SECRETARY_OVERRIDES: dict[str, str] = {
+    "affirmed": (
+        "The Secretary's cross-appeal was affirmed, meaning the veteran's "
+        "favorable outcome below stands."
+    ),
+    "dismissed": (
+        "The Secretary's cross-appeal was dismissed, meaning the veteran's "
+        "favorable outcome below stands."
+    ),
+}
+
 BOILERPLATE = (
     "It underscores that the agency must apply the governing standards carefully, "
     "explain the basis for the decision, and assess the evidence in a way that is "
@@ -80,9 +95,17 @@ def detect_outcome(case: CaseRecord) -> str:
     return extract_outcome(f"{case.title} {case.holding}".lower())
 
 
-def outcome_note_for(outcome: str) -> str:
-    """Map an outcome string to its nuance note via the leading signal."""
+def outcome_note_for(outcome: str, appellant_role: str = "") -> str:
+    """Map an outcome string to its nuance note via the leading signal.
+
+    When *appellant_role* is ``"secretary"``, the notes for ``affirmed`` and
+    ``dismissed`` flip to favorable (the Secretary's cross-appeal failed, so
+    the veteran's grant stands). This mirrors the party-aware direction
+    classification in :func:`interpretation._outcome_direction`.
+    """
     first_signal = outcome.split(" ", 1)[0].lower() if outcome else ""
+    if appellant_role == "secretary" and first_signal in _SECRETARY_OVERRIDES:
+        return _SECRETARY_OVERRIDES[first_signal]
     return OUTCOME_NOTES.get(first_signal, "")
 
 
@@ -116,7 +139,7 @@ def analyze_case_impact(case: CaseRecord) -> ImpactProfile:
     tags = detect_issue_tags(case)
     outcome = detect_outcome(case)
     statutes = detect_statutes(case)
-    outcome_note = outcome_note_for(outcome)
+    outcome_note = outcome_note_for(outcome, case.appellant_role)
     statute_note = statute_note_for(statutes)
     authority_note = authority_note_for(case.court)
 
