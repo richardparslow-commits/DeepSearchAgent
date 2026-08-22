@@ -13,6 +13,7 @@ from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
     _dedupe,
+    _dedupe_rank_and_enrich,
     _observe,
     _resolve_superseded_cases,
     analyze_cases_for_claim,
@@ -956,8 +957,56 @@ def test_enrich_populates_legal_standard_from_courtlistener_api(monkeypatch):
     assert case.holding
 
 
+def test_dedupe_rank_and_enrich_collapses_mirror_duplicates_after_enrichment(monkeypatch):
+    """Live regression: the same opinion returned as separate CourtListener
+    records (same cluster, different opinion IDs/URLs, no search-time
+    citation) survives the pre-enrichment dedup, then enrichment extracts a
+    matching citation+date from the full text — the second dedup pass must
+    collapse the mirror copy so the report shows each case once."""
+    def make_case(opinion_id: str) -> CaseRecord:
+        return CaseRecord(
+            title="Spicer v. McDonough",
+            court="U.S. Court of Appeals for the Federal Circuit",
+            url=f"https://www.courtlistener.com/opinion/{opinion_id}/spicer/",
+            courtlistener_opinion_id=opinion_id,
+            authority_weight=3,
+            relevance_score=5,
+        )
+
+    first, mirror = make_case("111"), make_case("222")
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            # Both opinion records are the same underlying decision.
+            return (
+                "Spicer v. McDonough, 48 F.4th 1353 (Fed. Cir. 2022). "
+                "Decided June 15, 2022. "
+                "We hold that the veteran is entitled to service connection "
+                "for tinnitus as a result of in-service noise exposure."
+            )
+
+    monkeypatch.setattr("va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider())
+
+    class _Settings:
+        enrich_case_limit = 5
+        deep_read = False
+        deep_read_limit = 5
+
+    monkeypatch.setattr("va_legal_agent.agent.get_settings", lambda: _Settings())
+
+    result = _dedupe_rank_and_enrich([first, mirror], max_results=10, enrich=True, claim_issue="tinnitus")
+
+    # Both copies enrich to the same citation; only one survives.
+    assert len(result) == 1
+    assert result[0].title == "Spicer v. McDonough"
+    assert result[0].courtlistener_opinion_id == "111"  # first copy wins
+
+
 def test_enrich_populates_citation_treatments(monkeypatch):
-    """Citation treatments are stored on the case during enrichment."""
+    """Citation treatments are stored as CitationTreatment models during
+    enrichment."""
+    from va_legal_agent.models import CitationTreatment
+
     case = CaseRecord(
         title="Treatment Case",
         court="Court of Appeals for Veterans Claims",
@@ -976,8 +1025,14 @@ def test_enrich_populates_citation_treatments(monkeypatch):
 
     assert case.legal_standard == "clear error"
     assert len(case.citation_treatments) == 2
-    assert {"cited_case": "Smith v. Wilkie", "treatment": "distinguished"} in case.citation_treatments
-    assert {"cited_case": "Jones v. Brown", "treatment": "followed"} in case.citation_treatments
+    # Coerced from raw dicts into model objects so attribute access works.
+    assert case.citation_treatments == [
+        CitationTreatment(cited_case="Smith v. Wilkie", treatment="distinguished"),
+        CitationTreatment(cited_case="Jones v. Brown", treatment="followed"),
+    ]
+    assert all(
+        isinstance(t, CitationTreatment) for t in case.citation_treatments
+    )
 
 
 def test_enrich_skips_empty_citation_treatments(monkeypatch):
@@ -996,6 +1051,43 @@ def test_enrich_skips_empty_citation_treatments(monkeypatch):
     enrich_top_cases([case], limit=1)
 
     assert case.citation_treatments == []
+
+
+def test_enrich_then_resolve_superseded_handles_dict_treatments(monkeypatch):
+    """Live-shaped regression: enrichment stores raw dicts from
+    extract_citation_treatments; _resolve_superseded_cases must not crash on
+    attribute access. This reproduces the AttributeError seen in production
+    (``'dict' object has no attribute 'treatment'``)."""
+    from va_legal_agent.agent import _resolve_superseded_cases
+    from va_legal_agent.models import CitationTreatment
+
+    citing = CaseRecord(
+        title="Jones v. McDonough", court="Federal Circuit",
+        url="https://example.com/jones", decision_date="2018-03-15",
+    )
+    cited = CaseRecord(
+        title="Smith v. Wilkie", court="CAVC",
+        url="https://example.com/smith", decision_date="2010-06-01",
+    )
+
+    # extract_citation_treatments returns dicts; enrichment coerces them.
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: {
+            "citation_treatments": [
+                {"cited_case": "Smith v. Wilkie", "treatment": "overruled"},
+            ]
+        },
+    )
+
+    enrich_top_cases([citing], limit=1)
+    assert citing.citation_treatments == [
+        CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled")
+    ]
+
+    # No AttributeError: dicts were coerced before the resolver ran.
+    _resolve_superseded_cases([citing, cited])
+    assert cited.superseded_by == "Jones v. McDonough"
 
 
 def test_enrich_populates_legal_standard_from_generic_fetch(monkeypatch):

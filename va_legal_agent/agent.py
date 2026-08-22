@@ -14,7 +14,7 @@ from .deep_read import deep_read_cases
 from .fetch import extract_case_details, fetch_case_details
 from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis, uncovered_element_names
-from .models import CaseRecord, LegalAnalysis
+from .models import CaseRecord, CitationTreatment, LegalAnalysis
 from .planning import decompose_issue, plan_queries, refine_plan
 from .providers import (
     CourtListenerProvider,
@@ -467,6 +467,15 @@ def _dedupe_rank_and_enrich(
 
     if enrich:
         enrich_top_cases(deduped, limit=min(settings.enrich_case_limit, max(max_results, 1)))
+        # Re-dedupe after enrichment: the first pass runs on search-time
+        # fields, where citation/decision_date are often empty (unreported
+        # decisions) and the same case returned as separate opinion records
+        # (same cluster, different opinion IDs/URLs) survives. Enrichment
+        # extracts the citation + date from the full text, so the second
+        # pass collapses those mirror duplicates. ``_dedupe`` sorts by
+        # (authority_weight, relevance_score), so the highest-scoring copy
+        # survives.
+        deduped = _dedupe(deduped)
 
     # Final ordering comes from the ranking layer (authority tiers strictly
     # dominant; within a tier: relevance, recency, and completeness), then a
@@ -813,7 +822,15 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             case.statutes = list(statutes)
         treatments = details.get("citation_treatments") or []
         if treatments:
-            case.citation_treatments = list(treatments)
+            # ``extract_citation_treatments`` returns plain dicts; coerce
+            # them into ``CitationTreatment`` models so downstream consumers
+            # (``_resolve_superseded_cases``, the LLM prompt) can use
+            # attribute access.  Plain assignment would bypass pydantic
+            # coercion and leave raw dicts in the field.
+            case.citation_treatments = [
+                t if isinstance(t, CitationTreatment) else CitationTreatment(**t)
+                for t in treatments
+            ]
     return cases
 
 
