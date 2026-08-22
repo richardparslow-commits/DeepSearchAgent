@@ -128,9 +128,20 @@ def http_proxy_kwargs() -> dict[str, dict[str, str]]:
     return {"proxies": {"http": proxy, "https": proxy}}
 
 
-def build_duckduckgo_url(query: str, page: int = 1) -> str:
+def build_duckduckgo_url(query: str, page: int = 1, exclude_terms: str = "") -> str:
+    """Build a DuckDuckGo HTML search URL with optional ``-term`` exclusion operators.
+
+    When *exclude_terms* is non-empty, each comma-separated term longer than
+    one character is appended as a ``-term`` operator to the query, so
+    DuckDuckGo pre-filters results server-side. The post-fetch
+    ``_filter_excluded_terms`` gate in providers.py provides a second fence.
+    """
+    q = query
+    tokens = [t.strip() for t in (exclude_terms or "").split(",") if len(t.strip()) >= 2]
+    if tokens:
+        q = q + " " + " ".join("-" + t for t in tokens)
     params = {
-        "q": query,
+        "q": q,
         "kl": "us-en",
         "s": str((page - 1) * 10),
     }

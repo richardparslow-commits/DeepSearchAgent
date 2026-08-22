@@ -277,6 +277,8 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `SEARCH_PAGES_PER_QUERY_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=1,duckduckgo=4`; unlisted providers fall back to the global (each provider still fetches at least 1 page) |
 | `SEARCH_QUERY_VARIANTS` | `3` | Additional variant queries derived from topic synonyms and statute hints (`0` disables) |
 | `SEARCH_QUERY_VARIANTS_BY_PROVIDER` | – | Per-provider overrides, e.g. `bva=0,courtlistener=5`; unlisted providers fall back to the global (`0` disables expansion for that provider) |
+| `SEARCH_EXCLUDE_TERMS` | – | Comma-separated terms (case-insensitive) that suppress results whose title/snippet contain them, e.g. `knee,back` to exclude decisions where the issue appears only in the procedural history. DDG appends `-term` operators; the post-fetch filter catches every provider (`""` = no filter) |
+
 | `COURTLISTENER_API_KEY` | – | CourtListener API token (free account; now required — v4 returns 401 for anonymous requests) |
 | `COURTLISTENER_USAGE_GUARD` | `1` | Pre-flight check against CourtListener's `api-usage` endpoint before each run; aborts with the daily-window reset time when the remaining budget can't cover the run (`0` disables) |
 | `CITATION_TRAVERSAL` | `0` | Multi-hop citation traversal: follow CourtListener citation trails from the strongest cases found and merge the discovered opinions before final ranking (`1`/`true`/`yes`/`on` enables). Off by default because it makes extra authenticated API calls per run |

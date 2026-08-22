@@ -759,6 +759,78 @@ def test_search_all_zero_variants_sends_only_original(monkeypatch):
     assert queries_seen == ["service connection"]
 
 
+def test_search_all_filters_excluded_terms_from_results(monkeypatch):
+    """Results whose title or snippet match an excluded term are dropped."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+    monkeypatch.setenv("SEARCH_EXCLUDE_TERMS", "knee,back")
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": "tinnitus case", "url": "https://example.com/1", "snippet": "hearing loss"},
+                {"title": "knee rating decision", "url": "https://example.com/2", "snippet": "irrelevant"},
+                {"title": "back injury claim", "url": "https://example.com/3", "snippet": ""},
+                {"title": "another tinnitus", "url": "https://example.com/4", "snippet": "lower back pain"},
+            ]
+
+    monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
+
+    results = search_all("tinnitus", max_results=10)
+
+    # result 2 has "knee" in title, result 3 has "back" in title,
+    # result 4 has "back" in snippet — only result 1 survives.
+    titles = [r["title"] for r in results]
+    assert titles == ["tinnitus case"]
+
+
+def test_search_all_exclude_terms_empty_or_short_does_nothing(monkeypatch):
+    """Empty or short-term exclude strings are a no-op."""
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": "knee pain", "url": "https://example.com/1", "snippet": ""},
+            ]
+
+    monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
+
+    # Empty string
+    monkeypatch.setenv("SEARCH_EXCLUDE_TERMS", "")
+    results1 = search_all("tinnitus", max_results=10)
+    assert len(results1) == 1
+
+    # Token shorter than 2 chars (just "k") is ignored.
+    monkeypatch.setenv("SEARCH_EXCLUDE_TERMS", "k,a")
+    results2 = search_all("tinnitus", max_results=10)
+    assert len(results2) == 1
+
+
+def test_search_all_exclude_terms_case_insensitive(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    monkeypatch.setenv("SEARCH_QUERY_VARIANTS", "0")
+    monkeypatch.setenv("SEARCH_EXCLUDE_TERMS", "KNEE")
+
+    class _FakeDDG:
+        name = "duckduckgo"
+
+        def search(self, query, max_results=10, page=1):
+            return [
+                {"title": "Tinnitus", "url": "https://example.com/1", "snippet": "knee examination was normal"},
+            ]
+
+    monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
+
+    # "KNEE" matches "knee" in snippet (case-insensitive).
+    assert search_all("tinnitus", max_results=10) == []
+
+
 def test_courtlistener_strips_site_prefixes(monkeypatch):
     captured = {}
 

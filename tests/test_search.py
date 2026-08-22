@@ -43,6 +43,33 @@ def test_build_url_offsets_page():
     assert "s=20" in build_duckduckgo_url("veterans", page=3)
 
 
+def test_build_url_appends_exclude_terms():
+    """Exclude terms become -term operators in the query."""
+    url = build_duckduckgo_url("tinnitus", exclude_terms="knee,back")
+    query = url.split("?", 1)[1]
+    assert "-knee" in query
+    assert "-back" in query
+
+
+def test_build_url_short_exclude_terms_are_ignored():
+    """Single-char or whitespace-only exclude tokens are dropped."""
+    url = build_duckduckgo_url("tinnitus", exclude_terms="a, b ,  ,knee")
+    query = url.split("?", 1)[1]
+    # "a" and "b" are too short; whitespace-only is dropped; "knee" stays.
+    assert "-knee" in query
+    assert "-a" not in query
+    assert "-b" not in query
+
+
+def test_build_url_empty_exclude_terms_no_op():
+    url = build_duckduckgo_url("tinnitus", exclude_terms="")
+    query = url.split("?", 1)[1]
+    # No -term exclusion operators; "-" may appear in "us-en", so check that
+    # the query param doesn't end with a dangling space followed by a dash.
+    assert "tinnitus" in query
+    assert " -" not in query
+
+
 @pytest.mark.parametrize(
     ("link", "expected"),
     [

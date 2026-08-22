@@ -1192,7 +1192,7 @@ def _bva_local_needs_rebuild(
             meta = json.load(fh)
     except (json.JSONDecodeError, OSError):
         return True
-    build_time_str = meta.get("build_time", "")
+    build_time_str = meta.get("BUILD_TIME", "")
     if build_time_str:
         try:
             build_time = datetime.fromisoformat(build_time_str)
@@ -1541,6 +1541,28 @@ def recall_flags(telemetry: dict[str, dict[str, object]]) -> list[str]:
     return flags
 
 
+def _filter_excluded_terms(
+    results: list[dict[str, str]], exclude_terms: str
+) -> list[dict[str, str]]:
+    """Remove results whose title or snippet contains any excluded term.
+
+    Matching is case-insensitive and whole-word (\b-bounded). An empty
+    *exclude_terms* string (or one that produces no tokens longer than one
+    character) returns *results* unchanged.
+    """
+    tokens = [t.strip() for t in (exclude_terms or "").split(",") if len(t.strip()) >= 2]
+    if not tokens:
+        return results
+    # Build a single regex — it is cheaper to scan each result once.
+    pattern = re.compile("|".join(re.escape(t) for t in tokens), re.IGNORECASE)
+    return [
+        r
+        for r in results
+        if not pattern.search(r.get("title", ""))
+        and not pattern.search(r.get("snippet", ""))
+    ]
+
+
 def search_all(
     query: str,
     max_results: int = 10,
@@ -1634,6 +1656,13 @@ def search_all(
                     vstat["failures"] += 1
                     continue
                 stats["queries_issued"] = int(stats["queries_issued"]) + 1
+                # Filter out results whose title/snippet match an excluded term
+                # before counting them so excluded noise doesn't consume slots.
+                if settings.search_exclude_terms:
+                    filtered = _filter_excluded_terms(results, settings.search_exclude_terms)
+                    excluded_count = len(results) - len(filtered)
+                    stats["deduped"] = int(stats["deduped"]) + excluded_count
+                    results = filtered
                 stats["results"] = int(stats["results"]) + len(results)
                 vstat["results"] += len(results)
                 for result in results:

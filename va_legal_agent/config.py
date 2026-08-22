@@ -167,6 +167,11 @@ class Settings:
     # disable expansion on a backend that throttles extra queries. Providers
     # not listed fall back to search_query_variants.
     search_query_variants_by_provider: dict[str, int] = field(default_factory=dict)
+    # Comma-separated exclusion terms, e.g. "knee,back,elbow" suppresses
+    # results whose title or snippet contains any of those words (case-
+    # insensitive). The DDG provider also appends ``-term`` operators to the
+    # URL query string as a pre-fetch hint. Set empty to disable filtering.
+    search_exclude_terms: str = ""
     # Per-provider requests-per-minute budget, e.g. {"courtlistener": 5} to
     # cap CourtListener at 5 requests/minute. Enforced in _throttle() between
     # actual HTTP requests for that provider, on top of the global
@@ -285,6 +290,9 @@ class Settings:
             ),
             search_query_variants_by_provider=env_provider_int_map(
                 os.getenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "")
+            ),
+            search_exclude_terms=os.getenv(
+                "SEARCH_EXCLUDE_TERMS", d.search_exclude_terms
             ),
             search_max_rpm_by_provider=env_provider_int_map(
                 os.getenv("SEARCH_MAX_RPM_BY_PROVIDER", ""), min_value=0
