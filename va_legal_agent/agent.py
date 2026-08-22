@@ -846,7 +846,9 @@ def _resolve_superseded_cases(cases: list[CaseRecord]) -> list[CaseRecord]:
                 continue
             cited_name = treatment.cited_case
             cited = by_title.get(cited_name)
-            if cited is None or cited is citing:
+            if cited is None:
+                continue
+            if cited is citing:
                 continue
             # Compare years; unknown dates skip the comparison (assume
             # the overruling/abrogating case is later by nature of the

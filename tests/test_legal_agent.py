@@ -2561,8 +2561,31 @@ def test_resolve_superseded_uncited_case_not_in_pool():
             CitationTreatment(cited_case="Unknown v. VA", treatment="overruled"),
         ],
     )
+    # A second case is needed so the length-guard (len<2) doesn't return
+    # early before the loop reaches the cited-is-None branch.
+    other = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01")
 
-    _resolve_superseded_cases([case])
+    _resolve_superseded_cases([case, other])
+
+    assert case.superseded_by == ""
+
+
+def test_resolve_superseded_self_citation_hits_cited_is_citing_branch():
+    """A case citing itself exercises the cited-is-citing branch."""
+    from va_legal_agent.models import CitationTreatment
+
+    case = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        decision_date="2010-05-01",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+    # A second case is needed to pass the length-guard.
+    other = CaseRecord(title="Jones v. VA", court="CAVC", decision_date="2015-01-01")
+
+    _resolve_superseded_cases([case, other])
 
     assert case.superseded_by == ""
 
