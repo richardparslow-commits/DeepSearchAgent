@@ -26,7 +26,7 @@ from .providers import (
     search_all,
     traverse_citations,
 )
-from .ranking import rank_cases, select_with_court_floor
+from .ranking import _parse_year, rank_cases, select_with_court_floor
 from .reliability import classify_source
 from .search import SearchError
 from .topics import (
@@ -797,6 +797,56 @@ def summarize_case_impact(case: CaseRecord) -> str:
     return analyze_case_impact(case).nuance
 
 
+# Treatments that extinguish the prior authority — these make the cited
+# case "superseded" and exclude it from the always-on contradiction detector
+# (a contradiction between a live case and a superseded one is expected, not
+# a conflict). "questioned" and "criticized" are NOT here: they weaken but
+# do not overrule the prior authority.
+_SUPERSEDING_TREATMENTS = frozenset({"overruled", "abrogated"})
+
+
+def _resolve_superseded_cases(cases: list[CaseRecord]) -> list[CaseRecord]:
+    """Cross-reference citation treatments with dates to mark superseded cases.
+
+    If case B carries ``citation_treatments`` that overrule or abrogate case
+    A, and B's decision date is later than A's (or the same year: within
+    publication order), A's ``superseded_by`` is set to B's title.
+
+    Called after enrichment (so both ``citation_treatments`` and
+    ``decision_date`` are populated) but before the interpretation pass (so
+    the contradiction detector can skip superseded pairs). Returns the same
+    list of cases, mutated in place.
+    """
+    if len(cases) < 2:
+        return cases
+    # Build a title→case index for quick lookup.
+    by_title: dict[str, CaseRecord] = {case.title: case for case in cases}
+    year_cache: dict[str, int | None] = {}
+
+    for citing in cases:
+        for treatment in citing.citation_treatments:
+            if treatment.treatment not in _SUPERSEDING_TREATMENTS:
+                continue
+            cited_name = treatment.cited_case
+            cited = by_title.get(cited_name)
+            if cited is None or cited is citing:
+                continue
+            # Compare years; unknown dates skip the comparison (assume
+            # the overruling/abrogating case is later by nature of the
+            # treatment signal alone).
+            citing_year = year_cache.setdefault(citing.title, _parse_year(citing.decision_date))
+            cited_year = year_cache.setdefault(cited.title, _parse_year(cited.decision_date))
+            if citing_year is not None and cited_year is not None and citing_year < cited_year:
+                continue  # earlier case cannot overrule a later one
+            # Only set superseded_by when either:
+            #   - both dates known and citing >= cited (same year is OK —
+            #     later within the publication cycle), or
+            #   - either date unknown (treatment signal alone is enough).
+            if not cited.superseded_by:
+                cited.superseded_by = citing.title
+    return cases
+
+
 def _build_analysis(
     claim_issue: str,
     claim_type: str,
@@ -807,10 +857,16 @@ def _build_analysis(
     if not cases:
         raise ValueError(f"No cases found for: {claim_issue}")
 
+    # Cross-reference citation treatments with dates: if case B overrules case
+    # A, mark A as superseded so the contradiction detector doesn't flag the
+    # expected outcome difference as a live conflict.
+    _resolve_superseded_cases(cases)
+
     summary = "\n".join(
         f"- {case.title} ({case.court}) "
         f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
         + (" [non-precedential]" if not case.precedential else "")
+        + (f" [superseded by {case.superseded_by}]" if case.superseded_by else "")
         for case in cases[:5]
     )
 

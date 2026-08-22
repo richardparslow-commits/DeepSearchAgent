@@ -246,12 +246,19 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
         first_direction = directions[i]
         if first_direction == 0:
             continue
+        # A superseded case is never part of a live contradiction — its
+        # opposite outcome is expected because a later decision overruled it.
+        if first.superseded_by:
+            continue
         first_statutes = set(_case_statutes(first))
         if not first_statutes:
             continue
         for j, second in enumerate(cases[i + 1 :], start=i + 1):
             second_direction = directions[j]
             if second_direction == 0 or second_direction == first_direction:
+                continue
+            # Skip pairs where the second case is also superseded.
+            if second.superseded_by:
                 continue
             shared = first_statutes & set(_case_statutes(second))
             if not shared:

@@ -93,6 +93,7 @@ def _build_reasoning_messages(
             + (f"\n   Outcome: {case.outcome}" if case.outcome else "")
             + (f"\n   Standard of review: {case.legal_standard}" if case.legal_standard else "")
             + ("\n   NOTE: non-precedential — persuasive authority only" if not case.precedential else "")
+            + (f"\n   NOTE: superseded by {case.superseded_by} — this authority has been overruled" if case.superseded_by else "")
             + (f"\n   Statutes: {', '.join(case.statutes)}" if case.statutes else "")
             + (
                 f"\n   Treatment of prior authority: {'; '.join(f'{t.cited_case}: {t.treatment}' for t in case.citation_treatments)}"

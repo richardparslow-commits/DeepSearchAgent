@@ -395,6 +395,49 @@ def test_merge_contradictions_dedupes_within_secondary():
     assert [c.statement for c in merged] == ["primary", "first"]
 
 
+def test_detect_contradictions_skips_superseded_first_case():
+    """A superseded case cannot anchor a live contradiction."""
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+    cases[0].superseded_by = "Jones v. McDonough"
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_skips_pair_when_second_superseded():
+    """When the second case in a pair is superseded, the pair is skipped."""
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+    cases[1].superseded_by = "Adams v. Shulkin"
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_reports_live_pair_when_superseded_also_present():
+    """A third live case still triggers contradiction with the non-superseded
+    first case, while the superseded pair is silently dropped."""
+    cases = [
+        _case("Smith v. Wilkie", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case(
+            "Jones v. McDonough", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]
+        ),
+        _case("Adams v. Shulkin", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+    cases[1].superseded_by = "Smith v. Wilkie"  # Jones is superseded
+
+    contradictions = detect_contradictions(cases)
+
+    # Smith↔Adams is the live pair; Smith↔Jones is skipped (Jones superseded)
+    assert len(contradictions) == 1
+    assert {(c.case_a, c.case_b) for c in contradictions} == {
+        ("Smith v. Wilkie", "Adams v. Shulkin")
+    }
+
+
 def test_build_analysis_template_path_reports_deterministic_contradictions(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cases = [

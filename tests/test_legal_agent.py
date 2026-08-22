@@ -13,6 +13,7 @@ from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
     _observe,
+    _resolve_superseded_cases,
     analyze_cases_for_claim,
     build_case_queries,
     detect_court_name,
@@ -2375,6 +2376,258 @@ def test_analyze_cases_for_claim_refines_before_analysis(monkeypatch):
     assert '"rating" "service connection and rating" veterans law' in queries_seen
     assert analysis.coverage_score == pytest.approx(0.30 / 0.32)
     assert [e.name for e in analysis.detected_elements] == ["service connection", "rating"]
+
+
+# ── _resolve_superseded_cases ────────────────────────────────────────────────
+
+
+def test_resolve_superseded_marks_cited_case_when_overruled_and_later():
+    """Case B (2018) overrules Case A (2010): A.superseded_by is B's title."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        decision_date="2010-05-01",
+        url="https://example.com/smith",
+    )
+    newer = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        url="https://example.com/jones",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([older, newer])
+
+    assert older.superseded_by == "Jones v. McDonough"
+    assert newer.superseded_by == ""
+
+
+def test_resolve_superseded_abrogated_also_counts():
+    """Abrogated has the same effect as overruled."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01")
+    newer = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="abrogated"),
+        ],
+    )
+
+    _resolve_superseded_cases([older, newer])
+
+    assert older.superseded_by == "Jones v. McDonough"
+
+
+def test_resolve_superseded_distinguished_does_not_supersede():
+    """Distinguished weakens but does not overrule."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01")
+    newer = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="distinguished"),
+        ],
+    )
+
+    _resolve_superseded_cases([older, newer])
+
+    assert older.superseded_by == ""
+
+
+def test_resolve_superseded_followed_does_not_supersede():
+    """Followed is a reinforcement, not an overrule."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01")
+    newer = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="followed"),
+        ],
+    )
+
+    _resolve_superseded_cases([older, newer])
+
+    assert older.superseded_by == ""
+
+
+def test_resolve_superseded_earlier_case_cannot_overrule_later():
+    """Case B (2005) cannot overrule Case A (2018) — date check guards against
+    reversed date assignment."""
+    from va_legal_agent.models import CitationTreatment
+
+    newer = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        decision_date="2018-05-01",
+        url="https://example.com/smith",
+    )
+    older = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2005-03-15",
+        url="https://example.com/jones",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([newer, older])
+
+    # Jones (2005) claims to overrule Smith (2018) — date check blocks it.
+    assert newer.superseded_by == ""
+
+
+def test_resolve_superseded_same_year_marks_superseded():
+    """Same-year decisions: the treatment signal alone is enough."""
+    from va_legal_agent.models import CitationTreatment
+
+    first = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2018-01-15")
+    second = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-09-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([first, second])
+
+    assert first.superseded_by == "Jones v. McDonough"
+
+
+def test_resolve_superseded_unknown_date_marks_superseded():
+    """When either date is unknown, the treatment signal alone triggers
+    superseded status."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="")
+    newer = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([older, newer])
+
+    assert older.superseded_by == "Jones v. McDonough"
+
+
+def test_resolve_superseded_self_citation_skipped():
+    """A case citing itself does not supersede itself."""
+    from va_legal_agent.models import CitationTreatment
+
+    case = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        decision_date="2010-05-01",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([case])
+
+    assert case.superseded_by == ""
+
+
+def test_resolve_superseded_uncited_case_not_in_pool():
+    """A citation to a case not in the retrieved pool is a no-op."""
+    from va_legal_agent.models import CitationTreatment
+
+    case = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Unknown v. VA", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([case])
+
+    assert case.superseded_by == ""
+
+
+def test_resolve_superseded_blanks_by_title_cache():
+    """A citation to a known case without 'overruled' treatment is skipped."""
+    from va_legal_agent.models import CitationTreatment
+
+    smith = CaseRecord(
+        title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01"
+    )
+    jones = CaseRecord(
+        title="Jones v. McDonough",
+        court="CAVC",
+        decision_date="2018-03-15",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="followed"),
+        ],
+    )
+
+    _resolve_superseded_cases([smith, jones])
+
+    assert smith.superseded_by == ""  # followed, not overruled
+    assert jones.superseded_by == ""
+
+
+def test_resolve_superseded_single_case_returns_unchanged():
+    """A single-case list with no citation_treatments returns unchanged."""
+    case = CaseRecord(title="Smith v. Wilkie", court="CAVC")
+
+    result = _resolve_superseded_cases([case])
+
+    assert result == [case]
+    assert case.superseded_by == ""
+
+
+def test_resolve_superseded_empty_returns_unchanged():
+    assert _resolve_superseded_cases([]) == []
+
+
+def test_resolve_superseded_only_first_overruling_stickpins():
+    """When multiple cases overrule the same cited case, only the first
+    overruling title sticks (superseded_by already set)."""
+    from va_legal_agent.models import CitationTreatment
+
+    older = CaseRecord(title="Smith v. Wilkie", court="CAVC", decision_date="2010-05-01")
+    newer_a = CaseRecord(
+        title="Alpha v. VA",
+        court="CAVC",
+        decision_date="2018-01-01",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+    newer_b = CaseRecord(
+        title="Beta v. VA",
+        court="CAVC",
+        decision_date="2019-01-01",
+        citation_treatments=[
+            CitationTreatment(cited_case="Smith v. Wilkie", treatment="overruled"),
+        ],
+    )
+
+    _resolve_superseded_cases([newer_a, newer_b, older])
+
+    assert older.superseded_by == "Alpha v. VA"
 
 
 def test_fetch_cases_no_sleep_when_delay_zero(monkeypatch):

@@ -47,6 +47,13 @@ class CaseRecord(BaseModel):
     # criticizes prior authority tells you whether that line of precedent
     # is live or dead.
     citation_treatments: list[CitationTreatment] = Field(default_factory=list)
+    # When a later decision explicitly overrules or abrogates this one (and
+    # the cross-reference is detected in the citation_treatments of the later
+    # case), this field carries the title of the superseding decision. The
+    # contradiction detector skips superseded pairs and the report flags them
+    # as "superseded authority". Empty string means the case is still good law
+    # as far as the retrieved corpus shows.
+    superseded_by: str = ""
     authority_rank: int = 0
     authority_weight: int = 0
     relevance_score: int = 0

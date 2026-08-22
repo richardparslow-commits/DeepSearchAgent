@@ -306,6 +306,29 @@ def test_build_reasoning_messages_no_flag_when_precedential():
     assert "persuasive authority only" not in user_text
 
 
+def test_build_reasoning_messages_flags_superseded():
+    """Superseded cases are flagged in the reasoning prompt."""
+    case = _case()
+    case.superseded_by = "Jones v. McDonough"
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "superseded by Jones v. McDonough" in user_text
+    assert "this authority has been overruled" in user_text
+
+
+def test_build_reasoning_messages_no_flag_when_not_superseded():
+    """Non-superseded cases (the default) get no superseded flag."""
+    case = _case()  # superseded_by="" by default
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "superseded by" not in user_text
+    assert "this authority has been overruled" not in user_text
+
+
 def test_build_reasoning_messages_prefers_deep_summary():
     """A deep-read summary replaces the holding/snippet in the reasoning prompt."""
     case = _case()
