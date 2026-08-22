@@ -1016,6 +1016,68 @@ def test_enrich_populates_legal_standard_from_generic_fetch(monkeypatch):
     assert case.legal_standard == "de novo"
 
 
+def test_enrich_populates_precedential_flag(monkeypatch):
+    """Non-precedential marker is detected during enrichment."""
+    case = CaseRecord(
+        title="NonPrecedential Case",
+        court="Board of Veterans' Appeals",
+        url="https://example.com/nonprec",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: extract_case_details(
+            "NOT FOR PUBLICATION. The appeal is denied."
+        ),
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.precedential is False
+
+
+def test_enrich_precedential_defaults_true_when_no_marker(monkeypatch):
+    """A normal opinion with no markers keeps precedential=True."""
+    case = CaseRecord(
+        title="Precedential Case",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/prec",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: extract_case_details(
+            "The Court holds that the Board erred. Remanded."
+        ),
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.precedential is True
+
+
+def test_enrich_precedential_from_courtlistener_api(monkeypatch):
+    """Precedential status is extracted from CourtListener API opinion text."""
+    case = CaseRecord(
+        title="CL NonPrec",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.courtlistener.com/opinion/1/nonprec/",
+        courtlistener_opinion_id="1",
+    )
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            return "This disposition is not precedential. The Court holds that the Board erred."
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider()
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.precedential is False
+
+
 def test_enrich_courtlistener_api_empty_text_degrades_gracefully(monkeypatch):
     case = CaseRecord(
         title="Empty opinion",

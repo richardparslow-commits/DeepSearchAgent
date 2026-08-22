@@ -767,6 +767,11 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             value = details.get(key) or getattr(case, key)
             if value:
                 setattr(case, key, value)
+        # Precedential is a bool: False means a non-precedential marker was
+        # found, which is a real signal that must not be swallowed by the
+        # truthiness check above (``if value`` skips ``False``).
+        if "precedential" in details:
+            case.precedential = bool(details["precedential"])
         # Populate appellant_role from enrichment so the contradiction detector
         # and impact notes are party-aware (e.g. "affirmed" when the Secretary
         # cross-appealed is favorable to the veteran, not unfavorable).
@@ -805,6 +810,7 @@ def _build_analysis(
     summary = "\n".join(
         f"- {case.title} ({case.court}) "
         f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
+        + (" [non-precedential]" if not case.precedential else "")
         for case in cases[:5]
     )
 

@@ -3,6 +3,7 @@ import pytest
 from va_legal_agent.models import CaseRecord
 from va_legal_agent.ranking import (
     COURT_REPRESENTATION_FLOOR,
+    NON_PRECEDENTIAL_PENALTY,
     WEIGHT_COMPLETENESS,
     WEIGHT_RECENCY,
     WEIGHT_RELEVANCE,
@@ -251,3 +252,57 @@ def test_select_with_court_floor_empty_and_zero_limit():
 
 def test_court_representation_floor_default():
     assert COURT_REPRESENTATION_FLOOR >= 1
+
+
+# ── Non-precedential penalty ─────────────────────────────────────────────────
+
+
+def test_score_case_penalises_non_precedential():
+    """A non-precedential case scores lower than an identical precedential one."""
+    prec = make_case("Prec", relevance=1, date="2020-01-01", holding="holding text")
+    non_prec = make_case("NonPrec", relevance=1, date="2020-01-01", holding="holding text")
+    non_prec.precedential = False
+
+    prec_score, prec_expl = score_case(prec, max_relevance=1, current_year=2026)
+    non_score, non_expl = score_case(non_prec, max_relevance=1, current_year=2026)
+
+    assert prec_score > non_score
+    assert prec_score == pytest.approx(non_score + NON_PRECEDENTIAL_PENALTY)
+    assert "non-precedential penalty" in non_expl
+    assert "non-precedential penalty" not in prec_expl
+
+
+def test_non_precedential_composite_lower_than_precedential():
+    """Within the same tier, non-precedential decisions rank below precedential ones."""
+    prec = make_case("Prec", relevance=10, date="2020-01-01", holding="holding")
+    non_prec = make_case("NonPrec", relevance=10, date="2020-01-01", holding="holding")
+    non_prec.precedential = False
+
+    ranked = rank_cases([non_prec, prec], current_year=2026)
+
+    assert ranked[0].title == "Prec"
+    assert ranked[1].title == "NonPrec"
+    assert ranked[0].composite_score > ranked[1].composite_score
+
+
+def test_non_precedential_does_not_drop_below_lower_tier():
+    """A non-precedential CAVC case still outranks a precedential BVA case."""
+    cavc_non = make_case("CAVC NonPrec", weight=2, relevance=10)
+    cavc_non.precedential = False
+    bva_prec = make_case(
+        "BVA Prec", court="Board of Veterans' Appeals", weight=1, relevance=10
+    )
+
+    ranked = rank_cases([bva_prec, cavc_non], current_year=2026)
+
+    assert ranked[0].title == "CAVC NonPrec"
+    assert ranked[0].authority_weight == 2
+    assert ranked[1].title == "BVA Prec"
+    assert ranked[1].authority_weight == 1
+
+
+def test_non_precedential_penalty_constants():
+    """Pin the penalty value so it doesn't drift."""
+    assert NON_PRECEDENTIAL_PENALTY == 0.25
+    assert NON_PRECEDENTIAL_PENALTY > 0
+    assert NON_PRECEDENTIAL_PENALTY < 1.0

@@ -403,7 +403,52 @@ def extract_citation_treatments(text: str) -> list[dict[str, str]]:
     return treatments
 
 
-# Maximum number of holding sentences to extract from a single decision.
+# ── Precedential-status detection ───────────────────────────────────────────
+
+# Markers that signal a decision is non-precedential (memorandum disposition,
+# unpublished order, or expressly designated as not citable).  BVA decisions
+# commonly carry "NOT FOR PUBLICATION" at the top; CAVC single-judge orders
+# use "NOT PRECEDENTIAL" or "Do not cite as precedent"; some federal circuits
+# use "unpublished".
+_PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bnot\s+for\s+publication\b",
+        r"\bnon[-\s]?precedential\b",
+        r"\bnot\s+precedential\b",
+        r"\bunpublished\b",
+        r"\bdo\s+not\s+cite\s+(?:this|as)\b",
+        r"\bdid\s+not\s+serve\s+as\s+precedent\b",
+        r"\bno\s+precedential\s+(?:value|effect)\b",
+        r"\b(?:this|the)\s+disposition\s+is\s+not\s+(?:precedential|[a-z]+\s+as\s+precedent)\b",
+        r"\bthis\s+order\b.*\bnot\s+(?:to\s+be|citable\s+as)\b",
+        r"\bsingle\s+judge\b.*\b(?:designation|disposition)\b",
+        r"\bmemorandum\s+decision\b",
+        r"\bnon-?citable\b",
+    )
+)
+
+
+def extract_precedential_status(text: str) -> bool:
+    """Return ``False`` when the text signals a non-precedential decision.
+
+    Veterans-law decisions come in two flavors: precedential (published, can
+    be cited as binding authority) and non-precedential (memorandum
+    dispositions, unpublished orders, single-judge designations — persuasive
+    at best).  A decision is deemed precedential (``True``) unless at least
+    one non-precedential marker is found in *text*.  Returns ``True`` for
+    empty text (assume precedential when no body is available).
+
+    The result feeds the ranking layer (a 0.25 penalty to ``composite_score``
+    for non-precedential decisions within their tier) and the interpretation
+    layer (flagging which holdings come from non-binding authority).
+    """
+    if not text or not text.strip():
+        return True
+    for regex in _PRECEDENTIAL_MARKERS:
+        if regex.search(text):
+            return False
+    return True
 # Veterans-law opinions often articulate multiple holdings (e.g. one on
 # nexus analysis and one on benefit-of-the-doubt); the cap bounds the field
 # size while still capturing the common case of 2–3 holdings.
@@ -623,4 +668,5 @@ def extract_case_details(text: str) -> dict[str, str | list[str]]:
         "appellant_role": extract_appellant_role(text),
         "legal_standard": extract_legal_standard(text),
         "citation_treatments": extract_citation_treatments(text),
+        "precedential": extract_precedential_status(text),
     }

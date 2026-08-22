@@ -283,6 +283,29 @@ def test_build_reasoning_messages_omit_citation_treatments_when_empty():
     assert "Treatment of prior authority" not in user_text
 
 
+def test_build_reasoning_messages_flags_non_precedential():
+    """Non-precedential decisions are flagged in the reasoning prompt."""
+    case = _case()
+    case.precedential = False
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "non-precedential" in user_text
+    assert "persuasive authority only" in user_text
+
+
+def test_build_reasoning_messages_no_flag_when_precedential():
+    """Precedential decisions (the default) get no flag."""
+    case = _case()  # precedential=True by default
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "non-precedential" not in user_text
+    assert "persuasive authority only" not in user_text
+
+
 def test_build_reasoning_messages_prefers_deep_summary():
     """A deep-read summary replaces the holding/snippet in the reasoning prompt."""
     case = _case()

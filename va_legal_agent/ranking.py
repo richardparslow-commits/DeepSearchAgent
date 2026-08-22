@@ -34,6 +34,14 @@ UNKNOWN_RECENCY = 0.5
 # and other persuasive tiers never surface even when they returned results.
 COURT_REPRESENTATION_FLOOR = 2
 
+# Penalty applied to ``composite_score`` when a decision is non-precedential
+# (memorandum disposition, unpublished order, single-judge designation).
+# Within its authority tier, a non-precedential decision ranks below a
+# precedential one of the same court with otherwise identical signals.
+# The value is subtracted from the composite, so the effective range is
+# is [-0.25, tier_weight + 0.75] rather than [0, tier_weight + 1.0].
+NON_PRECEDENTIAL_PENALTY = 0.25
+
 
 def _parse_year(decision_date: str) -> int | None:
     text = (decision_date or "").strip()
@@ -70,13 +78,16 @@ def score_case(
         + WEIGHT_RECENCY * recency
         + WEIGHT_COMPLETENESS * completeness
     )
+    penalty = NON_PRECEDENTIAL_PENALTY if not case.precedential else 0.0
+    adjusted = tier_score - penalty
     explanation = (
         f"tier score {tier_score:.2f} = "
         f"relevance {relevance:.2f} x {WEIGHT_RELEVANCE} + "
         f"recency {recency:.2f} x {WEIGHT_RECENCY} + "
         f"completeness {completeness:.2f} x {WEIGHT_COMPLETENESS}"
+        + (f" - non-precedential penalty {NON_PRECEDENTIAL_PENALTY}" if penalty else "")
     )
-    return tier_score, explanation
+    return adjusted, explanation
 
 
 def rank_cases(cases: list[CaseRecord], current_year: int | None = None) -> list[CaseRecord]:

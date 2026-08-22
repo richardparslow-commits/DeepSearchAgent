@@ -28,6 +28,13 @@ class CaseRecord(BaseModel):
     # the Secretary cross-appealed. The contradiction detector and impact
     # note layer use this to make outcome classification party-aware.
     appellant_role: str = ""
+    # Whether this decision is precedential (published, citable as binding
+    # authority). Non-precedential decisions (memorandum dispositions,
+    # unpublished orders, single-judge designations) carry a 0.25 composite
+    # penalty and are flagged in the report as persuasive rather than
+    # binding. Defaults to True (assume precedential when the body cannot
+    # be read).
+    precedential: bool = True
     # Legal standard of review extracted from the decision text, e.g.
     # "clear error", "de novo", "abuse of discretion", "substantial
     # evidence".  Knowing the standard tells you whether the case is

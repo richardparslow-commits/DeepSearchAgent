@@ -18,6 +18,7 @@ from va_legal_agent.fetch import (
     extract_judge,
     extract_legal_standard,
     extract_outcome,
+    extract_precedential_status,
     extract_statutes,
     fetch_case_details,
     fetch_full_text,
@@ -197,6 +198,7 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
         "appellant_role": "unknown",
         "legal_standard": "",
         "citation_treatments": [],
+        "precedential": True,
     }
 
 
@@ -379,6 +381,97 @@ def test_extract_legal_standard_returns_first_match_only():
     """Only the first matched standard is returned, not the rest."""
     text = "We review for clear error. The court also reviews de novo."
     assert extract_legal_standard(text) == "clear error"
+
+
+# ── extract_precedential_status ─────────────────────────────────────────────
+
+
+def test_extract_precedential_status_defaults_to_true():
+    """Empty and whitespace-only text is assumed precedential."""
+    assert extract_precedential_status("") is True
+    assert extract_precedential_status("   ") is True
+
+
+def test_extract_precedential_status_not_for_publication():
+    assert extract_precedential_status("NOT FOR PUBLICATION") is False
+    assert extract_precedential_status("not for publication") is False
+    assert extract_precedential_status("   NOT FOR PUBLICATION   ") is False
+
+
+def test_extract_precedential_status_non_precedential():
+    assert extract_precedential_status("NON-PRECEDENTIAL") is False
+    assert extract_precedential_status("nonprecedential") is False
+    assert extract_precedential_status("NOT PRECEDENTIAL") is False
+
+
+def test_extract_precedential_status_unpublished():
+    assert extract_precedential_status("unpublished") is False
+    assert extract_precedential_status("The decision is unpublished and cannot be cited.") is False
+
+
+def test_extract_precedential_status_do_not_cite():
+    assert extract_precedential_status("DO NOT CITE THIS CASE") is False
+    assert extract_precedential_status("Do not cite as precedent") is False
+
+
+def test_extract_precedential_status_memorandum_decision():
+    assert extract_precedential_status("MEMORANDUM DECISION") is False
+    assert extract_precedential_status("This is a memorandum decision of the Board.") is False
+
+
+def test_extract_precedential_status_single_judge():
+    assert extract_precedential_status("SINGLE JUDGE DESIGNATION") is False
+    assert extract_precedential_status("single judge disposition") is False
+
+
+def test_extract_precedential_status_no_precedential_value():
+    assert extract_precedential_status("no precedential value") is False
+    assert extract_precedential_status("No precedential effect.") is False
+
+
+def test_extract_precedential_status_non_citable():
+    assert extract_precedential_status("non-citable") is False
+    assert extract_precedential_status("noncitable") is False
+
+
+def test_extract_precedential_status_this_order_not_citable():
+    assert extract_precedential_status("This order is not to be cited as precedent.") is False
+    assert extract_precedential_status("This order is not citable as binding.") is False
+
+
+def test_extract_precedential_status_normal_opinion_is_precedential():
+    """A normal published opinion without any non-precedential marker is precedential."""
+    text = (
+        "The Court holds that the Board erred in weighing the evidence. "
+        "The decision is vacated and remanded. See 38 U.S.C. § 5107."
+    )
+    assert extract_precedential_status(text) is True
+
+
+def test_extract_precedential_status_citation_containing_not_is_precedential():
+    """A citation containing the word 'not' is not a non-precedential marker."""
+    text = "See Notgrass v. Wilkie, 30 Vet. App. 123 (2018)."
+    assert extract_precedential_status(text) is True
+
+
+def test_extract_case_details_includes_precedential():
+    details = extract_case_details(
+        "The Board erred in weighing the evidence. The decision is vacated and remanded."
+    )
+    assert details["precedential"] is True
+
+
+def test_extract_case_details_flags_non_precedential():
+    details = extract_case_details(
+        "NOT FOR PUBLICATION. The Board erred in weighing the evidence."
+    )
+    assert details["precedential"] is False
+
+
+def test_extract_precedential_status_did_not_serve_as_precedent():
+    assert extract_precedential_status(
+        "The decision did not serve as precedent."
+    ) is False
 
 
 # ---------------------------------------------------------------------------
