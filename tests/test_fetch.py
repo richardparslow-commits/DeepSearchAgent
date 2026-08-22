@@ -15,6 +15,7 @@ from va_legal_agent.fetch import (
     extract_holding_sentence,
     extract_holding_sentences,
     extract_judge,
+    extract_legal_standard,
     extract_outcome,
     extract_statutes,
     fetch_case_details,
@@ -193,6 +194,7 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
         "statutes": [],
         "outcome": "",
         "appellant_role": "unknown",
+        "legal_standard": "",
     }
 
 
@@ -318,6 +320,63 @@ def test_extract_case_details_includes_appellant_role():
     details = extract_case_details(text)
     assert details["appellant_role"] == "secretary"
     assert details["outcome"] == "affirmed"
+
+
+def test_extract_case_details_includes_legal_standard():
+    details = extract_case_details("We review the Board's findings for clear error.")
+    assert details["legal_standard"] == "clear error"
+
+
+def test_extract_case_details_no_legal_standard():
+    details = extract_case_details("The veteran served in Vietnam.")
+    assert details["legal_standard"] == ""
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Clear error variants
+        ("We review the Board's findings for clear error.", "clear error"),
+        ("The Board's finding was not clearly erroneous.", "clear error"),
+        ("Under the clearly erroneous standard, we affirm.", "clear error"),
+        # De novo variants
+        ("We apply de novo review to the legal conclusions.", "de novo"),
+        ("Legal questions are reviewed de novo.", "de novo"),
+        ("This court reviews de novo questions of law.", "de novo"),
+        # Abuse of discretion
+        ("The agency's decision was not an abuse of discretion.", "abuse of discretion"),
+        # Arbitrary and capricious
+        ("The rule was arbitrary and capricious.", "arbitrary and capricious"),
+        ("The rulemaking was arbitrary, capricious, and unlawful.", "arbitrary and capricious"),
+        # Substantial evidence
+        ("There is substantial evidence to support the finding.", "substantial evidence"),
+        ("A reasonable mind might accept the evidence.", "substantial evidence"),
+        # Harmless error
+        ("The error was harmless.", "harmless error"),
+        ("No reversible error was committed.", "harmless error"),
+        # Prejudicial error
+        ("The error was a prejudicial error.", "prejudicial error"),
+        ("The error was so significant as to have affected the outcome.", "prejudicial error"),
+        # Deferential
+        ("We will not disturb the Board's credibility determination.", "deferential (will not disturb)"),
+        # Plenary review
+        ("We exercise plenary review over the statutory question.", "plenary review"),
+        # Independent review
+        ("We exercise independent review of the administrative record.", "independent review"),
+        # No standard
+        ("Procedural history only.", ""),
+        ("", ""),
+        ("   ", ""),
+    ],
+)
+def test_extract_legal_standard(text, expected):
+    assert extract_legal_standard(text) == expected
+
+
+def test_extract_legal_standard_returns_first_match_only():
+    """Only the first matched standard is returned, not the rest."""
+    text = "We review for clear error. The court also reviews de novo."
+    assert extract_legal_standard(text) == "clear error"
 
 
 @pytest.mark.parametrize(

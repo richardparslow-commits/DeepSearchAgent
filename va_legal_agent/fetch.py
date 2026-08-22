@@ -115,7 +115,77 @@ _CFR_PATTERN = re.compile(
 # "38 U.S.C.A. § "), so annotated cites can be labeled apart from "38 U.S.C.".
 _USCA_PREFIX = re.compile(r"\b38\s*U\.?\s*S\.?\s*C\.?\s*A\b", re.IGNORECASE)
 # Checked in priority order; most appellate dispositions lead with vacatur/remand.
+# Procedural-outcome signals scanned by extract_outcome.
 OUTCOME_SIGNALS: tuple[str, ...] = ("vacated", "remanded", "affirmed", "dismissed", "granted", "denied")
+
+# Legal-standard-of-review patterns scanned by extract_legal_standard.
+# Veterans-law opinions routinely name the standard in a specific phrase
+# ("we review ... for clear error", "de novo review", "abuse of discretion",
+# etc.), and the first match is returned because later occurrences are
+# usually restatements, not independent standards.  For harmless-error
+# variants (no reversible error), both the "harmless" and "reversible"
+# forms are captured, but only "harmless error" is returned — the
+# next-segment post-processing replaces "no reversible error" and
+# "reversible error was not" with "harmless error" so the vocabulary is
+# consistent across the corpus.
+_STANDARD_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # "We review ... for clear error" / "under the clear error standard"
+    (re.compile(r"\b(?:for|under)\s+(?:the\s+)?clear(?:ly)?\s+erroneous\b", re.IGNORECASE), "clear error"),
+    (re.compile(r"\bclear(?:ly)?\s+erroneous\s+standard\b", re.IGNORECASE), "clear error"),
+    (re.compile(r"\bclear(?:ly)?\s+error\b", re.IGNORECASE), "clear error"),
+    # "de novo review" / "review ... de novo"
+    (re.compile(r"\bde\s+novo\s+review\b", re.IGNORECASE), "de novo"),
+    (re.compile(r"\breview(?:ed|s)?\s+de\s+novo\b", re.IGNORECASE), "de novo"),
+    # "abuse of discretion"
+    (re.compile(r"\babuse\s+of\s+discretion\b", re.IGNORECASE), "abuse of discretion"),
+    # "arbitrary and capricious" / "arbitrary, capricious"
+    (re.compile(r"\barbitrary,?\s+(?:and|,)?\s*capricious\b", re.IGNORECASE), "arbitrary and capricious"),
+    # "substantial evidence" (the Board's factual findings standard)
+    (re.compile(r"\bsubstantial\s+evidence\b", re.IGNORECASE), "substantial evidence"),
+    # "harmless error" / "no reversible error"
+    (re.compile(r"\bno\s+reversible\s+error\b", re.IGNORECASE), "harmless error"),
+    (re.compile(r"\bharmless\s+error\b", re.IGNORECASE), "harmless error"),
+    (re.compile(r"\b(?:was|is|be|are)\s+harmless\b", re.IGNORECASE), "harmless error"),
+    # "prejudicial error"
+    (re.compile(r"\bprejudicial\s+error\b", re.IGNORECASE), "prejudicial error"),
+    # "the Board's finding is not clearly erroneous" / "not clearly erroneous"
+    (re.compile(r"\bnot\s+clear(?:ly)?\s+erroneous\b", re.IGNORECASE), "clear error"),
+    # "we will not disturb" (deferential standard)
+    (re.compile(r"\b(?:we\s+)?will\s+not\s+disturb\b", re.IGNORECASE), "deferential (will not disturb)"),
+    # "plenary review"
+    (re.compile(r"\bplenary\s+review\b", re.IGNORECASE), "plenary review"),
+    # "independent review"
+    (re.compile(r"\bindependent\s+review\b", re.IGNORECASE), "independent review"),
+    # "reasonable mind might accept" (tag for substantial evidence)
+    (re.compile(
+        r"\breasonable\s+mind\s+(?:might|could|can|would)\s+accept\b",
+        re.IGNORECASE,
+    ), "substantial evidence"),
+    # "so significant as to have affected the outcome" (tag for prejudicial error)
+    (re.compile(
+        r"\bso\s+significant\s+as\s+to\s+(?:have\s+)?affect(?:ed)?\s+the\s+outcome\b",
+        re.IGNORECASE,
+    ), "prejudicial error"),
+)
+
+
+def extract_legal_standard(text: str) -> str:
+    """Return the legal standard of review the court applied, or ``''``.
+
+    Veterans-law opinions routinely name the standard in a boilerplate
+    paragraph near the beginning of the analysis: "We review the Board's
+    factual findings for clear error and its legal conclusions de novo."
+    The first match is returned because later occurrences are usually
+    restatements of the same standard, not independent standards.
+    """
+    if not text or not text.strip():
+        return ""
+    for pattern, label in _STANDARD_REVIEW_PATTERNS:
+        if pattern.search(text):
+            return label
+    return ""
+
+
 
 # Party-role detection: who appealed? In VA law, "affirmed" means very
 # different things depending on the appellant. When the veteran appeals a
@@ -446,4 +516,5 @@ def extract_case_details(text: str) -> dict[str, str | list[str]]:
         "statutes": extract_statutes(text),
         "outcome": extract_outcome(text),
         "appellant_role": extract_appellant_role(text),
+        "legal_standard": extract_legal_standard(text),
     }

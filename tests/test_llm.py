@@ -236,6 +236,27 @@ def test_build_reasoning_messages_include_outcome_and_statutes():
     assert "Statutes: 38 U.S.C. 5107" in user_text
 
 
+def test_build_reasoning_messages_include_legal_standard_when_present():
+    """Legal standard is surfaced in the reasoning prompt when extracted."""
+    case = _case()
+    case.legal_standard = "clear error"
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Standard of review: clear error" in user_text
+
+
+def test_build_reasoning_messages_omit_legal_standard_when_empty():
+    """Empty legal_standard is omitted from the prompt (no empty line)."""
+    case = _case()  # legal_standard defaults to ""
+
+    messages = _build_reasoning_messages("tinnitus", "Compensation", [case], 700)
+    user_text = messages[1]["content"]
+
+    assert "Standard of review" not in user_text
+
+
 def test_build_reasoning_messages_prefers_deep_summary():
     """A deep-read summary replaces the holding/snippet in the reasoning prompt."""
     case = _case()

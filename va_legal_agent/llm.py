@@ -91,6 +91,7 @@ def _build_reasoning_messages(
             # summary; otherwise fall back to the holding, then the snippet.
             + f"   Holding: {case.deep_summary or case.holding or case.snippet or '(no holding extracted)'}"
             + (f"\n   Outcome: {case.outcome}" if case.outcome else "")
+            + (f"\n   Standard of review: {case.legal_standard}" if case.legal_standard else "")
             + (f"\n   Statutes: {', '.join(case.statutes)}" if case.statutes else "")
         )
         for index, case in enumerate(cases, start=1)

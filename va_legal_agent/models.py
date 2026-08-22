@@ -28,6 +28,12 @@ class CaseRecord(BaseModel):
     # the Secretary cross-appealed. The contradiction detector and impact
     # note layer use this to make outcome classification party-aware.
     appellant_role: str = ""
+    # Legal standard of review extracted from the decision text, e.g.
+    # "clear error", "de novo", "abuse of discretion", "substantial
+    # evidence".  Knowing the standard tells you whether the case is
+    # analogous: a "clear error" affirmance is a weaker precedent than a
+    # "de novo" reversal for the same statute.
+    legal_standard: str = ""
     authority_rank: int = 0
     authority_weight: int = 0
     relevance_score: int = 0

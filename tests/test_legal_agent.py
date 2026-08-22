@@ -4,7 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
 
-from va_legal_agent.fetch import extract_holding_sentence, extract_statutes
+from va_legal_agent.fetch import extract_case_details, extract_holding_sentence, extract_statutes
 from va_legal_agent.interpretation import InterpretiveAnalysis
 from va_legal_agent.llm import ReasoningResult
 from va_legal_agent.models import CaseRecord, Contradiction, PrincipleFinding
@@ -927,6 +927,51 @@ def test_enrich_uses_courtlistener_api_when_opinion_id_present(monkeypatch):
     assert scraped == []  # the WAF-challenged frontend is never scraped
     assert case.holding  # holding extracted from API full text
     assert case.statutes == ["38 U.S.C. § 5107"]
+
+
+def test_enrich_populates_legal_standard_from_courtlistener_api(monkeypatch):
+    """Legal standard is extracted from the API opinion text and stored on the case."""
+    case = CaseRecord(
+        title="Clear Error Case",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.courtlistener.com/opinion/1/test/",
+        courtlistener_opinion_id="1",
+    )
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            return (
+                "We review the Board's factual findings for clear error "
+                "and its legal conclusions de novo. We hold that the "
+                "Board failed to provide adequate reasons and bases."
+            )
+
+    monkeypatch.setattr("va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider())
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.legal_standard == "clear error"
+    assert case.holding
+
+
+def test_enrich_populates_legal_standard_from_generic_fetch(monkeypatch):
+    """Legal standard is extracted from plain-page enrichment too."""
+    case = CaseRecord(
+        title="De Novo Case",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/de-novo",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: extract_case_details(
+            "We apply de novo review. The Board's decision is vacated."
+        ),
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.legal_standard == "de novo"
 
 
 def test_enrich_courtlistener_api_empty_text_degrades_gracefully(monkeypatch):

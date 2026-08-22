@@ -763,7 +763,7 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
         except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
             logger.warning("Could not fetch details for %s: %s", case.url, exc)
             continue
-        for key in ("citation", "decision_date", "holding", "docket", "judge", "outcome"):
+        for key in ("citation", "decision_date", "holding", "docket", "judge", "outcome", "legal_standard"):
             value = details.get(key) or getattr(case, key)
             if value:
                 setattr(case, key, value)
