@@ -28,7 +28,7 @@ on:
 jobs:
   mutate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v5
 
@@ -58,24 +58,22 @@ jobs:
 
       - name: Run the mutation pass (remaining modules)
         run: |
-          for spec in \
-            "search.py tests/test_search.py" \
-            "reliability.py tests/test_reliability.py tests/test_legal_agent.py" \
-            "fetch.py tests/test_fetch.py tests/test_legal_agent.py" \
-            "deep_read.py tests/test_deep_read.py tests/test_legal_agent.py" \
-            "agent.py tests/test_legal_agent.py tests/test_research.py" \
-            "planning.py tests/test_planning.py" \
-            "batch.py tests/test_batch.py tests/test_cli.py" \
-            "config.py tests/test_config.py tests/test_cli.py" \
-            "models.py tests/test_cli.py tests/test_batch.py" \
-            "topics.py tests/test_topics.py tests/test_legal_agent.py" \
-            "interpretation.py tests/test_interpretation.py tests/test_topics.py" \
-            "llm.py tests/test_llm.py" \
-            "impact.py tests/test_impact.py" \
-            "ranking.py tests/test_ranking.py"; do
-            .venv/bin/python scripts/mutmut_pass.py $$spec
-          done
-        timeout-minutes: 10
+          set -e
+          .venv/bin/python scripts/mutmut_pass.py search.py tests/test_search.py
+          .venv/bin/python scripts/mutmut_pass.py reliability.py tests/test_reliability.py tests/test_legal_agent.py
+          .venv/bin/python scripts/mutmut_pass.py fetch.py tests/test_fetch.py tests/test_legal_agent.py
+          .venv/bin/python scripts/mutmut_pass.py deep_read.py tests/test_deep_read.py tests/test_legal_agent.py
+          .venv/bin/python scripts/mutmut_pass.py agent.py tests/test_legal_agent.py tests/test_research.py
+          .venv/bin/python scripts/mutmut_pass.py planning.py tests/test_planning.py
+          .venv/bin/python scripts/mutmut_pass.py batch.py tests/test_batch.py tests/test_cli.py
+          .venv/bin/python scripts/mutmut_pass.py config.py tests/test_config.py tests/test_cli.py
+          .venv/bin/python scripts/mutmut_pass.py models.py tests/test_cli.py tests/test_batch.py
+          .venv/bin/python scripts/mutmut_pass.py topics.py tests/test_topics.py tests/test_legal_agent.py
+          .venv/bin/python scripts/mutmut_pass.py interpretation.py tests/test_interpretation.py tests/test_topics.py
+          .venv/bin/python scripts/mutmut_pass.py llm.py tests/test_llm.py
+          .venv/bin/python scripts/mutmut_pass.py impact.py tests/test_impact.py
+          .venv/bin/python scripts/mutmut_pass.py ranking.py tests/test_ranking.py
+        timeout-minutes: 15
 
       - name: Enforce the kill-property baseline
         run: .venv/bin/python scripts/check_mutation_baseline.py
