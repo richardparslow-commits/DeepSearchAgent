@@ -28,6 +28,7 @@ from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
+from .fetch import extract_holding_sentences
 from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
 from .search import (
     DuckDuckGoProvider,
@@ -133,6 +134,76 @@ def extract_courtlistener_opinion_id(url: str) -> int | None:
     match = _OPINION_ID_PATTERN.search(url or "")
     return int(match.group(1)) if match else None
 
+
+# Court-header boilerplate markers — when these dominate the snippet and no
+# sentence-ending punctuation appears, the snippet is just the opinion's
+# header (court name, docket number, caption), not substantive text.
+_HEADER_MARKERS = (
+    "united states court of appeals",
+    "court of appeals for veterans claims",
+    "supreme court of the united states",
+    "no.",  # docket number line
+    "case:",  # pagination line
+    "document:",  # pagination line
+    "note: this disposition",
+    "before:",  # panel listing
+)
+
+
+def _is_header_snippet(snippet: str) -> bool:
+    """True when *snippet* is court-header boilerplate, not holding text.
+
+    The search endpoint returns a 500-char excerpt from the *beginning* of
+    the opinion text, which is always the court header (name, docket,
+    caption, panel). A snippet with no sentence-ending punctuation (``.?!``)
+    in the first 500 chars — or one where every line is a header marker —
+    carries no usable text for relevance scoring or holding extraction.
+    """
+    if not snippet:
+        return True
+    lowered = snippet.lower()
+    # Has real sentences → not a header snippet.
+    if any(ch in lowered[:500] for ch in (".", "?", "!")):
+        # But a snippet can have header punctuation (docket "No.", "Case:")
+        # without real sentences. Check that at least one line isn't a marker.
+        lines = [line.strip().lower() for line in snippet.splitlines() if line.strip()]
+        non_header = [line for line in lines if not any(m in line for m in _HEADER_MARKERS)]
+        return len(non_header) == 0
+    return True
+
+
+def _extract_holding_excerpt(body: str, max_chars: int = 500) -> str:
+    """Extract a holding-centered excerpt from the full opinion body.
+
+    Returns up to *max_chars* centered on the first holding sentence (a
+    sentence matching the holding pattern from :func:`extract_holding_sentences`).
+    Falls back to the first substantive paragraph (skipping headers) when no
+    explicit holding is found. Returns ``''`` when the body is empty.
+    """
+    if not body or not body.strip():
+        return ""
+    # Reuse the fetch layer's holding extraction to find the first holding.
+    holdings = extract_holding_sentences(body)
+    if holdings:
+        # Find the holding's position in the body to center the excerpt.
+        first = holdings[0]
+        pos = body.find(first)
+        if pos < 0:
+            return first[:max_chars]
+        start = max(0, pos - 50)  # a little context before the holding
+        end = min(len(body), start + max_chars)
+        excerpt = body[start:end].strip()
+        # Clean to a single line so the snippet slot stays compact.
+        return re.sub(r"\s+", " ", excerpt)
+    # No explicit holding: find the first substantive paragraph (skip lines
+    # that are pure headers, pagination, or panel listings).
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    for para in paragraphs:
+        lowered = para.lower()
+        if any(m in lowered for m in _HEADER_MARKERS) or len(para.split()) < 6:
+            continue
+        return re.sub(r"\s+", " ", para)[:max_chars]
+    return ""
 
 def _parse_retry_after(value: str | None) -> float | None:
     """Parse a ``Retry-After`` header into seconds, or None if absent/invalid.
@@ -299,7 +370,36 @@ class CourtListenerProvider:
                 break
         if not results:
             raise SearchError(f"No search results returned for query: {query}")
+        # Enrich header-only snippets with a holding-centered excerpt from
+        # the opinion body so relevance scoring and the interpretation layer
+        # see real text, not court boilerplate. The search endpoint's snippet
+        # starts at the beginning of the text (always a header), so a result
+        # that discusses the issue deeply in the body but not the header gets
+        # a relevance score of 0 and is truncated out of results. Only
+        # opinion-bearing results (those with an opinion id) are enriched,
+        # and only when the snippet looks like a header (no sentence-ending
+        # punctuation in the first 500 chars).
+        for result in results:
+            snippet = result.get("snippet") or ""
+            opinion_id = result.get("courtlistener_opinion_id") or ""
+            if not opinion_id or not _is_header_snippet(snippet):
+                continue
+            result["snippet"] = self._enrich_header_snippet(opinion_id, snippet)
         return results
+
+    def _enrich_header_snippet(self, opinion_id: str, header: str) -> str:
+        """Replace a header-only snippet with a holding excerpt from the body.
+
+        Best-effort: returns *header* unchanged when the opinion detail fetch
+        fails or yields no usable excerpt, so the search result keeps its
+        header snippet instead of raising.
+        """
+        try:
+            body = self.fetch_opinion_text(int(opinion_id))
+            excerpt = _extract_holding_excerpt(body)
+            return excerpt if excerpt else header
+        except (SearchError, ValueError):
+            return header
 
     def _get_opinion(self, opinion_id: int) -> dict[str, str] | None:
         """Fetch one opinion (plus its cluster and docket) into a result dict.

@@ -2296,6 +2296,184 @@ def test_courtlistener_raises_when_no_results(monkeypatch):
         CourtListenerProvider().search("tinnitus")
 
 
+def test_courtlistener_enriches_header_snippet_with_holding_excerpt(monkeypatch):
+    """A header-only snippet is enriched with a holding excerpt from the body.
+
+    Without this, a case whose opinion body discusses tinnitus extensively but
+    whose snippet is just the court header gets a relevance score of 0 (the
+    issue keyword doesn't appear in the header) and is truncated out of results.
+    """
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    search_item = _cl_result(
+        opinions=[{"snippet": "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\nNo. 18-3721", "id": 12345}]
+    )
+    opinion_detail = _cl_opinion_detail(
+        plain_text=(
+            "The veteran served in Vietnam. The Board denied service connection "
+            "for tinnitus. We hold that the Board erred in its nexus analysis "
+            "by failing to consider the medical opinion. 38 U.S.C. § 1110 applies."
+        )
+    )
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        if "/search/" in url:
+            return FakeResponse({"results": [search_item]})
+        # Opinion detail endpoint
+        return FakeResponse(opinion_detail)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert len(results) == 1
+    # The snippet is now the holding excerpt, not the header.
+    assert "hold" in results[0]["snippet"].lower()
+    assert "tinnitus" in results[0]["snippet"].lower()
+    assert "COURT OF APPEALS" not in results[0]["snippet"]
+
+
+def test_courtlistener_keeps_substantive_snippet_unenriched(monkeypatch):
+    """A snippet that already has real text is NOT enriched (no wasted API call)."""
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    substantive = "We hold that service connection for tinnitus requires a nexus."
+    search_item = _cl_result(
+        opinions=[{"snippet": substantive, "id": 12345}]
+    )
+    opinion_calls: list[str] = []
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        if "/search/" in url:
+            return FakeResponse({"results": [search_item]})
+        opinion_calls.append(url)  # should never be called
+        return FakeResponse(_cl_opinion_detail(plain_text="body"))
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert results[0]["snippet"] == substantive
+    assert opinion_calls == []
+
+
+def test_courtlistener_header_enrichment_best_effort_on_failure(monkeypatch):
+    """When the opinion detail fetch fails, the header snippet is kept."""
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    header = "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\nNo. 18-3721"
+    search_item = _cl_result(opinions=[{"snippet": header, "id": 12345}])
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        if "/search/" in url:
+            return FakeResponse({"results": [search_item]})
+        raise requests.ConnectionError("network down")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    results = CourtListenerProvider().search("tinnitus")
+
+    # Header snippet is kept when enrichment fails (best-effort).
+    assert results[0]["snippet"] == header
+
+
+def test_courtlistener_header_enrichment_falls_back_to_first_paragraph(monkeypatch):
+    """When the body has no explicit holding, the first substantive paragraph
+    is used as the excerpt (covering the paragraph-fallback path)."""
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    header = "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\nNo. 18-3721"
+    search_item = _cl_result(opinions=[{"snippet": header, "id": 12345}])
+    opinion_detail = _cl_opinion_detail(
+        plain_text=(
+            "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\n"
+            "No. 18-3721\n\n"
+            "The veteran served in Vietnam and developed tinnitus during service. "
+            "The Board denied the claim without addressing the medical evidence."
+        )
+    )
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        if "/search/" in url:
+            return FakeResponse({"results": [search_item]})
+        return FakeResponse(opinion_detail)
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    results = CourtListenerProvider().search("tinnitus")
+
+    # The snippet is now the first substantive paragraph, not the header.
+    assert "vietnam" in results[0]["snippet"].lower()
+    assert "COURT OF APPEALS" not in results[0]["snippet"]
+
+
+def test_courtlistener_header_enrichment_handles_bad_opinion_id(monkeypatch):
+    """A non-numeric opinion id (ValueError) is caught, header kept."""
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    header = "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\nNo. 18-3721"
+    # Override the mapped opinion_id to a non-numeric string via the
+    # opinions[].id field set to a non-int value.
+    search_item = _cl_result(opinions=[{"snippet": header, "id": "not-a-number"}])
+
+    def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        return FakeResponse({"results": [search_item]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    results = CourtListenerProvider().search("tinnitus")
+    assert results[0]["snippet"] == header
+
+
+def test_extract_holding_excerpt_holding_not_found_by_find():
+    """When extract_holding_sentences finds a holding but body.find doesn't
+    (whitespace normalization changes the text), the holding is returned as-is."""
+    from va_legal_agent.providers import _extract_holding_excerpt
+    # The holding pattern normalizes \s+ to single spaces, so a body with
+    # newlines between words produces a holding that body.find can't locate.
+    body = "We hold that\n\nthe Board erred in its nexus analysis."
+    excerpt = _extract_holding_excerpt(body)
+    assert "hold" in excerpt.lower()
+    assert "nexus" in excerpt.lower()
+
+
+def test_extract_holding_excerpt_no_substantive_paragraph():
+    """When the body has only header markers and short fragments, returns ''."""
+    from va_legal_agent.providers import _extract_holding_excerpt
+    body = "UNITED STATES COURT OF APPEALS\n\nNo.\n\nCase: 23-24"
+    assert _extract_holding_excerpt(body) == ""
+
+
+def test_is_header_snippet_detects_court_header():
+    from va_legal_agent.providers import _is_header_snippet
+    assert _is_header_snippet("") is True
+    assert _is_header_snippet("UNITED STATES COURT OF APPEALS\n\nNo. 18-3721") is True
+    assert _is_header_snippet("We hold that the Board erred.") is False
+    assert _is_header_snippet("Case: 23-24  Page: 1  Document: 40") is True
+
+
+def test_extract_holding_excerpt_finds_holding():
+    from va_legal_agent.providers import _extract_holding_excerpt
+    body = (
+        "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\n"
+        "No. 18-3721\n\n"
+        "The veteran served in Vietnam. "
+        "We hold that the Board erred in its nexus analysis. "
+        "38 U.S.C. § 1110 applies."
+    )
+    excerpt = _extract_holding_excerpt(body)
+    assert "hold" in excerpt.lower()
+    assert "nexus" in excerpt.lower()
+
+
+def test_extract_holding_excerpt_falls_back_to_first_paragraph():
+    from va_legal_agent.providers import _extract_holding_excerpt
+    body = (
+        "UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS\n\nNo. 18-3721\n\n"
+        "The veteran served in Vietnam and developed tinnitus during service. "
+        "The Board denied the claim without addressing the medical evidence."
+    )
+    excerpt = _extract_holding_excerpt(body)
+    assert "vietnam" in excerpt.lower()
+    assert excerpt  # non-empty
+
+
+def test_extract_holding_excerpt_empty_body():
+    from va_legal_agent.providers import _extract_holding_excerpt
+    assert _extract_holding_excerpt("") == ""
+    assert _extract_holding_excerpt("   ") == ""
+
+
 def test_bva_sets_page_param_when_paged(monkeypatch):
     captured = {}
 
