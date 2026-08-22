@@ -4,6 +4,7 @@ from va_legal_agent.interpretation import (
     _build_element_library,
     _outcome_direction,
     build_interpretive_analysis,
+    build_statute_outcome_matrix,
     detect_claim_elements,
     detect_contradictions,
     extract_principle_findings,
@@ -22,10 +23,11 @@ def _case(
     statutes: list[str] | None = None,
     deep_summary: str = "",
     appellant_role: str = "",
+    court: str = "",
 ) -> CaseRecord:
     return CaseRecord(
         title=title,
-        court="Court of Appeals for Veterans Claims",
+        court=court or "Court of Appeals for Veterans Claims",
         url=f"https://example.com/{title.lower().replace(' ', '-')}",
         snippet=snippet,
         holding=holding,
@@ -946,3 +948,155 @@ def test_weighted_coverage_element_carries_weight_in_model():
     weights = {element.name: element.weight for element in result.detected_elements}
     assert weights["nexus"] == 0.40
     assert weights["service connection"] == 0.30
+
+
+# ── Statute × Court × Outcome matrix ─────────────────────────────────────────
+
+
+def test_statute_outcome_matrix_empty_cases():
+    assert build_statute_outcome_matrix([]) == []
+
+
+def test_statute_outcome_matrix_single_statute_two_opposite_outcomes():
+    cases = [
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    assert len(rows) == 1
+    assert rows[0].statute == "38 U.S.C. § 5107(b)"
+    assert rows[0].favorable == 1
+    assert rows[0].unfavorable == 1
+    assert rows[0].unknown == 0
+
+
+def test_statute_outcome_matrix_multiple_courts():
+    cases = [
+        _case("CAVC Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case(
+            "Fed Cir Denied",
+            court="U.S. Court of Appeals for the Federal Circuit",
+            outcome="denied",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    # Two rows: one per court. Sorted by court authority order.
+    assert len(rows) == 2
+    assert rows[0].court == "Court of Appeals for Veterans Claims"
+    assert rows[1].court == "U.S. Court of Appeals for the Federal Circuit"
+    assert rows[0].favorable == 1
+    assert rows[1].unfavorable == 1
+
+
+def test_statute_outcome_matrix_multiple_statutes_same_court():
+    cases = [
+        _case(
+            "Multi Statutes",
+            outcome="granted",
+            statutes=["38 U.S.C. § 5107(b)", "38 U.S.C. § 7104(d)(1)"],
+        ),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    assert len(rows) == 2
+    # Sorted lexicographically within the same court.
+    assert rows[0].statute < rows[1].statute
+    for row in rows:
+        assert row.favorable == 1
+
+
+def test_statute_outcome_matrix_unknown_outcome_counts_as_unknown():
+    cases = [
+        _case("Unknown Outcome", outcome="", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    assert len(rows) == 1
+    assert rows[0].unknown == 1
+    assert rows[0].favorable == 0
+    assert rows[0].unfavorable == 0
+
+
+def test_statute_outcome_matrix_skips_cases_without_statutes():
+    cases = [
+        _case("No Statutes", outcome="granted", statutes=[], snippet="no statutory citation here"),
+    ]
+
+    assert build_statute_outcome_matrix(cases) == []
+
+
+def test_statute_outcome_matrix_falls_back_to_text_statutes():
+    # Unenriched cases: statutes pulled from snippet text.
+    cases = [
+        _case(
+            "Text Case",
+            outcome="granted",
+            statutes=[],
+            snippet="under 38 U.S.C. § 5107(b)",
+        ),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    assert len(rows) == 1
+    assert rows[0].statute == "38 U.S.C. § 5107(b)"
+    assert rows[0].favorable == 1
+
+
+def test_statute_outcome_matrix_sorts_court_by_ascending_authority():
+    cases = [
+        _case(
+            "Fed Cir",
+            court="U.S. Court of Appeals for the Federal Circuit",
+            outcome="denied",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+        _case("BVA", court="Board of Veterans' Appeals", outcome="granted",
+              statutes=["38 U.S.C. § 5107(b)"]),
+        _case("CAVC", outcome="vacated", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    courts = [row.court for row in rows]
+    assert courts == [
+        "Board of Veterans' Appeals",
+        "Court of Appeals for Veterans Claims",
+        "U.S. Court of Appeals for the Federal Circuit",
+    ]
+
+
+def test_statute_outcome_matrix_appears_in_build_interpretive_analysis(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert len(result.statute_outcome_matrix) == 1
+    assert result.statute_outcome_matrix[0].favorable == 1
+    assert result.statute_outcome_matrix[0].unfavorable == 1
+
+
+def test_statute_outcome_matrix_unknown_court_sort():
+    """An unknown court sorts after all known courts in the matrix."""
+    cases = [
+        _case("Some Court", outcome="granted", statutes=["38 U.S.C. § 5107(b)"],
+              court="Some County District Court"),
+        _case("CAVC", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    # CAVC (known) sorts before the unknown court.
+    assert rows[0].court == "Court of Appeals for Veterans Claims"
+    assert rows[1].court == "Some County District Court"

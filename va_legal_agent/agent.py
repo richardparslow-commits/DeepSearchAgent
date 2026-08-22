@@ -901,6 +901,7 @@ def _build_analysis(
         search_telemetry=rolled_telemetry,
         search_flags=recall_flags(rolled_telemetry),
         courtlistener_quota=_last_courtlistener_quota(telemetry),
+        statute_outcome_matrix=interpretive.statute_outcome_matrix,
     )
 
 

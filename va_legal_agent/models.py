@@ -103,6 +103,16 @@ class Contradiction(BaseModel):
     case_b: str
 
 
+class StatuteOutcomeRow(BaseModel):
+    """One cell in the statute × court × outcome matrix."""
+
+    statute: str
+    court: str
+    favorable: int = 0
+    unfavorable: int = 0
+    unknown: int = 0
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -130,6 +140,12 @@ class LegalAnalysis(BaseModel):
     # left. ``None`` when CourtListener is not a configured provider or the
     # guard is disabled.
     courtlistener_quota: dict[str, object] | None = None
+    # Cross-domain synthesis: a statute × court × outcome matrix showing
+    # how the retrieved cases break down. Each row is one (statute, court)
+    # pair with counts of favorable, unfavorable, and unknown-direction
+    # outcomes. This is the most useful single artifact for assessing the
+    # strength of a legal position under a given statute across courts.
+    statute_outcome_matrix: list[StatuteOutcomeRow] = Field(default_factory=list)
 
 
 class ImpactProfile(BaseModel):

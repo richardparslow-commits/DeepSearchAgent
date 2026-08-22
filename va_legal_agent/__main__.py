@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
 from .config import get_settings
-from .models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding
+from .models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding, StatuteOutcomeRow
 from .providers import (
     recall_flags,
     resolve_search_providers,
@@ -277,6 +277,8 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         _bullets("Next steps", analysis.next_steps),
         _bullets("Strengths", analysis.strengths + _search_strengths(analysis.search_telemetry)),
         _bullets("Gaps", analysis.gaps + _search_gaps(analysis.search_telemetry)),
+        ([_matrix_header()] + _matrix_rows(analysis.statute_outcome_matrix))
+        if analysis.statute_outcome_matrix else [],
         [f"Coverage score: {analysis.coverage_score:.2f}"],
         [f"Interpretation source: {analysis.interpretation_source}"],
         _bullets("Search telemetry", _telemetry_lines(analysis.search_telemetry)),
@@ -342,14 +344,27 @@ def _finding_label(finding: PrincipleFinding) -> str:
     return finding.principle + (f" (see: {sources})" if sources else "")
 
 
+def _matrix_header() -> str:
+    """Column headers for the statute × court × outcome matrix."""
+    return "Statute-outcome matrix:\n  Statute                                                     Court          Fav  Unf  Unk"
+
+
+def _matrix_rows(rows: list[StatuteOutcomeRow]) -> list[str]:
+    """Format the matrix rows as aligned columns."""
+    return [
+        f"  {row.statute:<60} {row.court:<15} {row.favorable:>3}  {row.unfavorable:>3}  {row.unknown:>3}"
+        for row in rows
+    ]
+
+
 def _analysis_to_csv(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a single-row CSV with a header."""
     header = [
         "run_id", "issue", "coverage_score", "interpretation_source", "summary",
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
-        "gaps", "detected_elements", "principle_findings", "search_telemetry",
-        "courtlistener_quota",
+        "gaps", "detected_elements", "principle_findings",
+        "statute_outcome_matrix", "search_telemetry", "courtlistener_quota",
     ]
     row = [
         analysis.run_id,
@@ -367,6 +382,12 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         " | ".join(analysis.gaps),
         " | ".join(_element_label(e) for e in analysis.detected_elements),
         " | ".join(_finding_label(f) for f in analysis.principle_findings),
+        json.dumps(
+            [{"statute": r.statute, "court": r.court,
+              "favorable": r.favorable, "unfavorable": r.unfavorable,
+              "unknown": r.unknown} for r in analysis.statute_outcome_matrix],
+            sort_keys=True,
+        ),
         json.dumps(analysis.search_telemetry, sort_keys=True),
         json.dumps(analysis.courtlistener_quota, sort_keys=True),
     ]

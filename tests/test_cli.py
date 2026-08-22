@@ -1415,3 +1415,29 @@ def test_cli_main_guard_runs_end_to_end(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "service connection for tinnitus" in out
+
+
+def test_matrix_rendering_in_text_output():
+    """The matrix header and rows render as aligned columns in text output."""
+    from va_legal_agent.__main__ import _analysis_to_text, _matrix_header
+    from va_legal_agent.models import StatuteOutcomeRow
+
+    analysis = _sample_analysis()
+    analysis.statute_outcome_matrix = [
+        StatuteOutcomeRow(
+            statute="38 U.S.C. § 5107(b)",
+            court="Court of Appeals for Veterans Claims",
+            favorable=3,
+            unfavorable=1,
+        ),
+    ]
+
+    text = _analysis_to_text(analysis)
+
+    assert "Statute-outcome matrix:" in text
+    assert "38 U.S.C. § 5107(b)" in text
+    assert "Court of Appeals for Veterans Claims" in text
+    assert "3" in text
+    assert "1" in text
+    # The header line is present.
+    assert _matrix_header() in text

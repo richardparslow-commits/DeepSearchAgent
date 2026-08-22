@@ -17,7 +17,7 @@ from .config import get_settings
 from .fetch import extract_statutes
 from .impact import detect_outcome
 from .llm import interpret_cases, reason_cases
-from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding
+from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding, StatuteOutcomeRow
 from .topics import PRINCIPLE_PATTERNS, TOPICS
 
 @dataclass(frozen=True)
@@ -149,6 +149,7 @@ class InterpretiveAnalysis:
     gaps: list[str] = field(default_factory=list)
     coverage_score: float = 0.0
     interpretation_source: str = "template"
+    statute_outcome_matrix: list[StatuteOutcomeRow] = field(default_factory=list)
 
 
 def _case_text(case: CaseRecord) -> str:
@@ -342,6 +343,60 @@ def uncovered_element_names(issue: str, cases: list[CaseRecord]) -> tuple[str, .
     )
 
 
+# ── Statute × Court × Outcome matrix ────────────────────────────────────────
+
+_COURT_ORDER = ["Board of Veterans' Appeals", "Court of Appeals for Veterans Claims",
+                "U.S. Court of Appeals for the Federal Circuit", "Supreme Court of the United States"]
+
+
+def _court_sort_key(court: str) -> int:
+    """Map a court name to a sort priority (lower = higher authority)."""
+    try:
+        return _COURT_ORDER.index(court)
+    except ValueError:
+        return len(_COURT_ORDER)  # unknown courts sort last
+
+
+def build_statute_outcome_matrix(cases: list[CaseRecord]) -> list[StatuteOutcomeRow]:
+    """Build a statute × court × outcome matrix from the retrieved cases.
+
+    Groups cases by (statute, court) and counts favorable (+1), unfavorable
+    (-1), and unknown (0) outcomes using the same party-aware direction
+    classifier as the contradiction detector. Statutes are extracted from
+    the enriched field first, falling back to text scanning. Unknown or
+    mixed-outcome cases count toward the ``unknown`` column.
+
+    The result is sorted: by court in ascending authority order (BVA first,
+    SCOTUS last), then by statute name lexicographically, so the matrix
+    reads naturally as a hierarchy.
+    """
+    if not cases:
+        return []
+    outcomes = [detect_outcome(case) for case in cases]
+    directions = [
+        _outcome_direction(outcome, case.appellant_role)
+        for outcome, case in zip(outcomes, cases)
+    ]
+    # (statute, court) → [direction_int, ...]
+    buckets: dict[tuple[str, str], list[int]] = {}
+    for case, direction in zip(cases, directions):
+        for statute in _case_statutes(case):
+            key = (statute, case.court)
+            buckets.setdefault(key, []).append(direction)
+
+    rows: list[StatuteOutcomeRow] = []
+    for (statute, court), dirs in sorted(buckets.items(),
+                                          key=lambda kv: (_court_sort_key(kv[0][1]), kv[0][0])):
+        rows.append(StatuteOutcomeRow(
+            statute=statute,
+            court=court,
+            favorable=sum(1 for d in dirs if d == 1),
+            unfavorable=sum(1 for d in dirs if d == -1),
+            unknown=sum(1 for d in dirs if d == 0),
+        ))
+    return rows
+
+
 def _template_interpretation(
     issue: str,
     claim_type: str,
@@ -470,4 +525,5 @@ def build_interpretive_analysis(
         gaps=gaps,
         coverage_score=coverage_score,
         interpretation_source=source,
+        statute_outcome_matrix=build_statute_outcome_matrix(cases),
     )
