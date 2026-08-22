@@ -403,16 +403,22 @@ def _raise_if_no_results(
 
 
 def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
-    """Dedupe *cases* by (title, url) and, when citation is available,
-    additionally by (citation, decision_date).
+    """Dedupe *cases* by (title, url), (citation, decision_date), and—as
+    a fallback when citation is missing—by URL alone.
 
     The same decision often appears at multiple URLs (CourtListener, CAVC,
     law-blog mirrors) with slightly different titles.  The citation + date
     pair is the stable identity of an opinion; the secondary key catches the
-    same case across mirrors so the result diversity isn't diluted.
+    same case across mirrors.
+
+    The reverse problem also occurs: when citation is unavailable, two
+    provider passes can return the same URL with different parsed titles
+    (``"Smith"`` vs ``"Smith v. Wilkie"``).  The URL-only fallback catches
+    these same-page duplicates without needing a citation.
     """
     deduped: list[CaseRecord] = []
     seen: set[tuple[str, str]] = set()
+    seen_urls: set[str] = set()
     for case in sorted(cases, key=lambda c: (c.authority_weight, c.relevance_score), reverse=True):
         key = (case.title, case.url)
         if key in seen:
@@ -426,6 +432,13 @@ def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
             if citation_key in seen:
                 continue
             seen.add(citation_key)
+        # Citation fallback: when citation isn't available to establish
+        # the opinion's canonical identity, dedupe by URL alone so that
+        # the same page with different parsed titles doesn't appear twice.
+        elif case.url and case.url in seen_urls:
+            continue
+        if case.url:
+            seen_urls.add(case.url)
         seen.add(key)
         deduped.append(case)
     return deduped

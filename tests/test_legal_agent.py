@@ -2778,6 +2778,101 @@ def test_dedupe_no_citations():
     assert len(result) == 2
 
 
+def test_dedupe_citation_fallback_same_url_different_title_no_citation():
+    """Same URL with different titles and no citation — deduped by URL
+    fallback (the reverse-mirror problem)."""
+    cases = [
+        CaseRecord(title="Smith", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=7),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+    assert result[0].title == "Smith"  # highest relevance_score
+
+
+def test_dedupe_citation_fallback_same_url_different_title_with_citation():
+    """Same URL, different titles, but citation IS available — the secondary
+    (citation, date) key catches it before the URL fallback fires."""
+    cases = [
+        CaseRecord(title="Smith", court="CAVC", url="https://a.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=7),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+    assert result[0].title == "Smith"
+
+
+def test_dedupe_citation_fallback_empty_url_not_tracked():
+    """Cases with empty URLs are not added to seen_urls and don't collide
+    with other empty-URL cases."""
+    cases = [
+        CaseRecord(title="A v. VA", court="BVA", url=""),
+        CaseRecord(title="B v. VA", court="BVA", url=""),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2  # different titles, empty URLs don't collide
+
+
+def test_dedupe_citation_dup_does_not_break_remaining_cases():
+    """A duplicate citation must only skip that case, not abort the loop — a
+    later, distinct case still needs to be retained."""
+    cases = [
+        CaseRecord(title="Smith", court="CAVC", url="https://a.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith (Mirror)", court="CAVC", url="https://b.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=7),
+        CaseRecord(title="Jones v. VA", court="CAVC", url="https://a.com/jones",
+                   citation="31 Vet.App. 2", decision_date="2019-01-15",
+                   authority_weight=2, relevance_score=5),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2  # Smith (deduped) + Jones (distinct, kept)
+    assert result[0].title == "Smith"
+    assert result[1].title == "Jones v. VA"
+
+
+def test_dedupe_url_fallback_dup_does_not_break_remaining_cases():
+    """A same-URL fallback duplicate must skip only that case, not abort the
+    loop — a later distinct case is still retained."""
+    cases = [
+        CaseRecord(title="Smith", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=7),
+        CaseRecord(title="Jones v. VA", court="CAVC", url="https://a.com/jones",
+                   authority_weight=2, relevance_score=5),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 2  # Smith (deduped) + Jones (distinct, kept)
+    assert result[0].title == "Smith"
+    assert result[1].title == "Jones v. VA"
+
+
+def test_dedupe_primary_key_catches_same_url_different_citation():
+    """Same URL+title but DIFFERENT citations: the URL fallback is skipped
+    (citation present) and the (citation, date) key differs, so only the
+    primary (title, url) key can dedupe it."""
+    cases = [
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   citation="31 Vet.App. 5", decision_date="2019-01-15",
+                   authority_weight=2, relevance_score=8),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1  # identical title+url → deduped by primary key
+    assert result[0].citation == "30 Vet.App. 1"
+
+
 def test_fetch_cases_no_sleep_when_delay_zero(monkeypatch):
     sleeps: list[float] = []
     _stub_search(monkeypatch, results=[])  # SEARCH_DELAY_SECONDS=0
