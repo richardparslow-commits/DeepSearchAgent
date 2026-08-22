@@ -17,7 +17,7 @@ import re
 from .config import get_settings
 from .fetch import (
     FetchError,
-    extract_holding_sentence,
+    extract_holding_sentences,
     extract_outcome,
     extract_statutes,
     fetch_full_text,
@@ -68,9 +68,9 @@ def chunk_text(text: str, max_chars: int) -> list[str]:
 def _digest_chunk(chunk: str) -> str:
     """Map step: extract the chunk's salient facts deterministically."""
     parts: list[str] = []
-    holding = extract_holding_sentence(chunk)
-    if holding:
-        parts.append(f"Holding: {holding}")
+    holdings = extract_holding_sentences(chunk)
+    if holdings:
+        parts.append(f"Holdings: {' '.join(holdings)}")
     outcome = extract_outcome(chunk)
     if outcome:
         parts.append(f"Outcome: {outcome}")

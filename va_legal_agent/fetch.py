@@ -118,6 +118,7 @@ _USCA_PREFIX = re.compile(r"\b38\s*U\.?\s*S\.?\s*C\.?\s*A\b", re.IGNORECASE)
 OUTCOME_SIGNALS: tuple[str, ...] = ("vacated", "remanded", "affirmed", "dismissed", "granted", "denied")
 _HOLDING_PATTERN = re.compile(
     r"\b(?:we|this court|the court|the board|this decision|the panel)\s+"
+    r"(?:\w+\s+)?"  # allow one optional adverb ("also", "further", "therefore")
     r"(?:hold|holds|held|conclude|concludes|concluded|find|finds|found|erred|errs)\b",
     re.IGNORECASE,
 )
@@ -180,16 +181,32 @@ def extract_outcome(text: str, limit: int = 2) -> str:
     return " and ".join(hits[:limit])
 
 
-def extract_holding_sentence(text: str) -> str:
-    """Return the first explicit holding sentence found in the text, or ''.
+# Maximum number of holding sentences to extract from a single decision.
+# Veterans-law opinions often articulate multiple holdings (e.g. one on
+# nexus analysis and one on benefit-of-the-doubt); the cap bounds the field
+# size while still capturing the common case of 2–3 holdings.
+_MAX_HOLDING_SENTENCES = 5
 
-    The holding is cut at the first semicolon, which introduces a separate
-    disposition (e.g. "...; remand follows.") rather than the holding itself.
-    Fragments that carry no substantive content ("We hold that so.") are
-    skipped so the first real holding is returned.
+
+def extract_holding_sentences(text: str) -> list[str]:
+    """Return all explicit holding sentences found in the text (up to a cap).
+
+    Each holding is cut at the first semicolon (which introduces a separate
+    disposition rather than the holding itself), must carry substantive
+    content beyond the "We hold" lead-in (``_MIN_HOLDING_WORDS``), and is
+    sentence-cased. Fragments like ``"We hold that so."`` are skipped so the
+    first *real* holding is returned, not a placeholder. Returns ``[]`` when
+    no holding sentence is found.
+
+    Multiple holdings are returned in document order: e.g. a decision that
+    says ``"We hold that the Board erred in its nexus analysis. We also hold
+    that the benefit-of-the-doubt rule was not applied."`` yields both
+    sentences so the interpretation layer sees the full analytical picture
+    instead of only the first.
     """
     normalized = re.sub(r"\s+", " ", text).strip()
     sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'“])", normalized)
+    holdings: list[str] = []
     for sentence in sentences:
         if not _HOLDING_PATTERN.search(sentence):
             continue
@@ -199,8 +216,21 @@ def extract_holding_sentence(text: str) -> str:
             cleaned += "."
         if len(cleaned.split()) < _MIN_HOLDING_WORDS:
             continue
-        return cleaned[0].upper() + cleaned[1:]
-    return ""
+        holdings.append(cleaned[0].upper() + cleaned[1:])
+        if len(holdings) >= _MAX_HOLDING_SENTENCES:
+            break
+    return holdings
+
+
+def extract_holding_sentence(text: str) -> str:
+    """Return the first explicit holding sentence found in the text, or ''.
+
+    Backward-compatible wrapper around :func:`extract_holding_sentences` that
+    returns only the first holding, preserving the original single-return
+    contract for callers that haven't been upgraded yet.
+    """
+    holdings = extract_holding_sentences(text)
+    return holdings[0] if holdings else ""
 
 
 def _extract_pdf_text(content: bytes, max_pages: int = 4) -> str:
@@ -355,10 +385,15 @@ def extract_case_details(text: str) -> dict[str, str | list[str]]:
     provider when it extracts details from API-delivered opinion text (the
     frontend page is AWS-WAF-challenged and cannot be scraped).
     """
+    holdings = extract_holding_sentences(text)
     return {
         "citation": extract_citation(text),
         "decision_date": extract_decision_date(text),
-        "holding": extract_holding_sentence(text),
+        # Join all holding sentences so downstream consumers (the
+        # interpretation layer, the LLM reasoning prompt, and the coverage
+        # scan) see every articulated holding, not just the first. The
+        # sentences are already individually period-terminated.
+        "holding": " ".join(holdings),
         "docket": extract_docket(text),
         "judge": extract_judge(text),
         "statutes": extract_statutes(text),

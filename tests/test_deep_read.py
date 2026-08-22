@@ -106,7 +106,7 @@ def test_digest_chunk_extracts_holding_outcome_statutes():
 
     # Pinned exactly: the join separator and field order are the contract.
     assert digest == (
-        "Holding: The Court holds that the Board erred in weighing the evidence.; "
+        "Holdings: The Court holds that the Board erred in weighing the evidence.; "
         "Outcome: vacated and remanded; "
         "Statutes: 38 U.S.C. § 5107, 38 C.F.R. § 3.303"
     )
@@ -230,7 +230,7 @@ def test_deep_read_case_uses_courtlistener_api_text(monkeypatch):
 
     result = deep_read_case(case, "tinnitus")
 
-    assert "Holding: The Court holds that the Board erred" in result
+    assert "Holdings: The Court holds that the Board erred" in result
     assert fetched_urls == []  # the WAF-blocked URL was never scraped
     assert seen_ids == [12345]  # the string id is coerced to int for the API
 
@@ -257,7 +257,7 @@ def test_deep_read_case_falls_back_to_url_when_api_text_empty(monkeypatch):
 
     result = deep_read_case(case, "tinnitus")
 
-    assert "Holding: The Court holds that the Board erred" in result
+    assert "Holdings: The Court holds that the Board erred" in result
     assert fetched_urls == [case.url]
 
 
@@ -283,7 +283,7 @@ def test_deep_read_case_falls_back_to_url_on_api_error(monkeypatch, caplog):
 
     result = deep_read_case(case, "tinnitus")
 
-    assert "Holding: The Court holds that the Board erred" in result
+    assert "Holdings: The Court holds that the Board erred" in result
     assert fetched_urls == [case.url]
     assert any(
         r.getMessage().startswith("CourtListener opinion text fetch failed")
@@ -324,7 +324,7 @@ def test_deep_read_case_synthesizes_full_text(monkeypatch):
 
     result = deep_read_case(_case(), "tinnitus")
 
-    assert "Holding: The Court holds that the Board erred" in result
+    assert "Holdings: The Court holds that the Board erred" in result
     assert "Outcome: vacated and remanded" in result
 
 
@@ -372,7 +372,7 @@ def test_deep_read_cases_sets_summary_in_place(monkeypatch):
     deep_read_cases(cases, "tinnitus")
 
     assert all(case.deep_summary for case in cases)
-    assert "Holding: The Court holds that the Board erred" in cases[0].deep_summary
+    assert "Holdings: The Court holds that the Board erred" in cases[0].deep_summary
 
 
 def test_deep_read_cases_forwards_issue_to_deep_read_case(monkeypatch):

@@ -7,10 +7,12 @@ from va_legal_agent.fetch import (
     FetchError,
     _extract_pdf_text,
     _read_response_body,
+    extract_case_details,
     extract_citation,
     extract_decision_date,
     extract_docket,
     extract_holding_sentence,
+    extract_holding_sentences,
     extract_judge,
     extract_outcome,
     extract_statutes,
@@ -471,6 +473,78 @@ def test_extract_holding_sentence_rsplit_uses_first_semicolon():
     # Only the FIRST semicolon cuts the holding; rsplit would cut at the last.
     text = "We hold that the Board erred in this matter; Y; Z."
     assert extract_holding_sentence(text) == "We hold that the Board erred in this matter."
+
+
+def test_extract_holding_sentences_returns_all_holdings():
+    # A decision with two holdings must return both, not just the first.
+    text = (
+        "We hold that the Board erred in its nexus analysis. "
+        "We also hold that the benefit of the doubt rule was not applied."
+    )
+    holdings = extract_holding_sentences(text)
+    assert len(holdings) == 2
+    assert holdings[0] == "We hold that the Board erred in its nexus analysis."
+    assert holdings[1] == "We also hold that the benefit of the doubt rule was not applied."
+
+
+def test_extract_holding_sentences_single_holding():
+    # One holding returns a one-element list (not a string).
+    text = "The Court holds that the Board erred in weighing the evidence."
+    holdings = extract_holding_sentences(text)
+    assert holdings == ["The Court holds that the Board erred in weighing the evidence."]
+
+
+def test_extract_holding_sentences_no_holdings():
+    assert extract_holding_sentences("No holdings here at all.") == []
+
+
+def test_extract_holding_sentences_skips_fragments_keeps_reals():
+    # Fragments below the word threshold are skipped, real holdings are kept.
+    text = (
+        "We hold that so. "  # fragment
+        "We hold that the Board erred in weighing the evidence. "
+        "We also find that the duty to assist was violated."
+    )
+    holdings = extract_holding_sentences(text)
+    assert len(holdings) == 2
+    assert "Board erred" in holdings[0]
+    assert "duty to assist" in holdings[1]
+
+
+def test_extract_holding_sentences_caps_at_max():
+    # A decision with many holdings returns at most _MAX_HOLDING_SENTENCES.
+    from va_legal_agent.fetch import _MAX_HOLDING_SENTENCES
+
+    parts = [f"We hold that element number {i} was properly analyzed." for i in range(10)]
+    holdings = extract_holding_sentences(" ".join(parts))
+    assert len(holdings) == _MAX_HOLDING_SENTENCES
+    # Document order is preserved.
+    assert "element number 0" in holdings[0]
+
+
+def test_extract_holding_sentences_semicolon_cuts_each():
+    # Each holding is independently cut at its first semicolon.
+    text = (
+        "We hold that the nexus was adequate; see also Jones. "
+        "We hold that the Board erred in its analysis; remand follows."
+    )
+    holdings = extract_holding_sentences(text)
+    assert len(holdings) == 2
+    assert holdings[0] == "We hold that the nexus was adequate."
+    assert holdings[1] == "We hold that the Board erred in its analysis."
+
+
+def test_extract_case_details_joins_multiple_holdings():
+    # The public extract_case_details joins all holdings into one holding field.
+    text = (
+        "We hold that the Board erred in its nexus analysis. "
+        "We also hold that the benefit of the doubt rule was not applied."
+    )
+    details = extract_case_details(text)
+    assert details["holding"] == (
+        "We hold that the Board erred in its nexus analysis. "
+        "We also hold that the benefit of the doubt rule was not applied."
+    )
 
 
 class _FakePdfPage:
