@@ -62,6 +62,426 @@ def _sample_analysis() -> LegalAnalysis:
     )
 
 
+def _usage_payload(
+    daily_used=0, daily_limit=125, daily_reset="2026-08-18T05:12:28+00:00"
+):
+    """A realistic api-usage payload (user scope, day/hour/minute rows)."""
+    return {
+        "current_usage": [
+            {
+                "scope": "user",
+                "rate": "125/day",
+                "used": daily_used,
+                "limit": daily_limit,
+                "remaining": max(daily_limit - daily_used, 0),
+                "window_seconds": 86400,
+                "reset_at": daily_reset,
+                "blocked": False,
+            },
+            {
+                "scope": "user",
+                "rate": "50/hour",
+                "used": 0,
+                "limit": 50,
+                "remaining": 50,
+                "window_seconds": 3600,
+                "reset_at": None,
+                "blocked": False,
+            },
+            {
+                "scope": "user",
+                "rate": "5/min",
+                "used": 0,
+                "limit": 5,
+                "remaining": 5,
+                "window_seconds": 60,
+                "reset_at": None,
+                "blocked": False,
+            },
+        ],
+        "historical_usage": {"2026-07-17": 75, "total": 123},
+        "membership": None,
+        "processing_delay": 0.4,
+    }
+
+
+def _expected_dry_run_requests(issue: str) -> int:
+    """The worst-case query count a dry run should derive from the planner."""
+    from va_legal_agent.config import get_settings
+    from va_legal_agent.interpretation import detect_claim_elements
+    from va_legal_agent.planning import decompose_issue, plan_queries
+
+    settings = get_settings()
+    queries = plan_queries(decompose_issue(issue, "Compensation"))
+    elements = [spec.name for spec in detect_claim_elements(issue)]
+    worst = len(queries) + settings.search_max_refinement_rounds * (len(elements) or 1)
+    return worst * settings.search_query_variants
+
+
+def test_dry_run_reports_plan_without_searching(capsys, monkeypatch):
+    """--dry-run prints the cost plan and never executes a search."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "text", "tinnitus service connection"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Dry run - no searches were executed" in out
+    assert "Issue: tinnitus service connection" in out
+    assert "Plan: " in out
+    assert "duckduckgo" in out
+    assert "Requests per provider" in out
+    assert "Wall-time estimate" in out
+    assert "Verdict: unchecked" in out
+    assert "Top cases" not in out
+
+
+def test_dry_run_json_shape_has_verdict_and_math(capsys, monkeypatch):
+    """JSON dry-run exposes the estimate fields and consistent arithmetic."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["verdict"] == "unchecked"
+    assert report["courtlistener"] is None
+    row = report["providers"][0]
+    assert row["name"] == "duckduckgo"
+    assert row["requests"] == _expected_dry_run_requests("tinnitus")
+    assert (
+        report["total_queries_worst_case"]
+        == report["base_queries"] + report["refinement_rounds"] * report["gap_queries_per_round"]
+    )
+    assert report["deep_read"]["enabled"] is False
+    assert report["total_requests_estimate"] == sum(
+        r["requests"] for r in report["providers"]
+    )
+    assert report["wall_time_seconds"]["nominal"] >= 0
+    assert report["wall_time_seconds"]["worst_case"] >= 0
+
+
+def test_dry_run_deep_read_counts_opinion_fetches(capsys, monkeypatch):
+    """Deep-read adds its opinion-detail fetches to the request totals."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--dry-run",
+            "--output-format",
+            "json",
+            "--deep-read",
+            "--deep-read-limit",
+            "4",
+            "--max-results",
+            "6",
+            "tinnitus",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["deep_read"]["enabled"] is True
+    assert report["deep_read"]["opinion_fetches"] == 4
+    assert report["total_requests_estimate"] == _expected_dry_run_requests(
+        "tinnitus"
+    ) + 4
+
+
+def test_dry_run_deep_read_fetches_capped_by_max_results(capsys, monkeypatch):
+    """Opinion-detail fetches never exceed the number of cases kept."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--dry-run",
+            "--output-format",
+            "json",
+            "--deep-read",
+            "--deep-read-limit",
+            "9",
+            "--max-results",
+            "3",
+            "tinnitus",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["deep_read"]["opinion_fetches"] == 3
+
+
+def test_dry_run_courtlistener_quota_proceed(capsys, monkeypatch):
+    """A healthy live usage payload yields a PROCEED verdict with numbers."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus service connection"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["verdict"] == "proceed"
+    cl = report["courtlistener"]
+    assert cl["guard_enabled"] is True
+    assert cl["daily"]["remaining"] == 125
+    assert cl["daily"]["limit"] == 125
+    assert cl["hourly"]["remaining"] == 50
+    assert cl["minute"]["remaining"] == 5
+    assert cl["abort_reasons"] == []
+    assert int(cl["requests_estimated"]) <= 125
+
+
+def test_dry_run_courtlistener_aborts_when_daily_budget_short(capsys, monkeypatch):
+    """A nearly-exhausted daily window yields an ABORT verdict."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus service connection"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=120),
+    )
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["verdict"] == "abort"
+    assert report["courtlistener"]["abort_reasons"]
+    assert "daily window" in report["courtlistener"]["abort_reasons"][0]
+
+
+def test_dry_run_guard_disabled_skips_live_usage_fetch(capsys, monkeypatch):
+    """COURTLISTENER_USAGE_GUARD=0 never calls the api-usage endpoint."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
+
+    def _should_not_be_called():
+        raise AssertionError("usage endpoint must not be fetched with the guard off")
+
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", _should_not_be_called
+    )
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["verdict"] == "unchecked"
+    assert report["courtlistener"]["guard_enabled"] is False
+
+
+def test_dry_run_reports_usage_fetch_failure(capsys, monkeypatch):
+    """An unreadable usage endpoint degrades to unchecked with the reason."""
+    from va_legal_agent.search import SearchError
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: (_ for _ in ()).throw(SearchError("api-usage 401: no token")),
+    )
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["verdict"] == "unchecked"
+    assert "401" in report["courtlistener"]["error"]
+
+
+def test_dry_run_text_renders_full_abort_report(capsys, monkeypatch):
+    """Text dry-run surfaces deep-read, both quota windows, and the abort verdict."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--dry-run",
+            "--output-format",
+            "text",
+            "--deep-read",
+            "--deep-read-limit",
+            "6",
+            "--max-results",
+            "10",
+            "tinnitus service connection",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=120),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Deep-read: enabled - up to 6 opinion-detail fetches" in out
+    assert "daily:  5 / 125 remaining (used 120)" in out
+    assert "hourly: 50 / 50 remaining" in out
+    assert "minute: 5 / 5 remaining" in out
+    assert "would abort:" in out
+    assert "daily window" in out
+    assert "minute window" in out
+    assert "Verdict: ABORT" in out
+
+
+def test_dry_run_text_renders_proceed_verdict(capsys, monkeypatch):
+    """Healthy windows render the PROCEED verdict with the fitted count."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "text", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "fits the planned" in out
+    assert "Verdict: PROCEED" in out
+
+
+def test_dry_run_text_guard_disabled_and_error_paths(capsys, monkeypatch):
+    """Guard-off and unreadable-usage text paths render their notes."""
+    from va_legal_agent.search import SearchError
+
+    # Guard disabled: the note is printed and the endpoint is never hit.
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "text", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
+
+    def _should_not_be_called():
+        raise AssertionError("usage endpoint must not be fetched with the guard off")
+
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", _should_not_be_called
+    )
+    main()
+    out = capsys.readouterr().out
+    assert "COURTLISTENER_USAGE_GUARD=0 disables the pre-flight quota check" in out
+    assert "Verdict: unchecked" in out
+
+    # Guard on but the endpoint fails: the error is surfaced, verdict unchecked.
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "text", "tinnitus"],
+    )
+    monkeypatch.delenv("COURTLISTENER_USAGE_GUARD", raising=False)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: (_ for _ in ()).throw(SearchError("api-usage 401: no token")),
+    )
+    main()
+    out = capsys.readouterr().out
+    assert "could not read usage: api-usage 401" in out
+    assert "Verdict: unchecked" in out
+
+
+def test_dry_run_text_sparse_report_branches():
+    """Text renderer tolerates empty daily/hourly/minute blocks and no note."""
+    from va_legal_agent.__main__ import _dry_run_to_text
+
+    report = {
+        "issue": "tinnitus",
+        "claim_type": "Compensation",
+        "base_queries": 8,
+        "refinement_rounds": 1,
+        "gap_queries_per_round": 1,
+        "total_queries_worst_case": 9,
+        "providers": [
+            {
+                "name": "courtlistener",
+                "base_queries": 8,
+                "gap_queries": 1,
+                "variants": 3,
+                "pages": 1,
+                "requests": 27,
+                "pacing_seconds": 12.0,
+            }
+        ],
+        "deep_read": {"enabled": False, "limit": 0, "opinion_fetches": 0},
+        "total_requests_estimate": 27,
+        "wall_time_seconds": {"nominal": 324.0, "worst_case": 648.0},
+        "courtlistener": {
+            "configured": True,
+            "guard_enabled": True,
+            "requests_estimated": 27,
+            "daily": {},
+            "hourly": None,
+            "minute": None,
+            "abort_reasons": [],
+        },
+        "verdict": "proceed",
+    }
+    out = _dry_run_to_text(report)
+    assert "fits the planned 27 request(s)." in out
+    assert "Verdict: PROCEED" in out
+
+    # Guard disabled without a note: no daily/minute lines are rendered.
+    report["courtlistener"] = {"configured": True, "guard_enabled": False}
+    report["verdict"] = "unchecked"
+    out = _dry_run_to_text(report)
+    assert "CourtListener quota (live api-usage endpoint)" in out
+    assert "daily:" not in out
+    assert "Verdict: unchecked" in out
+
+
+def test_format_wall_seconds_unit(capsys):
+    """Wall-time formatting covers seconds, minutes, and hours."""
+    from va_legal_agent.__main__ import _format_wall_seconds
+
+    assert _format_wall_seconds(5) == "5s"
+    assert _format_wall_seconds(95) == "1.6 min"
+    assert _format_wall_seconds(7200) == "2.00 h"
+
+
+def test_estimate_missing_hourly_row_yields_none(capsys, monkeypatch):
+    """A usage payload without an hourly row degrades to hourly=None."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--output-format", "json", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    payload = _usage_payload()
+    payload["current_usage"] = [
+        row for row in payload["current_usage"] if "/hour" not in str(row["rate"])
+    ]
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: payload
+    )
+
+    main()
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["courtlistener"]["hourly"] is None
+
+
 def test_show_config_prints_settings_without_issue(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "7")

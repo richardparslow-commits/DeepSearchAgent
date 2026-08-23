@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from dataclasses import asdict
@@ -15,12 +16,18 @@ from urllib.parse import urlsplit, urlunsplit
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
 from .config import get_settings
+from .interpretation import detect_claim_elements
 from .models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding, StatuteOutcomeRow
+from .planning import decompose_issue, plan_queries
 from .providers import (
+    courtlistener_daily_budget,
+    courtlistener_minute_budget,
+    fetch_courtlistener_usage,
     recall_flags,
     resolve_search_providers,
     validate_search_providers,
 )
+from .search import SearchError
 
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 _LOG_FORMATS = ("text", "json")
@@ -408,6 +415,294 @@ def render_analysis(analysis: LegalAnalysis, output_format: str) -> str:
     return analysis.model_dump_json(indent=2)
 
 
+# ---------------------------------------------------------------------------
+# Dry-run estimation (--dry-run): report request cost, quota impact, and
+# wall time for an issue without executing any searches. All math is
+# deterministic -- no network call unless CourtListener is configured and
+# the usage guard is enabled, in which case the live api-usage endpoint is
+# read (which has its own throttle and never burns the search budget).
+# ---------------------------------------------------------------------------
+
+_HOUR_RATE_RE = re.compile(r"^\d+/hour$")
+
+
+def _hourly_budget(usage: dict[str, object]) -> dict[str, object] | None:
+    """The user-scope hourly rate row from an api-usage payload, or None."""
+    for row in usage.get("current_usage") or []:
+        if (
+            isinstance(row, dict)
+            and row.get("scope") == "user"
+            and _HOUR_RATE_RE.match(str(row.get("rate", "")))
+        ):
+            return row
+    return None
+
+
+def _pacing_interval_seconds(provider: str) -> float:
+    """The enforced gap between sequential requests to *provider*.
+
+    Mirrors ``_throttle``: the tighter of the global
+    ``SEARCH_MIN_INTERVAL_SECONDS`` gap and the per-provider
+    ``SEARCH_MAX_RPM_BY_PROVIDER`` budget (60/N seconds).
+    """
+    settings = get_settings()
+    rpm = settings.search_max_rpm_by_provider.get(provider, 0)
+    return max(settings.search_min_interval_seconds, 60.0 / rpm if rpm > 0 else 0.0)
+
+
+def _worst_case_backoff_seconds() -> float:
+    """Worst-case retry backoff for a single request (all retries, max jitter)."""
+    settings = get_settings()
+    total = 0.0
+    for attempt in range(1, settings.search_retry_attempts + 1):
+        bounded = min(
+            settings.search_backoff_base_seconds * (2**attempt),
+            settings.search_backoff_max_seconds,
+        )
+        total += bounded * 1.25  # worst-case jitter multiplier
+    return total
+
+
+def estimate_issue_run(
+    issue: str,
+    claim_type: str = "Compensation",
+    max_results: int = 10,
+    deep_read: bool | None = None,
+    deep_read_limit: int | None = None,
+) -> dict[str, object]:
+    """Estimate the request cost, quota impact, and wall time of a real run.
+
+    Reuses the deterministic planner (``decompose_issue`` / ``plan_queries``)
+    for the round-1 query list, models worst-case gap-refinement rounds the
+    same way the research loop bounds them (one gap query per detected claim
+    element per round, capped by ``SEARCH_MAX_REFINEMENT_ROUNDS``), and --
+    when CourtListener is configured with the usage guard enabled -- fetches
+    live usage to answer whether the run fits the current daily/minute
+    windows. Executes no search requests at all.
+    """
+    settings = get_settings()
+    providers = resolve_search_providers(settings.search_providers)
+    queries = plan_queries(decompose_issue(issue, claim_type))
+    elements = [spec.name for spec in detect_claim_elements(issue)]
+    gap_per_round = len(elements) or 1
+    rounds = max(settings.search_max_refinement_rounds, 0)
+    worst_queries = len(queries) + rounds * gap_per_round
+
+    resolved_deep_read = bool(deep_read if deep_read is not None else settings.deep_read)
+    resolved_dr_limit = deep_read_limit if deep_read_limit is not None else settings.deep_read_limit
+    dr_fetches = (
+        min(max(resolved_dr_limit, 0), max(max_results, 0)) if resolved_deep_read else 0
+    )
+
+    provider_rows: list[dict[str, object]] = []
+    total_requests = 0
+    nominal = 0.0
+    worst_case = 0.0
+    retry_chain = _worst_case_backoff_seconds()
+    for name in providers:
+        variants = max(
+            settings.search_query_variants_by_provider.get(name, settings.search_query_variants),
+            1,
+        )
+        pages = max(
+            settings.search_pages_per_query_by_provider.get(name, settings.search_pages_per_query),
+            1,
+        )
+        requests = worst_queries * variants * pages
+        pacing = _pacing_interval_seconds(name)
+        provider_rows.append(
+            {
+                "name": name,
+                "base_queries": len(queries),
+                "gap_queries": rounds * gap_per_round,
+                "variants": variants,
+                "pages": pages,
+                "requests": requests,
+                "pacing_seconds": round(pacing, 2),
+            }
+        )
+        total_requests += requests
+        nominal += requests * pacing
+        worst_case += requests * (pacing + retry_chain)
+
+    report: dict[str, object] = {
+        "issue": issue,
+        "claim_type": claim_type,
+        "base_queries": len(queries),
+        "refinement_rounds": rounds,
+        "gap_queries_per_round": gap_per_round,
+        "total_queries_worst_case": worst_queries,
+        "providers": provider_rows,
+        "deep_read": {
+            "enabled": resolved_deep_read,
+            "limit": resolved_dr_limit,
+            "opinion_fetches": dr_fetches,
+        },
+        "total_requests_estimate": total_requests + dr_fetches,
+        "wall_time_seconds": {
+            "nominal": round(nominal, 1),
+            "worst_case": round(worst_case, 1),
+            "not_modeled": (
+                "LLM ingestion/synthesis and deep-read summarization time"
+            ),
+        },
+        "courtlistener": None,
+        "verdict": "unchecked",
+    }
+    if "courtlistener" not in providers:
+        return report
+    if not settings.courtlistener_usage_guard:
+        report["courtlistener"] = {
+            "configured": True,
+            "guard_enabled": False,
+            "note": "COURTLISTENER_USAGE_GUARD=0 disables the pre-flight quota check",
+        }
+        return report
+    try:
+        usage = fetch_courtlistener_usage()
+    except SearchError as exc:
+        report["courtlistener"] = {
+            "configured": True,
+            "guard_enabled": True,
+            "error": str(exc),
+        }
+        return report
+    daily = courtlistener_daily_budget(usage)
+    minute = courtlistener_minute_budget(usage)
+    hourly = _hourly_budget(usage)
+    cl_requests = sum(
+        int(row["requests"]) for row in provider_rows if row["name"] == "courtlistener"
+    ) + dr_fetches
+    abort_reasons: list[str] = []
+    if int(daily["remaining"]) < cl_requests:
+        abort_reasons.append(
+            "daily window: %d of %d remaining, need %d"
+            % (int(daily["remaining"]), int(daily["limit"]), cl_requests)
+        )
+    if dr_fetches and minute and int(minute["remaining"]) < dr_fetches:
+        abort_reasons.append(
+            "minute window: %d of %d remaining, deep-read needs %d"
+            % (int(minute["remaining"]), int(minute["limit"]), dr_fetches)
+        )
+    report["courtlistener"] = {
+        "configured": True,
+        "guard_enabled": True,
+        "requests_estimated": cl_requests,
+        "daily": {key: daily.get(key) for key in ("used", "limit", "remaining", "reset_at")},
+        "hourly": {key: hourly.get(key) for key in ("used", "limit", "remaining")}
+        if hourly
+        else None,
+        "minute": {key: minute.get(key) for key in ("used", "limit", "remaining", "reset_at")}
+        if minute
+        else None,
+        "abort_reasons": abort_reasons,
+    }
+    report["verdict"] = "abort" if abort_reasons else "proceed"
+    return report
+
+
+def _format_wall_seconds(seconds: float) -> str:
+    """Render a wall-time figure as a compact human string."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.1f} min"
+    return f"{seconds / 3600:.2f} h"
+
+
+def _dry_run_to_text(report: dict[str, object]) -> str:
+    """Render a dry-run estimate as a readable text report."""
+    lines = [
+        "Dry run - no searches were executed and no analysis was produced.",
+        "",
+        f"Issue: {report['issue']}",
+        f"Claim type: {report['claim_type']}",
+        "",
+        (
+            f"Plan: {report['base_queries']} base queries; worst case "
+            f"{report['total_queries_worst_case']} queries "
+            f"({report['refinement_rounds']} refinement round(s) x up to "
+            f"{report['gap_queries_per_round']} gap query(s) each)."
+        ),
+        "",
+        "Requests per provider (worst-case queries x variants x pages):",
+    ]
+    for row in report["providers"]:  # type: ignore[union-attr]
+        lines.append(
+            f"  {row['name']:<14} {row['requests']:>4} requests "
+            f"({row['base_queries']}+{row['gap_queries']} queries x "
+            f"{row['variants']} variant(s) x {row['pages']} page(s); "
+            f"pacing {row['pacing_seconds']}s/request)"
+        )
+    deep_read = report["deep_read"]  # type: ignore[union-attr]
+    if deep_read["enabled"]:
+        lines.append("")
+        lines.append(
+            f"Deep-read: enabled - up to {deep_read['opinion_fetches']} opinion-detail "
+            f"fetches (limit {deep_read['limit']}), counted in the request totals above."
+        )
+    wall = report["wall_time_seconds"]  # type: ignore[union-attr]
+    lines += [
+        "",
+        "Wall-time estimate (requests serialized at enforced pacing; LLM ingestion",
+        "and deep-read summarization time is not modeled):",
+        f"  nominal:    {_format_wall_seconds(float(wall['nominal']))} (pacing only, no failures)",
+        f"  worst-case: {_format_wall_seconds(float(wall['worst_case']))} "
+        "(every request exhausts its retry backoff)",
+    ]
+    cl = report.get("courtlistener")
+    if cl is not None:
+        lines += ["", "CourtListener quota (live api-usage endpoint):"]
+        if not cl.get("guard_enabled"):
+            note = cl.get("note")
+            if note:
+                lines.append(f"  {note}")
+        elif cl.get("error"):
+            lines.append(f"  (could not read usage: {cl['error']})")
+        else:
+            daily = cl.get("daily") or {}
+            if daily:
+                lines.append(
+                    f"  daily:  {daily.get('remaining')} / {daily.get('limit')} remaining "
+                    f"(used {daily.get('used')})"
+                )
+            hourly = cl.get("hourly")
+            if hourly:
+                lines.append(
+                    f"  hourly: {hourly.get('remaining')} / {hourly.get('limit')} remaining"
+                )
+            minute = cl.get("minute")
+            if minute:
+                lines.append(
+                    f"  minute: {minute.get('remaining')} / {minute.get('limit')} remaining"
+                )
+            reasons = cl.get("abort_reasons") or []
+            if reasons:
+                lines.append("  would abort:")
+                lines.extend(f"    - {reason}" for reason in reasons)
+            else:
+                lines.append(
+                    f"  fits the planned {cl.get('requests_estimated')} request(s)."
+                )
+    lines.append("")
+    verdict = report["verdict"]
+    if verdict == "abort":
+        lines.append(
+            "Verdict: ABORT - the real run would be stopped by the usage guard "
+            "before searching."
+        )
+    elif verdict == "proceed":
+        lines.append(
+            "Verdict: PROCEED - the current windows cover the planned requests."
+        )
+    else:
+        lines.append(
+            "Verdict: unchecked - usage guard off, quota unreadable, or "
+            "CourtListener not configured."
+        )
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search and analyze veterans compensation legal cases.")
     parser.add_argument("issue", nargs="?", help="The legal issue to research, such as service connection for tinnitus.")
@@ -434,6 +729,15 @@ def main() -> None:
         help="Write the analysis to this file instead of stdout.",
     )
     parser.add_argument("--show-config", action="store_true", help="Print the resolved settings as JSON and exit.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Estimate request cost, quota impact, and wall time for this issue "
+            "without executing any searches (text report, or JSON with "
+            "--output-format json)."
+        ),
+    )
     parser.add_argument(
         "--run-id",
         dest="run_id",
@@ -518,6 +822,20 @@ def main() -> None:
         parser.error("the following arguments are required: issue")
 
     max_results = args.max_results if args.max_results is not None else get_settings().search_max_results
+    if args.dry_run:
+        report = estimate_issue_run(
+            args.issue,
+            claim_type=args.claim_type,
+            max_results=max(max_results, 1),
+            deep_read=args.deep_read,
+            deep_read_limit=args.deep_read_limit,
+        )
+        if args.output_format == "json":
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print(_dry_run_to_text(report))
+        return
+
     run_id = _run_id(args.run_id)
     tracker = BatchTracker(run_id) if args.batch_size else None
     telemetry: list[dict[str, object]] = []

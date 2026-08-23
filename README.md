@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **1063 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **1077 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -91,6 +91,15 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    resolved `deep_read` / `deep_read_limit` / `deep_read_pages` /
    `deep_chunk_chars` values so operators can see the effective deep-read
    configuration.
+   Pass `--dry-run` to preview the run before spending quota: it prints the
+   planned query count (base + worst-case refinement rounds), the per-provider
+   request totals (queries × variants × pages, plus deep-read opinion-detail
+   fetches), a nominal and worst-case wall-time estimate (pacing only vs. every
+   request exhausting its retry backoff), and — when CourtListener is configured
+   with the usage guard on — the **live** `api-usage` windows with a
+   PROCEED/ABORT verdict that mirrors the guard's pre-flight math, all without
+   executing a single search. Use `--output-format json` to get the same
+   estimate as structured JSON for automation.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -124,7 +133,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (864 tests) runs in about seven seconds, so run it after
+The full suite (1077 tests) runs in about eleven seconds, so run it after
 every change:
 
 ```bash
