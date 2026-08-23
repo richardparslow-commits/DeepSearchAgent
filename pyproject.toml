@@ -27,6 +27,7 @@ dev = [
     "agent-dev-cli==0.0.1b260427",
 ]
 llm = ["openai>=1.35.0,<4"]
+web = ["flask>=3.0", "waitress>=3.0"]
 
 [project.scripts]
 va-legal-agent = "va_legal_agent.__main__:main"

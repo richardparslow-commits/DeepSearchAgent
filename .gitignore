@@ -30,5 +30,8 @@ issues.retry
 plan.csv
 plan.retry.txt
 
+# Web app persisted job state
+.webapp/
+
 # OS
 .DS_Store
