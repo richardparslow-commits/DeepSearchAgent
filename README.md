@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **1117 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **1122 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -130,7 +130,13 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    carrying the best (lowest-number) explicit priority — an unweighted
    duplicate never erases an explicit one, and a positional issue that
    already appears in the file is not planned twice — so quota is never
-   double-charged for a typo or a re-keyed line.
+   double-charged for a typo or a re-keyed line. To bound the batch itself,
+   `--max-batch-requests N` caps the total CourtListener requests the batch
+   may consume: issues are packed in priority order until the cap is hit, and
+   the rest get a **`deferred`** verdict (a separate status from `abort`, with
+   its own line in the summary) — deferred issues also go into the
+   `--retry-file` so a later run with a bigger budget picks them right up.
+   Without an explicit cap the batch may use the full daily-window remainder.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -164,7 +170,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (1117 tests) runs in about eleven seconds, so run it after
+The full suite (1122 tests) runs in about eleven seconds, so run it after
 every change:
 
 ```bash

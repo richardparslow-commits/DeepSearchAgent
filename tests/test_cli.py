@@ -1122,6 +1122,168 @@ def test_batch_dry_run_retry_file_write_failure(capsys, monkeypatch, tmp_path):
     assert exc.value.code != 0
 
 
+def test_batch_dry_run_max_batch_requests_defers_overflow(capsys, monkeypatch, tmp_path):
+    """A request cap packs the highest-priority issues and defers the rest."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\nb\n", encoding="utf-8")
+    req_a = _expected_dry_run_requests("a")
+    req_b = _expected_dry_run_requests("b")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--max-batch-requests",
+            str(req_a),
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert [r["verdict"] for r in rows] == ["proceed", "deferred"]
+    assert rows[0]["courtlistener_requests"] == str(req_a)
+    assert rows[1]["courtlistener_requests"] == str(req_b)
+
+
+def test_batch_dry_run_max_batch_requests_packs_in_priority_order(capsys, monkeypatch, tmp_path):
+    """The cap is spent on the highest-priority issues first."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("low\t2\nhigh\t1\n", encoding="utf-8")
+    req_low = _expected_dry_run_requests("low")
+    req_high = _expected_dry_run_requests("high")
+    # Cap fits high but not high+low (priority order).
+    cap = req_high + req_low - 1
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--max-batch-requests",
+            str(cap),
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert [r["issue"] for r in rows] == ["high", "low"]
+    assert rows[0]["verdict"] == "proceed"
+    assert rows[1]["verdict"] == "deferred"
+
+
+def test_batch_dry_run_max_requests_zero_none_defer(capsys, monkeypatch, tmp_path):
+    """A tiny cap defers everything; a zero cap defers everything too."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--max-batch-requests",
+            "0",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert rows[0]["verdict"] == "deferred"
+
+
+def test_batch_dry_run_summary_reports_deferred(capsys, monkeypatch, tmp_path):
+    """The text summary says how many issues were deferred and why."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\nb\n", encoding="utf-8")
+    req_a = _expected_dry_run_requests("a")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--max-batch-requests",
+            str(req_a),
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "1 of 2 issue(s) deferred" in out
+    assert "--max-batch-requests" in out
+    assert "ABORT" not in out
+
+
+def test_batch_dry_run_retry_file_includes_deferred(capsys, monkeypatch, tmp_path):
+    """Deferred issues are written to the retry file alongside aborts."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\nb\n", encoding="utf-8")
+    req_a = _expected_dry_run_requests("a")
+    retry_path = tmp_path / "retry.txt"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--max-batch-requests",
+            str(req_a),
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            str(retry_path),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    capsys.readouterr().out
+    assert retry_path.read_text(encoding="utf-8") == "b\n"
+
+
 def test_batch_dry_run_priorities_reorder_before_allocation(capsys, monkeypatch, tmp_path):
     """Lower priority numbers run first; unweighted issues sort last."""
     import csv as _csv

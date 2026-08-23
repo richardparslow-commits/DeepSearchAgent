@@ -728,6 +728,7 @@ def batch_dry_run(
     max_results: int = 10,
     deep_read: bool | None = None,
     deep_read_limit: int | None = None,
+    max_batch_requests: int | None = None,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Estimate each issue and allocate the CourtListener daily window across them.
 
@@ -762,6 +763,10 @@ def batch_dry_run(
 
     rows: list[dict[str, object]] = []
     remaining = daily_before
+    # An explicit request cap wins; otherwise the batch may use whatever the
+    # daily window provides (None disables the packing cap entirely).
+    packing_cap = max_batch_requests if max_batch_requests is not None else None
+    packed_total = 0
     for issue in issues:
         row = estimate_issue_run(
             issue,
@@ -780,7 +785,14 @@ def batch_dry_run(
         row["courtlistener_requests"] = cl_requests
         # Verdicts from estimate_issue_run (daily/minute checks) stay the source
         # of truth; only escalate a "proceed" to "abort" when the cumulative
-        # daily window would run dry -- never downgrade an abort.
+        # daily window or an explicit --max-batch-requests cap would be
+        # exceeded. A cap-based deferral is marked 'deferred' so scheduling can
+        # retry it later without treating it as a quota-blocked abort.
+        if packing_cap is not None:
+            if packed_total + cl_requests > packing_cap:
+                row["verdict"] = "deferred"
+            else:
+                packed_total += cl_requests
         if row["verdict"] == "proceed" and remaining is not None and cl_requests > remaining:
             row["verdict"] = "abort"
         if remaining is not None:
@@ -798,6 +810,8 @@ def batch_dry_run(
         "daily_after": remaining,
         "daily_limit": daily_limit,
         "blocked_issues": sum(1 for r in rows if r["verdict"] == "abort"),
+        "deferred_issues": sum(1 for r in rows if r["verdict"] == "deferred"),
+        "max_batch_requests": packing_cap,
         "usage_error": usage_error,
     }
     return rows, summary
@@ -871,6 +885,12 @@ def _batch_dry_run_to_text(
         lines.append(
             f"{summary['blocked_issues']} of {summary['issues']} issue(s) would ABORT "
             "under the current window (wait for the reset to run them)."
+        )
+    if summary.get("deferred_issues"):
+        lines.append(
+            f"{summary['deferred_issues']} of {summary['issues']} issue(s) deferred "
+            f"by --max-batch-requests {summary.get('max_batch_requests')} (raise the cap "
+            "or schedule them for the next window)."
         )
     if summary.get("usage_error"):
         lines.append(f"CourtListener usage unavailable: {summary['usage_error']}")
@@ -1015,6 +1035,18 @@ def main() -> None:
             "With --batch-dry-run: show only the issues whose verdict is abort "
             "(those the current window can't cover), so a scheduler can retry "
             "exactly them after the reset."
+        ),
+    )
+    parser.add_argument(
+        "--max-batch-requests",
+        dest="max_batch_requests",
+        type=int,
+        default=None,
+        help=(
+            "With --batch-dry-run: cap the CourtListener request total for the "
+            "batch; issues that would exceed the cap get a 'deferred' verdict "
+            "instead of consuming quota. Defaults to the daily-window remainder "
+            "when CourtListener is configured; no cap otherwise."
         ),
     )
     parser.add_argument(
@@ -1168,6 +1200,7 @@ def main() -> None:
             max_results=max(max_results, 1),
             deep_read=args.deep_read,
             deep_read_limit=args.deep_read_limit,
+            max_batch_requests=args.max_batch_requests,
         )
         for row in rows:
             row["priority"] = priority_by_issue.get(row["issue"])  # type: ignore[typeddict-item]
@@ -1177,12 +1210,14 @@ def main() -> None:
             rows_visible = rows
         # Write the blocked-issues retry file.
         #   * Explicit --retry-file PATH  -> always write (empty if nothing
-        #     is blocked, so automation can rely on its existence).
+        #     is blocked, nothing else to do).
         #   * --retry-file "" / none / off -> never write.
         #   * No flag, batch CSV output    -> write to 'issues.retry' (or the
         #     CSV path with a .retry.txt suffix) only when something is
         #     blocked; an all-proceed batch leaves no retry file behind.
-        blocked = [row for row in rows if row["verdict"] == "abort"]
+        # Abort AND deferred rows are worth retrying later; both go into the
+        # retry file so a post-reset (or bigger-budget) re-run can pick them up.
+        blocked = [row for row in rows if row["verdict"] in ("abort", "deferred")]
         explicit_retry = args.retry_file not in (None, "", "none", "off")
         retry_path: str | None = None
         if args.retry_file in ("", "none", "off"):
