@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -964,6 +965,114 @@ def _emit_output(text: str, output_file: str | None) -> None:
         print(text)
 
 
+# ---------------------------------------------------------------------------
+# Auto-run (--auto-run): dry-run the batch first, then actually execute the
+# issues that fit (proceed), and loop -- waiting for the CourtListener window
+# to reset when needed -- until the deferred/aborted remainder has been run
+# or the operator stops it (Ctrl-C).
+# ---------------------------------------------------------------------------
+
+
+def _sleep_with_log(seconds: float, reason: str) -> None:
+    """Sleep *seconds*, logging the wait so operators can see the pacing."""
+    logging.getLogger(__name__).warning(
+        "auto-run: sleeping %.0fs before %s (interrupt with Ctrl-C to stop)",
+        seconds,
+        reason,
+    )
+    time.sleep(seconds)
+
+
+def _auto_run(
+    issues: list[str],
+    claim_type: str,
+    max_results: int,
+    max_wall_seconds: float | None,
+    max_batch_requests: int | None = None,
+) -> list[dict[str, object]]:
+    """Execute the batch: run the packed issues now, wait for the reset, repeat.
+
+    The first pass uses the same per-issue estimates as the dry run to decide
+    which issues fit the current windows (proceed) and executes those through
+    :func:`analyze_cases_for_claim`; issues that were deferred or aborted
+    stay pending. After the pass, the remainder is re-planned against a
+    fresh live usage snapshot: if CourtListener's daily window is exhausted
+    the loop waits (sleeps) for its reset time before retrying. Returns
+    per-issue result rows with verdicts ``run`` / ``error`` for the
+    executed issues, and ``deferred`` / ``abort`` for the backlog that
+    could not fit in the first pass (and would need a later window).
+    """
+    results: dict[str, str] = {}
+    pending = list(issues)
+    while pending:
+        rows, _summary = batch_dry_run(
+            pending,
+            claim_type=claim_type,
+            max_results=max_results,
+            max_batch_requests=max_batch_requests,
+        )
+        next_pending: list[str] = []
+        for row in rows:
+            issue = row["issue"]
+            verdict = row["verdict"]
+            if verdict == "proceed":
+                try:
+                    analyze_cases_for_claim(
+                        issue,
+                        claim_type=claim_type,
+                        max_results=max_results,
+                        telemetry=None,
+                        max_wall_seconds=max_wall_seconds,
+                    )
+                    results[issue] = "run"
+                except Exception:
+                    results[issue] = "error"
+            else:
+                # Keep the first non-run verdict for issues still pending
+                # (deferred/abort); a later successful pass overwrites it.
+                results.setdefault(issue, verdict)
+                next_pending.append(issue)
+        if not next_pending:
+            break
+        # Remainders still need the window: wait for the daily reset.
+        usage = fetch_courtlistener_usage()
+        daily = courtlistener_daily_budget(usage)
+        reset = daily.get("reset_at")
+        delay = _seconds_until_utc(str(reset)) if reset else 3600.0
+        _sleep_with_log(max(delay, 60.0), "the CourtListener daily window reset")
+        pending = next_pending
+    return [{"issue": issue, "verdict": verdict} for issue, verdict in results.items()]
+
+
+def _seconds_until_utc(iso: str) -> float:
+    """Seconds until the ISO-8601 timestamp *iso* (naive or tz-aware UTC)."""
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return 3600.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    delta = (dt - datetime.now(timezone.utc)).total_seconds()
+    return max(delta, 0.0)
+
+
+def _auto_run_summary(results: list[dict[str, object]]) -> dict[str, object]:
+    """Aggregate the auto-run per-issue result rows into a summary dict."""
+    ok = sum(1 for r in results if r["verdict"] == "run")
+    err = sum(1 for r in results if r["verdict"] == "error")
+    deferred = sum(1 for r in results if r["verdict"] == "deferred")
+    aborted = sum(1 for r in results if r["verdict"] == "abort")
+    return {
+        "issues": len(results),
+        "successful": ok,
+        "failed": err,
+        "deferred": deferred,
+        "aborted": aborted,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search and analyze veterans compensation legal cases.")
     parser.add_argument("issue", nargs="?", help="The legal issue to research, such as service connection for tinnitus.")
@@ -1004,8 +1113,18 @@ def main() -> None:
         action="store_true",
         help=(
             "Estimate several issues at once and allocate the CourtListener daily "
-            "window across them (issues from --issues-file plus the positional "
+            "window across them (issues from --issues file plus the positional "
             "issue; CSV table with --output-format csv)."
+        ),
+    )
+    parser.add_argument(
+        "--auto-run",
+        action="store_true",
+        help=(
+            "Run the batch dry-run, execute the issues that fit the current "
+            "windows, then keep re-planning and waiting for the CourtListener "
+            "daily reset until every issue has been run (or interrupt with "
+            "Ctrl-C). Combine with --max-batch-requests to cap each pass."
         ),
     )
     parser.add_argument(
@@ -1142,13 +1261,42 @@ def main() -> None:
         print_settings()
         return
 
-    if (args.start_at is not None or args.only_blocked) and not args.batch_dry_run:
+    if (args.start_at is not None or args.only_blocked) and not (args.batch_dry_run or args.auto_run):
         parser.error("--start-at and --only-blocked only apply to --batch-dry-run.")
 
-    if not args.issue and not args.batch_dry_run:
+    if not args.issue and not (args.batch_dry_run or args.auto_run):
         parser.error("the following arguments are required: issue")
 
     max_results = args.max_results if args.max_results is not None else get_settings().search_max_results
+
+    # --auto-run: parse the issues the same way as --batch-dry-run, then run.
+    if args.auto_run:
+        if args.dry_run:
+            parser.error("--dry-run and --auto-run are mutually exclusive.")
+        auto_issues = _read_issues_file(args.issues_file) if args.issues_file else []
+        auto_issues = [issue for issue, _priority in auto_issues]
+        if args.issue:
+            auto_issues.append(args.issue)
+        if not auto_issues:
+            parser.error(
+                "--auto-run needs at least one issue (positional or --issues-file)."
+            )
+        results = _auto_run(
+            auto_issues,
+            claim_type=args.claim_type,
+            max_results=max(max_results, 1),
+            max_wall_seconds=args.max_wall_time,
+            max_batch_requests=args.max_batch_requests,
+        )
+        summary = _auto_run_summary(results)
+        print(
+            "Auto-run complete: %d issue(s) run, %d failed, %d deferred, %d aborted"
+            % (summary["successful"], summary["failed"], summary["deferred"], summary["aborted"])
+        )
+        if args.output_format == "json":
+            print(json.dumps(summary, indent=2))
+        return
+
     if args.batch_dry_run:
         if args.dry_run:
             parser.error("--dry-run and --batch-dry-run are mutually exclusive.")

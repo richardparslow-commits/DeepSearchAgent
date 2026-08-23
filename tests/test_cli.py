@@ -760,6 +760,351 @@ def test_batch_dry_run_no_daily_row_degrades(capsys, monkeypatch, tmp_path):
     assert "Issues: 1" in out  # no crash; the batch-level window probe degraded
 
 
+def _auto_run_fake_batch(rows_spec):
+    """A batch_dry_run replacement returning the given rows, one per issue."""
+
+    def _fake(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": verdict,
+                    "courtlistener_requests": 0,
+                    "priority": None,
+                }
+                for issue, verdict in rows_spec
+            ],
+            {"issues": len(rows_spec)},
+        )
+
+    return _fake
+
+
+def test_auto_run_executes_proceed_issues(capsys, monkeypatch, tmp_path):
+    """--auto-run executes the issues that fit the window (text summary)."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--auto-run",
+            "--output-format",
+            "text",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    ran = []
+
+    def fake_analyze(issue, **kwargs):
+        ran.append(issue)
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        _auto_run_fake_batch([("alpha", "proceed"), ("beta", "proceed")]),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Auto-run complete" in out
+    assert sorted(ran) == ["alpha", "beta"]
+
+
+def test_auto_run_defers_and_waits_for_reset(capsys, monkeypatch, tmp_path):
+    """Deferred issues are re-planned after the daily window reset."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    ran = []
+    calls = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        if len(calls) == 1:
+            return ([
+                {"issue": "alpha", "verdict": "deferred", "courtlistener_requests": 0, "priority": None}
+            ], {"issues": 1})
+        return ([
+            {"issue": "alpha", "verdict": "proceed", "courtlistener_requests": 0, "priority": None}
+        ], {"issues": 1})
+
+    def fake_analyze(issue, **kwargs):
+        ran.append(issue)
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: {"current_usage": []},
+    )
+    monkeypatch.setattr("va_legal_agent.__main__.courtlistener_daily_budget", lambda usage: {"reset_at": "2030-01-01T00:00:00+00:00"})
+    monkeypatch.setattr("va_legal_agent.__main__._seconds_until_utc", lambda iso: 60.0)
+    monkeypatch.setattr("va_legal_agent.__main__._sleep_with_log", lambda secs, reason: None)
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Auto-run complete" in out
+    assert ran == ["alpha"]  # only after the reset
+    assert len(calls) == 2
+
+
+def test_auto_run_abort_keeps_pending_and_waits(capsys, monkeypatch, tmp_path):
+    """Aborted issues (quota) are held for the next window too."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("gamma\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    ran = []
+    calls = []
+
+    def fake_batch(issues, claim_type="legal", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        verdict = "proceed" if len(calls) > 1 else "abort"
+        return ([
+            {"issue": "gamma", "verdict": verdict, "courtlistener_requests": 0, "priority": None}
+        ], {"issues": 1})
+
+    def fake_analyze(issue, **kwargs):
+        ran.append(issue)
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: {"current_usage": []},
+    )
+    monkeypatch.setattr("va_legal_agent.__main__.courtlistener_daily_budget", lambda usage: {"reset_at": "2030-01-01T00:00:00+00:00"})
+    monkeypatch.setattr("va_legal_agent.__main__._seconds_until_utc", lambda iso: 60.0)
+    monkeypatch.setattr("va_legal_agent.__main__._sleep_with_log", lambda secs, reason: None)
+
+    main()
+
+    assert ran == ["gamma"]
+    assert len(calls) == 2
+
+
+def test_auto_run_positional_issue_works(capsys, monkeypatch, tmp_path):
+    """A positional issue plus auto-run is accepted."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    ran = []
+
+    def fake_analyze(issue, **kwargs):
+        ran.append(issue)
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        _auto_run_fake_batch([("tinnitus", "proceed")]),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Auto-run complete" in out
+    assert ran == ["tinnitus"]
+
+
+def test_auto_run_analyze_failure_records_error(capsys, monkeypatch, tmp_path):
+    """A failing analysis is recorded as 'error' and the run continues."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    ran = []
+
+    def fake_analyze(issue, **kwargs):
+        ran.append(issue)
+        if issue == "alpha":
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        _auto_run_fake_batch([("alpha", "proceed"), ("beta", "proceed")]),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Auto-run complete" in out
+    assert "1 failed" in out
+    assert sorted(ran) == ["alpha", "beta"]
+
+
+def test_auto_run_json_summary(capsys, monkeypatch, tmp_path):
+    """--output-format json prints the structured summary dict."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--auto-run",
+            "--output-format",
+            "json",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", lambda issue, **kw: None)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        _auto_run_fake_batch([("alpha", "proceed")]),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    summary = json.loads(out[out.index("{"):])
+    assert summary["successful"] == 1
+    assert summary["failed"] == 0
+    assert summary["issues"] == 1
+
+
+def test_auto_run_json_summary_deferred_and_aborted(capsys, monkeypatch, tmp_path):
+    """Deferred/aborted backlog is counted in the JSON summary."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\nb\nc\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--auto-run",
+            "--max-batch-requests",
+            "1",
+            "--output-format",
+            "json",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    ran = []
+    calls = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        # Pass 1: the first issue runs, the rest are deferred by the cap.
+        # Pass 2: everything fits (reset happened) and proceeds.
+        if len(calls) == 1:
+            verdicts = ["proceed"] + ["deferred"] * (len(issues) - 1)
+        else:
+            verdicts = ["proceed"] * len(issues)
+        return (
+            [
+                {"issue": issue, "verdict": v, "courtlistener_requests": 1, "priority": None}
+                for issue, v in zip(issues, verdicts)
+            ],
+            {"issues": len(issues)},
+        )
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", lambda issue, **kw: ran.append(issue))
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: {"current_usage": []}
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget",
+        lambda usage: {"reset_at": None},
+    )
+    monkeypatch.setattr("va_legal_agent.__main__._sleep_with_log", lambda secs, reason: None)
+
+    main()
+
+    out = capsys.readouterr().out
+    summary = json.loads(out[out.index("{"):])
+    assert summary["successful"] == 3  # all three eventually ran
+    assert summary["deferred"] == 0  # no backlog left
+    assert summary["failed"] == 0
+
+
+
+def test_sleep_with_log_monkeypatches_time(monkeypatch):
+    """_sleep_with_log logs and sleeps for the given duration."""
+    from va_legal_agent.__main__ import _sleep_with_log
+
+    slept = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    _sleep_with_log(3.5, "test reason")
+    assert slept == [3.5]
+
+
+def test_seconds_until_utc_parses_iso():
+    """_seconds_until_utc handles aware, naive, bad, and past timestamps."""
+    from datetime import datetime, timedelta, timezone
+    from va_legal_agent.__main__ import _seconds_until_utc
+
+    now = datetime.now(timezone.utc)
+    future_aware = (now + timedelta(seconds=90)).isoformat()
+    assert abs(_seconds_until_utc(future_aware) - 90.0) < 3.0
+    future_naive = (now + timedelta(seconds=120)).replace(tzinfo=None).isoformat()
+    assert abs(_seconds_until_utc(future_naive) - 120.0) < 3.0
+    # A Z-suffixed RFC3339 timestamp is accepted too.
+    future_z = (now + timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    assert abs(_seconds_until_utc(future_z) - 30.0) < 3.0
+    # Bad timestamp falls back to an hour.
+    assert _seconds_until_utc("not-a-date") == 3600.0
+    # Past timestamp clamps to zero.
+    assert _seconds_until_utc("2020-01-01T00:00:00+00:00") == 0.0
+
+def test_auto_run_empty_pending_returns_without_batch(monkeypatch):
+    """_auto_run([]) returns an empty result without planning."""
+    from va_legal_agent.__main__ import _auto_run
+
+    called = []
+
+    def bad_batch(*args, **kwargs):
+        called.append(1)
+        raise AssertionError("batch_dry_run must not be called for an empty batch")
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", bad_batch)
+    assert _auto_run([], claim_type="Compensation", max_results=10, max_wall_seconds=None) == []
+    assert called == []
+
+
+def test_auto_run_no_issues_is_usage_error(capsys, monkeypatch):
+    """--auto-run without any issue errors cleanly."""
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--auto-run"])
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_auto_run_with_dry_run_is_usage_error(capsys, monkeypatch):
+    """--auto-run and --dry-run are mutually exclusive."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--dry-run", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
 def test_dry_run_output_file_write_failure(capsys, monkeypatch, tmp_path):
     """An unwritable --output-file is a usage error for --dry-run."""
     monkeypatch.setattr(
