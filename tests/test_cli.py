@@ -482,6 +482,395 @@ def test_estimate_missing_hourly_row_yields_none(capsys, monkeypatch):
     assert report["courtlistener"]["hourly"] is None
 
 
+def test_batch_dry_run_text_table_with_cumulative_quota(capsys, monkeypatch, tmp_path):
+    """Batch table allocates the daily window cumulatively across issues."""
+    issues = ["tinnitus service connection", "knee rating increase", "back pain nexus"]
+    issues_file = tmp_path / "issues.txt"
+    # Blank lines and a comment line must be skipped.
+    issues_file.write_text(
+        "# schedule for tonight\n\n" + "\n".join(issues) + "\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=125),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Batch dry run - no searches were executed" in out
+    assert "Issues: 3" in out
+    expected = [_expected_dry_run_requests(issue) for issue in issues]
+    assert all(f"{req:>6}" in out for req in expected)  # CL req column
+    # Cumulative: 125 after issue 1, 125 - r1 after issue 2, ...
+    running = 125
+    for issue, req in zip(issues, expected):
+        running -= req
+        assert f"{running:>11}" in out
+    assert "left after the batch" in out
+    assert out.count("proceed") == 3
+    assert "would ABORT" not in out
+
+
+def test_batch_dry_run_abort_when_window_runs_dry(capsys, monkeypatch, tmp_path):
+    """Issues beyond the daily window get an ABORT verdict."""
+    issues = ["service connection for tinnitus", "knee rating increase"]
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    first = _expected_dry_run_requests(issues[0])
+    # Remaining window fits exactly issue 1 (plus 5 spare), so issue 2 aborts.
+    remaining = first + 5
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=remaining),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "proceed" in out
+    assert "ABORT" in out
+    assert "1 of 2 issue(s) would ABORT" in out
+    assert "left after the batch" in out
+
+
+def test_batch_dry_run_csv_output(capsys, monkeypatch, tmp_path):
+    """--output-format csv yields a machine-parseable table with the header."""
+    issues = ["tinnitus"]
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--output-format",
+            "csv",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=125),
+    )
+
+    main()
+
+    import csv as _csv
+    import io as _io
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert rows[0]["issue"] == "tinnitus"
+    assert rows[0]["courtlistener_requests"] == str(
+        _expected_dry_run_requests("tinnitus")
+    )
+    assert rows[0]["total_requests"] == rows[0]["courtlistener_requests"]
+    assert rows[0]["verdict"] == "proceed"
+    assert rows[0]["courtlistener_daily_after"] == str(
+        125 - _expected_dry_run_requests("tinnitus")
+    )
+    assert rows[0]["worst_wall_seconds"]
+    assert rows[0]["nominal_wall_seconds"]
+
+
+def test_batch_dry_run_guard_off_skips_usage_fetch_and_uses_dash(
+    capsys, monkeypatch, tmp_path
+):
+    """Guard off: the endpoint is never called and daily after shows '-.'"""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("tinnitus\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
+
+    def _should_not_be_called():
+        raise AssertionError("usage endpoint must not be fetched with the guard off")
+
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", _should_not_be_called
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "unchecked" in out
+    assert "daily window" not in out
+
+
+def test_batch_dry_run_usage_error_surfaces(capsys, monkeypatch, tmp_path):
+    """An unreadable usage endpoint degrades to unchecked with the reason."""
+    from va_legal_agent.search import SearchError
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("tinnitus\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: (_ for _ in ()).throw(SearchError("api-usage 401: no token")),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "usage unavailable" in out
+    assert "no token" in out
+    assert "unchecked" in out
+
+
+def test_batch_dry_run_reads_usage_once_for_all_issues(capsys, monkeypatch, tmp_path):
+    """N issues trigger exactly one api-usage fetch."""
+    calls = []
+
+    def _counting_usage():
+        calls.append(1)
+        return _usage_payload()
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\nb\nc\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", _counting_usage
+    )
+
+    main()
+
+    assert len(calls) == 1
+
+
+def test_batch_dry_run_requires_an_issue(capsys, monkeypatch, tmp_path):
+    """An empty batch reports a usage error instead of running."""
+    issues_file = tmp_path / "empty.txt"
+    issues_file.write_text("\n# nothing here\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_missing_issues_file_errors(capsys, monkeypatch):
+    """A missing issues file is a usage error, not a crash."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", "/nope/nowhere.txt"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_positional_issue_without_file(capsys, monkeypatch):
+    """A positional issue works without --issues-file (the file branch skipped)."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Issues: 1" in out
+    assert "tinnitus" in out
+
+
+def test_batch_dry_run_positional_plus_file(capsys, monkeypatch, tmp_path):
+    """A positional issue is appended after the file's issues."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("one\ntwo\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "three",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Issues: 3" in out
+    assert "one" in out and "two" in out and "three" in out
+
+
+def test_batch_dry_run_no_daily_row_degrades(capsys, monkeypatch, tmp_path):
+    """A payload without a daily row still renders (daily after shows '-')."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("tinnitus\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    from va_legal_agent.search import SearchError
+    from va_legal_agent.providers import courtlistener_daily_budget
+
+    real_budget = courtlistener_daily_budget
+    calls = []
+
+    def _flaky_budget(usage):
+        calls.append(1)
+        if len(calls) == 1:
+            raise SearchError("no daily row")  # batch-level probe fails...
+        return real_budget(usage)  # ...but per-issue estimates still resolve
+
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget", _flaky_budget
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Issues: 1" in out  # no crash; the batch-level window probe degraded
+
+
+def test_dry_run_output_file_write_failure(capsys, monkeypatch, tmp_path):
+    """An unwritable --output-file is a usage error for --dry-run."""
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--dry-run",
+            "--output-format",
+            "json",
+            "--output-file",
+            str(tmp_path / "no" / "such" / "dir" / "x.json"),
+            "tinnitus",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_output_file_write_failure(capsys, monkeypatch, tmp_path):
+    """An unwritable --output-file is a usage error for --batch-dry-run too."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("tinnitus\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--output-format",
+            "csv",
+            "--output-file",
+            str(tmp_path / "no" / "such" / "dir" / "x.csv"),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_dry_run_and_batch_dry_run_are_mutually_exclusive(capsys, monkeypatch):
+    """--dry-run + --batch-dry-run is a usage error."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--dry-run", "--batch-dry-run", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_writes_csv_to_output_file(capsys, monkeypatch, tmp_path):
+    """--output-file writes the batch CSV to disk."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("tinnitus\n", encoding="utf-8")
+    out_path = tmp_path / "batch.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--output-format",
+            "csv",
+            "--output-file",
+            str(out_path),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    capsys.readouterr().out  # batch table goes to the file, not stdout
+    written = out_path.read_text(encoding="utf-8")
+    assert "issue" in written
+    assert "tinnitus" in written
+    assert "unchecked" in written  # no CourtListener configured -> no quota math
+
+
+def test_dry_run_single_writes_output_file(capsys, monkeypatch, tmp_path):
+    """The single --dry-run honors --output-file too."""
+    out_path = tmp_path / "dry.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--dry-run",
+            "--output-format",
+            "json",
+            "--output-file",
+            str(out_path),
+            "tinnitus",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    capsys.readouterr().out
+    report = json.loads(out_path.read_text(encoding="utf-8"))
+    assert report["issue"] == "tinnitus"
+
+
 def test_show_config_prints_settings_without_issue(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
     monkeypatch.setenv("SEARCH_MAX_WORKERS", "7")

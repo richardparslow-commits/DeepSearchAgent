@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **1077 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **1093 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -93,13 +93,21 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    configuration.
    Pass `--dry-run` to preview the run before spending quota: it prints the
    planned query count (base + worst-case refinement rounds), the per-provider
-   request totals (queries × variants × pages, plus deep-read opinion-detail
-   fetches), a nominal and worst-case wall-time estimate (pacing only vs. every
-   request exhausting its retry backoff), and — when CourtListener is configured
-   with the usage guard on — the **live** `api-usage` windows with a
-   PROCEED/ABORT verdict that mirrors the guard's pre-flight math, all without
-   executing a single search. Use `--output-format json` to get the same
-   estimate as structured JSON for automation.
+   request totals (queries × variants × pages, plus deep-read
+   opinion-detail fetches), a wall estimate, and — with the usage guard on —
+   the **live** `api-usage` windows with a PROCEED/ABORT verdict that mirrors
+   the guard's own math, all without executing a single search.
+   `--dry-run --output-format json` yields the same estimate as structured
+   JSON for CI.
+   For several issues at once, `--batch-dry-run` (with `--issues-file`,
+   one issue per line, or a positional issue) estimates each one and
+   **allocates the CourtListener daily window cumulatively** — each row shows
+   the requests it consumes and how many remain after it, and issues that would
+   run the window dry get an `abort` verdict. It fetches the live usage
+   endpoint exactly once for the whole batch. `--output-format csv` renders
+   the batch as a machine-parseable table (`issue, ...,
+   courtlistener_daily_after, verdict`) that operators can feed straight into
+   a scheduler.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -133,7 +141,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (1077 tests) runs in about eleven seconds, so run it after
+The full suite (1093 tests) runs in about eleven seconds, so run it after
 every change:
 
 ```bash

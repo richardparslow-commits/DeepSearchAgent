@@ -469,6 +469,8 @@ def estimate_issue_run(
     max_results: int = 10,
     deep_read: bool | None = None,
     deep_read_limit: int | None = None,
+    usage: dict[str, object] | None = None,
+    usage_error: str | None = None,
 ) -> dict[str, object]:
     """Estimate the request cost, quota impact, and wall time of a real run.
 
@@ -477,8 +479,9 @@ def estimate_issue_run(
     same way the research loop bounds them (one gap query per detected claim
     element per round, capped by ``SEARCH_MAX_REFINEMENT_ROUNDS``), and --
     when CourtListener is configured with the usage guard enabled -- fetches
-    live usage to answer whether the run fits the current daily/minute
-    windows. Executes no search requests at all.
+    live usage (once per call unless the caller passes *usage* or
+    *usage_error* for batch reuse) to answer whether the run fits the
+    current daily/minute windows. Executes no search requests at all.
     """
     settings = get_settings()
     providers = resolve_search_providers(settings.search_providers)
@@ -558,15 +561,23 @@ def estimate_issue_run(
             "note": "COURTLISTENER_USAGE_GUARD=0 disables the pre-flight quota check",
         }
         return report
-    try:
-        usage = fetch_courtlistener_usage()
-    except SearchError as exc:
+    if usage_error is not None:
         report["courtlistener"] = {
             "configured": True,
             "guard_enabled": True,
-            "error": str(exc),
+            "error": usage_error,
         }
         return report
+    if usage is None:
+        try:
+            usage = fetch_courtlistener_usage()
+        except SearchError as exc:
+            report["courtlistener"] = {
+                "configured": True,
+                "guard_enabled": True,
+                "error": str(exc),
+            }
+            return report
     daily = courtlistener_daily_budget(usage)
     minute = courtlistener_minute_budget(usage)
     hourly = _hourly_budget(usage)
@@ -703,6 +714,191 @@ def _dry_run_to_text(report: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Batch dry-run (--batch-dry-run): the same per-issue estimate for many
+# issues at once, with the CourtListener daily window allocated cumulatively
+# across the batch so operators can schedule work against the quota. The
+# api-usage endpoint is fetched at most once for the whole batch.
+# ---------------------------------------------------------------------------
+
+
+def batch_dry_run(
+    issues: list[str],
+    claim_type: str = "Compensation",
+    max_results: int = 10,
+    deep_read: bool | None = None,
+    deep_read_limit: int | None = None,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    """Estimate each issue and allocate the CourtListener daily window across them.
+
+    Fetches live usage once (when CourtListener is configured and the usage
+    guard is on), then runs :func:`estimate_issue_run` per issue with that
+    payload shared. Verdicts are re-derived cumulatively: each issue's
+    CourtListener requests are consumed from the running daily remainder, so
+    later issues abort when the window would run dry. Returns ``(rows,
+    summary)`` where every row carries a flat ``courtlistener_requests`` and
+    ``courtlistener_after`` field for table rendering.
+    """
+    settings = get_settings()
+    usage_error: str | None = None
+    usage: dict[str, object] | None = None
+    if (
+        "courtlistener" in resolve_search_providers(settings.search_providers)
+        and settings.courtlistener_usage_guard
+    ):
+        try:
+            usage = fetch_courtlistener_usage()
+        except SearchError as exc:
+            usage_error = str(exc)
+    daily_before: int | None = None
+    daily_limit: int | None = None
+    if usage is not None:
+        try:
+            daily = courtlistener_daily_budget(usage)
+            daily_before = int(daily["remaining"])
+            daily_limit = int(daily["limit"])
+        except SearchError:  # payload shape changed; degrade to no-window info
+            pass
+
+    rows: list[dict[str, object]] = []
+    remaining = daily_before
+    for issue in issues:
+        row = estimate_issue_run(
+            issue,
+            claim_type=claim_type,
+            max_results=max_results,
+            deep_read=deep_read,
+            deep_read_limit=deep_read_limit,
+            usage=usage,
+            usage_error=usage_error,
+        )
+        cl_requests = sum(
+            int(r["requests"])
+            for r in row["providers"]  # type: ignore[union-attr]
+            if r["name"] == "courtlistener"
+        ) + int(row["deep_read"]["opinion_fetches"])  # type: ignore[union-attr]
+        row["courtlistener_requests"] = cl_requests
+        # Verdicts from estimate_issue_run (daily/minute checks) stay the source
+        # of truth; only escalate a "proceed" to "abort" when the cumulative
+        # daily window would run dry -- never downgrade an abort.
+        if row["verdict"] == "proceed" and remaining is not None and cl_requests > remaining:
+            row["verdict"] = "abort"
+        if remaining is not None:
+            remaining -= min(cl_requests, remaining)
+            row["courtlistener_after"] = remaining
+        else:
+            row["courtlistener_after"] = None
+        rows.append(row)
+
+    summary: dict[str, object] = {
+        "issues": len(rows),
+        "total_requests": sum(int(r["total_requests_estimate"]) for r in rows),
+        "courtlistener_requests": sum(int(r["courtlistener_requests"]) for r in rows),
+        "daily_before": daily_before,
+        "daily_after": remaining,
+        "daily_limit": daily_limit,
+        "blocked_issues": sum(1 for r in rows if r["verdict"] == "abort"),
+        "usage_error": usage_error,
+    }
+    return rows, summary
+
+
+def _batch_dry_run_to_csv(rows: list[dict[str, object]]) -> str:
+    """Render batch dry-run rows as a machine-parseable CSV (header + one row each)."""
+    header = [
+        "issue",
+        "base_queries",
+        "worst_case_queries",
+        "courtlistener_requests",
+        "total_requests",
+        "nominal_wall_seconds",
+        "worst_wall_seconds",
+        "courtlistener_daily_after",
+        "verdict",
+    ]
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(header)
+    for row in rows:
+        wall = row["wall_time_seconds"]  # type: ignore[union-attr]
+        writer.writerow(
+            [
+                row["issue"],
+                row["base_queries"],
+                row["total_queries_worst_case"],
+                row["courtlistener_requests"],
+                row["total_requests_estimate"],
+                wall["nominal"],
+                wall["worst_case"],
+                row["courtlistener_after"],
+                row["verdict"],
+            ]
+        )
+    return buffer.getvalue().rstrip("\n")
+
+
+def _batch_dry_run_to_text(rows: list[dict[str, object]], summary: dict[str, object]) -> str:
+    """Render batch dry-run rows as an aligned table with a schedule summary."""
+    lines = [
+        "Batch dry run - no searches were executed and no analysis was produced.",
+        "",
+        (
+            f"Issues: {summary['issues']}   Total requests: {summary['total_requests']}   "
+            f"CourtListener requests: {summary['courtlistener_requests']}"
+        ),
+    ]
+    if summary["daily_before"] is not None:
+        lines.append(
+            f"CourtListener daily window: {summary['daily_before']} remaining "
+            f"({summary['daily_limit']}/day) - {summary['daily_after']} left after the batch."
+        )
+    if summary["blocked_issues"]:
+        lines.append(
+            f"{summary['blocked_issues']} of {summary['issues']} issue(s) would ABORT "
+            "under the current window (wait for the reset to run them)."
+        )
+    if summary.get("usage_error"):
+        lines.append(f"CourtListener usage unavailable: {summary['usage_error']}")
+    lines.append("")
+    lines.append(
+        f"{'issue':<30} {'worst':>5} {'CL req':>6} {'total req':>9} "
+        f"{'nominal':>9} {'worst-case':>10} {'daily after':>11}  verdict"
+    )
+    for row in rows:
+        issue = str(row["issue"])
+        if len(issue) > 30:
+            issue = issue[:27] + "..."
+        daily = row["courtlistener_after"]
+        daily_label = "-" if daily is None else str(daily)
+        wall = row["wall_time_seconds"]  # type: ignore[union-attr]
+        lines.append(
+            f"{issue:<30} {row['total_queries_worst_case']:>4} "
+            f"{row['courtlistener_requests']:>6} {row['total_requests_estimate']:>9} "
+            f"{_format_wall_seconds(float(wall['nominal'])):>9} "
+            f"{_format_wall_seconds(float(wall['worst_case'])):>10} "
+            f"{daily_label:>11}  {row['verdict']}"
+        )
+    return "\n".join(lines)
+
+
+def _read_issues_file(path: str) -> list[str]:
+    """Read one issue per line from *path*, skipping blanks and ``#`` comments."""
+    issues: list[str] = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            issues.append(line)
+    return issues
+
+
+def _emit_output(text: str, output_file: str | None) -> None:
+    """Print *text* to stdout, or write it (plus a newline) to *output_file*."""
+    if output_file:
+        Path(output_file).write_text(text + "\n", encoding="utf-8")
+    else:
+        print(text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Search and analyze veterans compensation legal cases.")
     parser.add_argument("issue", nargs="?", help="The legal issue to research, such as service connection for tinnitus.")
@@ -736,6 +932,24 @@ def main() -> None:
             "Estimate request cost, quota impact, and wall time for this issue "
             "without executing any searches (text report, or JSON with "
             "--output-format json)."
+        ),
+    )
+    parser.add_argument(
+        "--batch-dry-run",
+        action="store_true",
+        help=(
+            "Estimate several issues at once and allocate the CourtListener daily "
+            "window across them (issues from --issues-file plus the positional "
+            "issue; CSV table with --output-format csv)."
+        ),
+    )
+    parser.add_argument(
+        "--issues-file",
+        dest="issues_file",
+        default=None,
+        help=(
+            "File with one issue per line for --batch-dry-run (blank lines and "
+            "#-prefixed comment lines are skipped)."
         ),
     )
     parser.add_argument(
@@ -818,10 +1032,42 @@ def main() -> None:
         print_settings()
         return
 
-    if not args.issue:
+    if not args.issue and not args.batch_dry_run:
         parser.error("the following arguments are required: issue")
 
     max_results = args.max_results if args.max_results is not None else get_settings().search_max_results
+    if args.batch_dry_run:
+        if args.dry_run:
+            parser.error("--dry-run and --batch-dry-run are mutually exclusive.")
+        issues: list[str] = []
+        if args.issues_file:
+            try:
+                issues.extend(_read_issues_file(args.issues_file))
+            except OSError as exc:
+                parser.error(f"could not read issues file: {exc}")
+        if args.issue:
+            issues.append(args.issue)
+        if not issues:
+            parser.error(
+                "--batch-dry-run needs at least one issue (positional or --issues-file)."
+            )
+        rows, summary = batch_dry_run(
+            issues,
+            claim_type=args.claim_type,
+            max_results=max(max_results, 1),
+            deep_read=args.deep_read,
+            deep_read_limit=args.deep_read_limit,
+        )
+        if args.output_format == "csv":
+            text = _batch_dry_run_to_csv(rows)
+        else:
+            text = _batch_dry_run_to_text(rows, summary)
+        try:
+            _emit_output(text, args.output_file)
+        except OSError as exc:
+            parser.error(f"could not write output file: {exc}")
+        return
+
     if args.dry_run:
         report = estimate_issue_run(
             args.issue,
@@ -831,9 +1077,13 @@ def main() -> None:
             deep_read_limit=args.deep_read_limit,
         )
         if args.output_format == "json":
-            print(json.dumps(report, indent=2, default=str))
+            text = json.dumps(report, indent=2, default=str)
         else:
-            print(_dry_run_to_text(report))
+            text = _dry_run_to_text(report)
+        try:
+            _emit_output(text, args.output_file)
+        except OSError as exc:
+            parser.error(f"could not write output file: {exc}")
         return
 
     run_id = _run_id(args.run_id)
