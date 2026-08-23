@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily trigger for the DeepSearchAgent batch service
+
+[Timer]
+# 04:30 local, with a random 10-minute delay so hosts don't stampede.
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

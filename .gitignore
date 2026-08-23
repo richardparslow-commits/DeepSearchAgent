@@ -23,5 +23,12 @@ venv/
 # BVA local search index (downloaded decision corpus)
 .bva_index/
 
+# Unattended batch deployment runtime artifacts
+logs/
+issues.txt
+issues.retry
+plan.csv
+plan.retry.txt
+
 # OS
 .DS_Store

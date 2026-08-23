@@ -1,0 +1,29 @@
+[Unit]
+Description=DeepSearchAgent unattended batch research (auto-run)
+# The agent only talks to external APIs, so wait for the network to be up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Created by deploy/install.sh; owns the checkout and reads .env from it.
+User=__USER__
+Group=__USER__
+WorkingDirectory=__TARGET__
+ExecStart=__TARGET__/deploy/run_batch.sh
+# --auto-run sleeps through CourtListener window resets, so no start timeout.
+TimeoutStartSec=0
+TimeoutStopSec=30
+# Retry real crashes (e.g. an unreachable usage endpoint) with a backoff.
+Restart=on-failure
+RestartSec=120
+# Flush logs promptly so journald / the per-run log file stay current.
+Environment=PYTHONUNBUFFERED=1
+# Modest hardening; relax these if a provider fetch misbehaves.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=__TARGET__
+
+[Install]
+WantedBy=multi-user.target
