@@ -807,6 +807,7 @@ def _batch_dry_run_to_csv(rows: list[dict[str, object]]) -> str:
     """Render batch dry-run rows as a machine-parseable CSV (header + one row each)."""
     header = [
         "issue",
+        "priority",
         "base_queries",
         "worst_case_queries",
         "courtlistener_requests",
@@ -824,6 +825,7 @@ def _batch_dry_run_to_csv(rows: list[dict[str, object]]) -> str:
         writer.writerow(
             [
                 row["issue"],
+                row["priority"] if row.get("priority") is not None else "",
                 row["base_queries"],
                 row["total_queries_worst_case"],
                 row["courtlistener_requests"],
@@ -878,7 +880,7 @@ def _batch_dry_run_to_text(
         return "\n".join(lines)
     lines.append("")
     lines.append(
-        f"{'issue':<30} {'worst':>5} {'CL req':>6} {'total req':>9} "
+        f"{'issue':<30} {'prio':>4} {'worst':>5} {'CL req':>6} {'total req':>9} "
         f"{'nominal':>9} {'worst-case':>10} {'daily after':>11}  verdict"
     )
     for row in rows:
@@ -887,9 +889,11 @@ def _batch_dry_run_to_text(
             issue = issue[:27] + "..."
         daily = row["courtlistener_after"]
         daily_label = "-" if daily is None else str(daily)
+        priority = row.get("priority")
+        priority_label = "-" if priority is None else str(priority)
         wall = row["wall_time_seconds"]  # type: ignore[union-attr]
         lines.append(
-            f"{issue:<30} {row['total_queries_worst_case']:>4} "
+            f"{issue:<30} {priority_label:>4} {row['total_queries_worst_case']:>5} "
             f"{row['courtlistener_requests']:>6} {row['total_requests_estimate']:>9} "
             f"{_format_wall_seconds(float(wall['nominal'])):>9} "
             f"{_format_wall_seconds(float(wall['worst_case'])):>10} "
@@ -898,15 +902,33 @@ def _batch_dry_run_to_text(
     return "\n".join(lines)
 
 
-def _read_issues_file(path: str) -> list[str]:
-    """Read one issue per line from *path*, skipping blanks and ``#`` comments."""
-    issues: list[str] = []
+def _read_issues_file(path: str) -> list[tuple[str, int | None]]:
+    """Read one issue per line from *path* as ``(issue, priority)`` pairs.
+
+    Lines are ``issue`` alone (priority ``None``) or ``issue<TAB>priority``
+    where *priority* is an integer. Lower numbers run first; lines without
+    a priority sort after every weighted line, preserving file order among
+    themselves (and among ties). Blank lines and ``#`` comments are skipped;
+    a non-integer priority token is ignored (the line becomes unweighted).
+    """
+    issues: list[tuple[str, int | None]] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line and not line.startswith("#"):
-            issues.append(line)
+        if not line or line.startswith("#"):
+            continue
+        # The stripped line is non-empty, so the first tab-field is non-empty
+        # too; a trailing/leading tab only ever splits into an empty field on
+        # a line we already skipped above.
+        parts = line.split("\t")
+        issue = parts[0]
+        priority: int | None = None
+        if len(parts) >= 2:
+            try:
+                priority = int(parts[1].strip())
+            except ValueError:
+                priority = None
+        issues.append((issue, priority))
     return issues
-
 
 def _emit_output(text: str, output_file: str | None) -> None:
     """Print *text* to stdout, or write it (plus a newline) to *output_file*."""
@@ -1093,9 +1115,13 @@ def main() -> None:
         if args.dry_run:
             parser.error("--dry-run and --batch-dry-run are mutually exclusive.")
         issues: list[str] = []
+        priority_by_issue: dict[str, int] = {}
         if args.issues_file:
             try:
-                issues.extend(_read_issues_file(args.issues_file))
+                for parsed_issue, priority in _read_issues_file(args.issues_file):
+                    issues.append(parsed_issue)
+                    if priority is not None:
+                        priority_by_issue[parsed_issue] = priority
             except OSError as exc:
                 parser.error(f"could not read issues file: {exc}")
         if args.issue:
@@ -1104,6 +1130,11 @@ def main() -> None:
             parser.error(
                 "--batch-dry-run needs at least one issue (positional or --issues-file)."
             )
+        if priority_by_issue:
+            # Lower numbers run first; unweighted issues sort after every
+            # weighted one. ``--start-at`` below then indexes into this
+            # priority order.
+            issues.sort(key=lambda i: (i not in priority_by_issue, priority_by_issue.get(i, 0)))
         if args.start_at is not None:
             if args.start_at < 1:
                 parser.error("--start-at must be >= 1.")
@@ -1121,6 +1152,8 @@ def main() -> None:
             deep_read=args.deep_read,
             deep_read_limit=args.deep_read_limit,
         )
+        for row in rows:
+            row["priority"] = priority_by_issue.get(row["issue"])  # type: ignore[typeddict-item]
         if args.only_blocked:
             rows_visible = [row for row in rows if row["verdict"] == "abort"]
         else:
@@ -1148,7 +1181,12 @@ def main() -> None:
         if retry_path is not None and (blocked or explicit_retry):
             try:
                 Path(retry_path).write_text(
-                    "".join(str(row["issue"]) + "\n" for row in blocked),
+                    "".join(
+                        str(row["issue"])
+                        + (f"\t{row['priority']}" if row.get("priority") is not None else "")
+                        + "\n"
+                        for row in blocked
+                    ),
                     encoding="utf-8",
                 )
             except OSError as exc:

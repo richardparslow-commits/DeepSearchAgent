@@ -1122,6 +1122,169 @@ def test_batch_dry_run_retry_file_write_failure(capsys, monkeypatch, tmp_path):
     assert exc.value.code != 0
 
 
+def test_batch_dry_run_priorities_reorder_before_allocation(capsys, monkeypatch, tmp_path):
+    """Lower priority numbers run first; unweighted issues sort last."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text(
+        "low-priority\t2\nhigh-priority\t1\nno-priority\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert [r["issue"] for r in rows] == ["high-priority", "low-priority", "no-priority"]
+    assert [r["priority"] for r in rows] == ["1", "2", ""]  # unweighted -> empty
+
+
+def test_batch_dry_run_priority_ties_keep_file_order(capsys, monkeypatch, tmp_path):
+    """Equal priorities keep their original file order (stable sort)."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("first\t1\nsecond\t1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert out.index("first") < out.index("second")
+
+
+def test_batch_dry_run_non_integer_priority_treated_as_unweighted(
+    capsys, monkeypatch, tmp_path
+):
+    """A non-integer priority token leaves the issue unweighted (sorts last)."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text(
+        "weighted\t3\nnot-a-number\turgent\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert [r["issue"] for r in rows] == ["weighted", "not-a-number"]
+    assert [r["priority"] for r in rows] == ["3", ""]
+
+
+def test_batch_dry_run_priority_retry_file_preserves_priority(
+    capsys, monkeypatch, tmp_path
+):
+    """The retry file keeps TAB priority so the retry loop stays ordered."""
+    issues = ["low\t5", "high\t1"]
+    low_req = _expected_dry_run_requests("low")
+    high_req = _expected_dry_run_requests("high")
+    # The window fits high exactly but not low; the sorted order puts high
+    # first, so only low ends up blocked.
+    window = low_req + high_req - 1
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    retry_path = tmp_path / "retry.txt"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            str(retry_path),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    capsys.readouterr().out
+    # The blocked row keeps its TAB priority so the retry loop stays ordered.
+    assert retry_path.read_text(encoding="utf-8") == "low\t5\n"
+
+
+def test_batch_dry_run_tab_priority_prefix_issue(capsys, monkeypatch, tmp_path):
+    """Leading/trailing whitespace is stripped; an indent-then-priority is an issue."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("real\t\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Issues: 1" in out
+    assert "real" in out
+
+
+def test_batch_dry_run_priorities_then_start_at_indexes_sorted_order(
+    capsys, monkeypatch, tmp_path
+):
+    """--start-at counts into the priority-sorted order."""
+    import csv as _csv
+    import io as _io
+
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("a\t2\nb\t1\nc\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--start-at",
+            "2",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    # Sorted order is [b(1), a(2), c(unweighted)]; start-at 2 drops b.
+    assert [r["issue"] for r in rows] == ["a", "c"]
+
+
 def test_batch_dry_run_filters_require_batch_flag(capsys, monkeypatch):
     """--start-at / --only-blocked without --batch-dry-run is a usage error."""
     for extra in (["--only-blocked"], ["--start-at", "2"]):
