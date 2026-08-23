@@ -805,6 +805,148 @@ def test_batch_dry_run_output_file_write_failure(capsys, monkeypatch, tmp_path):
     assert exc.value.code != 0
 
 
+def test_batch_dry_run_start_at_skips_early_issues(capsys, monkeypatch, tmp_path):
+    """--start-at N plans only from the Nth issue onward."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--start-at", "2", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Issues: 2" in out
+    assert "alpha" not in out
+    assert "beta" in out
+    assert "gamma" in out
+
+
+def test_batch_dry_run_start_at_beyond_batch_errors(capsys, monkeypatch, tmp_path):
+    """--start-at past the end of the batch is a usage error."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--start-at", "9", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_start_at_zero_errors(capsys, monkeypatch, tmp_path):
+    """--start-at 0 is rejected (indices are 1-based)."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--start-at", "0", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
+def test_batch_dry_run_only_blocked_shows_aborted_only(capsys, monkeypatch, tmp_path):
+    """--only-blocked lists just the issues the window can't cover."""
+    issues = ["alpha", "beta", "gamma"]
+    reqs = [_expected_dry_run_requests(issue) for issue in issues]
+    window = reqs[0] + reqs[1]  # exactly fits the first two
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--only-blocked", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "Showing 1 of 3 issue(s) (--only-blocked)." in out
+    assert "gamma" in out
+    assert "1 of 3 issue(s) would ABORT" in out
+    assert "beta" not in out  # the proceeding rows are hidden
+
+
+def test_batch_dry_run_only_blocked_none(capsys, monkeypatch, tmp_path):
+    """--only-blocked with nothing blocked says so instead of an empty table."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--batch-dry-run", "--only-blocked", "--issues-file", str(issues_file)],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    out = capsys.readouterr().out
+    assert "No blocked issues to show." in out
+    assert "alpha" not in out
+
+
+def test_batch_dry_run_only_blocked_csv(capsys, monkeypatch, tmp_path):
+    """--only-blocked with --output-format csv emits just the aborted rows."""
+    import csv as _csv
+    import io as _io
+
+    issues = ["alpha", "beta", "gamma"]
+    reqs = [_expected_dry_run_requests(issue) for issue in issues]
+    window = reqs[0] + reqs[1]
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--only-blocked",
+            "--output-format",
+            "csv",
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
+    assert [r["issue"] for r in rows] == ["gamma"]
+    assert rows[0]["verdict"] == "abort"
+
+
+def test_batch_dry_run_filters_require_batch_flag(capsys, monkeypatch):
+    """--start-at / --only-blocked without --batch-dry-run is a usage error."""
+    for extra in (["--only-blocked"], ["--start-at", "2"]):
+        monkeypatch.setattr(
+            "sys.argv", ["va-legal-agent"] + extra + ["tinnitus"]
+        )
+        monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code != 0
+
+
 def test_dry_run_and_batch_dry_run_are_mutually_exclusive(capsys, monkeypatch):
     """--dry-run + --batch-dry-run is a usage error."""
     monkeypatch.setattr(

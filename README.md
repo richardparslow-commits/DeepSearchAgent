@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **1093 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **1100 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -101,13 +101,17 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    JSON for CI.
    For several issues at once, `--batch-dry-run` (with `--issues-file`,
    one issue per line, or a positional issue) estimates each one and
-   **allocates the CourtListener daily window cumulatively** — each row shows
-   the requests it consumes and how many remain after it, and issues that would
-   run the window dry get an `abort` verdict. It fetches the live usage
-   endpoint exactly once for the whole batch. `--output-format csv` renders
-   the batch as a machine-parseable table (`issue, ...,
-   courtlistener_daily_after, verdict`) that operators can feed straight into
-   a scheduler.
+   **allocates the CourtListener daily window cumulatively** — each issue
+   shows the requests it consumes and how many remain after it, and issues
+   that would run the window dry get an `abort` verdict. It fetches the live
+   usage endpoint exactly once for the whole batch. `--output-format csv`
+   renders the batch as a machine-parseable table (`issue, ...,
+   courtlistener_daily_after, verdict`) that operators can feed straight
+   into a scheduler. Two filters help schedule-checkpointing: `--start-at N`
+   (1-based) plans only from the Nth issue onward, skipping the ones already
+   run, and `--only-blocked` shows just the aborted issues — so after a
+   window reset a scheduler can re-run exactly the blocked set (the CSV
+   limited to those rows is ready to feed to an issues file).
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -141,7 +145,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (1093 tests) runs in about eleven seconds, so run it after
+The full suite (1100 tests) runs in about eleven seconds, so run it after
 every change:
 
 ```bash

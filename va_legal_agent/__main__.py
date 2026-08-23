@@ -837,8 +837,17 @@ def _batch_dry_run_to_csv(rows: list[dict[str, object]]) -> str:
     return buffer.getvalue().rstrip("\n")
 
 
-def _batch_dry_run_to_text(rows: list[dict[str, object]], summary: dict[str, object]) -> str:
-    """Render batch dry-run rows as an aligned table with a schedule summary."""
+def _batch_dry_run_to_text(
+    rows: list[dict[str, object]],
+    summary: dict[str, object],
+    only_blocked: bool = False,
+) -> str:
+    """Render batch dry-run rows as an aligned table with a schedule summary.
+
+    When *only_blocked* is set, the caller has already filtered *rows* down
+    to the aborting issues; the report says so and (when nothing is blocked)
+    says so explicitly instead of printing an empty table.
+    """
     lines = [
         "Batch dry run - no searches were executed and no analysis was produced.",
         "",
@@ -847,6 +856,10 @@ def _batch_dry_run_to_text(rows: list[dict[str, object]], summary: dict[str, obj
             f"CourtListener requests: {summary['courtlistener_requests']}"
         ),
     ]
+    if only_blocked and len(rows) < int(summary["issues"]):
+        lines.append(
+            f"Showing {len(rows)} of {summary['issues']} issue(s) (--only-blocked)."
+        )
     if summary["daily_before"] is not None:
         lines.append(
             f"CourtListener daily window: {summary['daily_before']} remaining "
@@ -859,6 +872,10 @@ def _batch_dry_run_to_text(rows: list[dict[str, object]], summary: dict[str, obj
         )
     if summary.get("usage_error"):
         lines.append(f"CourtListener usage unavailable: {summary['usage_error']}")
+    if not rows:
+        lines.append("")
+        lines.append("No blocked issues to show.")
+        return "\n".join(lines)
     lines.append("")
     lines.append(
         f"{'issue':<30} {'worst':>5} {'CL req':>6} {'total req':>9} "
@@ -953,6 +970,26 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--start-at",
+        dest="start_at",
+        type=int,
+        default=None,
+        help=(
+            "With --batch-dry-run: 1-based index of the first issue to plan, "
+            "skipping the earlier ones (e.g. 4 to resume from the 4th issue)."
+        ),
+    )
+    parser.add_argument(
+        "--only-blocked",
+        dest="only_blocked",
+        action="store_true",
+        help=(
+            "With --batch-dry-run: show only the issues whose verdict is abort "
+            "(those the current window can't cover), so a scheduler can retry "
+            "exactly them after the reset."
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         dest="run_id",
         default=None,
@@ -1032,6 +1069,9 @@ def main() -> None:
         print_settings()
         return
 
+    if (args.start_at is not None or args.only_blocked) and not args.batch_dry_run:
+        parser.error("--start-at and --only-blocked only apply to --batch-dry-run.")
+
     if not args.issue and not args.batch_dry_run:
         parser.error("the following arguments are required: issue")
 
@@ -1051,6 +1091,16 @@ def main() -> None:
             parser.error(
                 "--batch-dry-run needs at least one issue (positional or --issues-file)."
             )
+        if args.start_at is not None:
+            if args.start_at < 1:
+                parser.error("--start-at must be >= 1.")
+            skipped = args.start_at - 1
+            if skipped >= len(issues):
+                parser.error(
+                    f"--start-at {args.start_at} skips the entire batch "
+                    f"(only {len(issues)} issue(s) given)."
+                )
+            issues = issues[skipped:]
         rows, summary = batch_dry_run(
             issues,
             claim_type=args.claim_type,
@@ -1058,10 +1108,12 @@ def main() -> None:
             deep_read=args.deep_read,
             deep_read_limit=args.deep_read_limit,
         )
+        if args.only_blocked:
+            rows = [row for row in rows if row["verdict"] == "abort"]
         if args.output_format == "csv":
             text = _batch_dry_run_to_csv(rows)
         else:
-            text = _batch_dry_run_to_text(rows, summary)
+            text = _batch_dry_run_to_text(rows, summary, only_blocked=args.only_blocked)
         try:
             _emit_output(text, args.output_file)
         except OSError as exc:
