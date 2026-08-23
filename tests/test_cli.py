@@ -935,6 +935,193 @@ def test_batch_dry_run_only_blocked_csv(capsys, monkeypatch, tmp_path):
     assert rows[0]["verdict"] == "abort"
 
 
+def test_batch_dry_run_retry_file_writes_blocked_issues(capsys, monkeypatch, tmp_path):
+    """--retry-file writes exactly the aborted issues, one per line."""
+    issues = ["alpha", "beta", "gamma"]
+    reqs = [_expected_dry_run_requests(issue) for issue in issues]
+    window = reqs[0] + reqs[1]  # gamma is blocked
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    retry_path = tmp_path / "retry.txt"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            str(retry_path),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    capsys.readouterr().out
+    assert retry_path.read_text(encoding="utf-8") == "gamma\n"
+
+
+def test_batch_dry_run_retry_file_empty_when_nothing_blocked(capsys, monkeypatch, tmp_path):
+    """Explicit --retry-file still creates the file (empty) with nothing blocked."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    retry_path = tmp_path / "retry.txt"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            str(retry_path),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    capsys.readouterr().out
+    assert retry_path.exists()
+    assert retry_path.read_text(encoding="utf-8") == ""
+
+
+def test_batch_dry_run_retry_file_disabled_with_off(capsys, monkeypatch, tmp_path):
+    """--retry-file off skips the write entirely."""
+    issues = ["alpha", "beta"]
+    reqs = [_expected_dry_run_requests(issue) for issue in issues]
+    window = reqs[0] - 1  # even alpha is blocked
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    out_csv = tmp_path / "out.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--output-file",
+            str(out_csv),
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            "off",
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    capsys.readouterr().out
+    # Explicitly disabled: neither an explicit nor the implicit-derived file.
+    assert not out_csv.with_suffix(".retry.txt").exists()
+
+
+def test_batch_dry_run_implicit_retry_file_next_to_csv(capsys, monkeypatch, tmp_path):
+    """CSV output without a flag writes the default retry file next to it."""
+    issues = ["alpha", "beta"]
+    reqs = [_expected_dry_run_requests(issue) for issue in issues]
+    window = reqs[0] - 1
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    out_csv = tmp_path / "plan.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--output-file",
+            str(out_csv),
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    main()
+
+    capsys.readouterr().out
+    retry_path = out_csv.with_suffix(".retry.txt")
+    assert retry_path.exists()
+    assert retry_path.read_text(encoding="utf-8") == "alpha\nbeta\n"
+
+
+def test_batch_dry_run_implicit_csv_skips_retry_when_none_blocked(capsys, monkeypatch, tmp_path):
+    """CSV output with nothing blocked leaves no implicit retry file."""
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("alpha\n", encoding="utf-8")
+    out_csv = tmp_path / "plan.csv"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--output-format",
+            "csv",
+            "--output-file",
+            str(out_csv),
+            "--issues-file",
+            str(issues_file),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
+    )
+
+    main()
+
+    assert not out_csv.with_suffix(".retry.txt").exists()
+
+
+def test_batch_dry_run_retry_file_write_failure(capsys, monkeypatch, tmp_path):
+    """An unwritable --retry-file path is a usage error."""
+    issues = ["alpha"]
+    reqs = [_expected_dry_run_requests(issues[0])]
+    window = reqs[0] - 1
+    issues_file = tmp_path / "issues.txt"
+    issues_file.write_text("\n".join(issues) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--batch-dry-run",
+            "--issues-file",
+            str(issues_file),
+            "--retry-file",
+            str(tmp_path / "no" / "such" / "dir" / "retry.txt"),
+        ],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: _usage_payload(daily_used=0, daily_limit=window),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+
+
 def test_batch_dry_run_filters_require_batch_flag(capsys, monkeypatch):
     """--start-at / --only-blocked without --batch-dry-run is a usage error."""
     for extra in (["--only-blocked"], ["--start-at", "2"]):

@@ -990,6 +990,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--retry-file",
+        dest="retry_file",
+        default=None,
+        help=(
+            "With --batch-dry-run: write the issues whose verdict is abort to "
+            "this file (one per line), so after the window reset a retry run "
+            "can reuse them directly. Defaults to 'issues.retry' next to the "
+            "CSV when --output-format csv / --output-file is used; pass "
+            "explicitly (or set --retry-file) to always write it, or pass an "
+            "empty value to disable."
+        ),
+    )
+    parser.add_argument(
         "--run-id",
         dest="run_id",
         default=None,
@@ -1109,11 +1122,41 @@ def main() -> None:
             deep_read_limit=args.deep_read_limit,
         )
         if args.only_blocked:
-            rows = [row for row in rows if row["verdict"] == "abort"]
-        if args.output_format == "csv":
-            text = _batch_dry_run_to_csv(rows)
+            rows_visible = [row for row in rows if row["verdict"] == "abort"]
         else:
-            text = _batch_dry_run_to_text(rows, summary, only_blocked=args.only_blocked)
+            rows_visible = rows
+        # Write the blocked-issues retry file.
+        #   * Explicit --retry-file PATH  -> always write (empty if nothing
+        #     is blocked, so automation can rely on its existence).
+        #   * --retry-file "" / none / off -> never write.
+        #   * No flag, batch CSV output    -> write to 'issues.retry' (or the
+        #     CSV path with a .retry.txt suffix) only when something is
+        #     blocked; an all-proceed batch leaves no retry file behind.
+        blocked = [row for row in rows if row["verdict"] == "abort"]
+        explicit_retry = args.retry_file not in (None, "", "none", "off")
+        retry_path: str | None = None
+        if args.retry_file in ("", "none", "off"):
+            retry_path = None
+        elif explicit_retry:
+            retry_path = args.retry_file
+        elif args.output_format == "csv" and blocked:
+            retry_path = (
+                str(Path(args.output_file).with_suffix(".retry.txt"))
+                if args.output_file
+                else "issues.retry"
+            )
+        if retry_path is not None and (blocked or explicit_retry):
+            try:
+                Path(retry_path).write_text(
+                    "".join(str(row["issue"]) + "\n" for row in blocked),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                parser.error(f"could not write retry file {retry_path}: {exc}")
+        if args.output_format == "csv":
+            text = _batch_dry_run_to_csv(rows_visible)
+        else:
+            text = _batch_dry_run_to_text(rows_visible, summary, only_blocked=args.only_blocked)
         try:
             _emit_output(text, args.output_file)
         except OSError as exc:
