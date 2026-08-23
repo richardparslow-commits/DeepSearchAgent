@@ -15,6 +15,12 @@ Production hardening:
   survive a process restart.
 - **Concurrent-run cap**: at most ``WEBAPP_MAX_CONCURRENT`` (default 2)
   analysis jobs run at once; extra submissions get HTTP 429.
+- **Text or JSON output**: every run stores both renderings; a Text/JSON
+  toggle on the page switches the display, and ``POST /api/analyze`` accepts
+  the same request as JSON (``{"issue": ..., "max_results": ...,
+  "max_wall_seconds": ...}``), returning ``{"run_id": ...}`` for polling via
+  ``GET /api/status/<job_id>`` (the job carries ``result`` and
+  ``result_json``).
 
 Run it from the repo root with the venv:
 
@@ -120,17 +126,17 @@ def _load_jobs() -> None:
     _prune()
 
 
-def _int_or_none(value: str | None) -> int | None:
+def _int_or_none(value: object) -> int | None:
     try:
         return int(value) if value not in (None, "") else None
-    except ValueError:
+    except (TypeError, ValueError):
         return None
 
 
-def _float_or_none(value: str | None) -> float | None:
+def _float_or_none(value: object) -> float | None:
     try:
         return float(value) if value not in (None, "") else None
-    except ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -148,9 +154,17 @@ def _run_job(
             max_wall_seconds=max_wall_seconds,
         )
         result = render_analysis(analysis, "text")
+        result_json = analysis.model_dump(mode="json")
         with _LOCK:
             job = _JOBS[job_id]
-            job.update({"status": "done", "result": result, "finished_at": _now_iso()})
+            job.update(
+                {
+                    "status": "done",
+                    "result": result,
+                    "result_json": result_json,
+                    "finished_at": _now_iso(),
+                }
+            )
             _save_job(job)
     except Exception as exc:  # noqa: BLE001 - surface any failure to the page
         with _LOCK:
@@ -172,29 +186,37 @@ def index() -> str:
     return render_template_string(_INDEX_HTML)
 
 
-@app.post("/analyze")
-def analyze():
-    issue = (request.form.get("issue") or "").strip()
-    if not issue:
-        return jsonify({"error": "issue is required"}), 400
+def _start_job(
+    issue: str | None,
+    max_results_raw: object,
+    max_wall_raw: object,
+) -> tuple[dict[str, object], int]:
+    """Validate inputs and start a background analysis job.
 
-    max_results = _int_or_none(request.form.get("max_results"))
+    Shared by the form (``/analyze``) and JSON (``/api/analyze``) entry
+    points; returns ``(payload, status_code)``. The concurrency permit is
+    acquired here and released by the job thread, so the cap is exact even
+    across both endpoints.
+    """
+    issue = (issue or "").strip()
+    if not issue:
+        return {"error": "issue is required"}, 400
+
+    max_results = _int_or_none(max_results_raw)
     if max_results is None:
         max_results = get_settings().search_max_results
     if max_results < 1:
-        return jsonify({"error": "max_results must be >= 1"}), 400
-    max_wall_seconds = _float_or_none(request.form.get("max_wall_seconds"))
+        return {"error": "max_results must be >= 1"}, 400
+    max_wall_seconds = _float_or_none(max_wall_raw)
 
     if not _SEM.acquire(blocking=False):
         return (
-            jsonify(
-                {
-                    "error": (
-                        f"server busy: {_MAX_CONCURRENT} analysis run(s) already in "
-                        "progress — try again when one finishes"
-                    )
-                }
-            ),
+            {
+                "error": (
+                    f"server busy: {_MAX_CONCURRENT} analysis run(s) already in "
+                    "progress — try again when one finishes"
+                )
+            },
             429,
         )
 
@@ -208,12 +230,42 @@ def analyze():
         }
         _save_job(_JOBS[job_id])
 
-    threading.Thread(
-        target=_run_job,
-        args=(job_id, issue, max_results, max_wall_seconds),
-        daemon=True,
-    ).start()
-    return jsonify({"run_id": job_id})
+    try:
+        threading.Thread(
+            target=_run_job,
+            args=(job_id, issue, max_results, max_wall_seconds),
+            daemon=True,
+        ).start()
+    except Exception:  # noqa: BLE001 - never leak a concurrency permit
+        _SEM.release()
+        with _LOCK:
+            _JOBS.pop(job_id, None)
+            try:
+                _job_path(job_id).unlink()
+            except OSError:
+                pass
+        return {"error": "could not start the run"}, 500
+    return {"run_id": job_id}, 200
+
+
+@app.post("/analyze")
+def analyze():
+    return _start_job(
+        request.form.get("issue"),
+        request.form.get("max_results"),
+        request.form.get("max_wall_seconds"),
+    )
+
+
+@app.post("/api/analyze")
+def api_analyze():
+    """JSON entry point: ``{"issue": ..., "max_results": N, "max_wall_seconds": N}``."""
+    data = request.get_json(silent=True) or {}
+    return _start_job(
+        data.get("issue"),
+        data.get("max_results"),
+        data.get("max_wall_seconds"),
+    )
 
 
 @app.get("/api/status/<job_id>")
@@ -288,7 +340,7 @@ _INDEX_HTML = """<!doctype html>
   <h1>DeepSearchAgent <span class="a">— live</span></h1>
   <p class="sub">Run a veterans-compensation legal research analysis straight from the browser.
   Runs consume real provider quota and the configured LLM key. At most 2 runs execute at once;
-  finished runs are persisted and survive server restarts.</p>
+  finished runs are persisted and survive server restarts. Pick text or JSON output below.</p>
 
   <div class="card">
     <form id="form">
@@ -304,6 +356,11 @@ _INDEX_HTML = """<!doctype html>
           <input id="max_wall_seconds" name="max_wall_seconds" type="number" min="1"
                  placeholder="blank = unlimited">
         </div>
+      </div>
+      <label>Output format</label>
+      <div class="row" style="gap:18px">
+        <label style="margin:0"><input type="radio" name="format" value="text" checked> Text</label>
+        <label style="margin:0"><input type="radio" name="format" value="json"> JSON</label>
       </div>
       <button id="submit" type="submit">Run analysis</button>
     </form>
@@ -344,6 +401,11 @@ _INDEX_HTML = """<!doctype html>
     poll(data.run_id);
   });
 
+  function selectedFormat() {
+    const el = document.querySelector('input[name="format"]:checked');
+    return el ? el.value : 'text';
+  }
+
   async function poll(runId) {
     statusEl.textContent = 'Running\u2026';
     const res = await fetch('/api/status/' + runId);
@@ -356,7 +418,11 @@ _INDEX_HTML = """<!doctype html>
     if (data.status === 'done') {
       statusEl.className = '';
       statusEl.textContent = 'Done.';
-      resultEl.textContent = data.result;
+      if (selectedFormat() === 'json' && data.result_json) {
+        resultEl.textContent = JSON.stringify(data.result_json, null, 2);
+      } else {
+        resultEl.textContent = data.result;
+      }
       resultEl.hidden = false;
     } else {
       statusEl.className = 'error';
