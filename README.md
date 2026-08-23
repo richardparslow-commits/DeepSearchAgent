@@ -18,7 +18,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **1112 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **1117 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -125,7 +125,12 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    CSV (`priority`), and is written back into the retry file, so the
    whole checkpoint/retry loop preserves the order of importance; non-`
    integer weights are ignored (treated as unweighted). `--start-at`
-   indexes into the priority-sorted order.
+   indexes into the priority-sorted order. A repeated issue (the same text
+   more than once, with any priorities) is collapsed into **one** plan row
+   carrying the best (lowest-number) explicit priority — an unweighted
+   duplicate never erases an explicit one, and a positional issue that
+   already appears in the file is not planned twice — so quota is never
+   double-charged for a typo or a re-keyed line.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -159,7 +164,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (1112 tests) runs in about eleven seconds, so run it after
+The full suite (1117 tests) runs in about eleven seconds, so run it after
 every change:
 
 ```bash

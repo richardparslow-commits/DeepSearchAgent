@@ -907,9 +907,12 @@ def _read_issues_file(path: str) -> list[tuple[str, int | None]]:
 
     Lines are ``issue`` alone (priority ``None``) or ``issue<TAB>priority``
     where *priority* is an integer. Lower numbers run first; lines without
-    a priority sort after every weighted line, preserving file order among
+    a priority sort after every weighted issue, preserving file order among
     themselves (and among ties). Blank lines and ``#`` comments are skipped;
     a non-integer priority token is ignored (the line becomes unweighted).
+    The same issue may appear more than once; callers that want one plan row
+    per issue collapse duplicates to the best (lowest-number) explicit
+    priority.
     """
     issues: list[tuple[str, int | None]] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -917,8 +920,9 @@ def _read_issues_file(path: str) -> list[tuple[str, int | None]]:
         if not line or line.startswith("#"):
             continue
         # The stripped line is non-empty, so the first tab-field is non-empty
-        # too; a trailing/leading tab only ever splits into an empty field on
-        # a line we already skipped above.
+        # too; a leading tab only ever splits into an empty field on a line
+        # we already skipped above (a trailing tab after the issue is a
+        # legitimate empty priority).
         parts = line.split("\t")
         issue = parts[0]
         priority: int | None = None
@@ -928,6 +932,8 @@ def _read_issues_file(path: str) -> list[tuple[str, int | None]]:
             except ValueError:
                 priority = None
         issues.append((issue, priority))
+    # Duplicates are collapsed by the caller (the CLI batch branch) to one
+    # plan row with the best priority; this reader stays a faithful parser.
     return issues
 
 def _emit_output(text: str, output_file: str | None) -> None:
@@ -1116,15 +1122,26 @@ def main() -> None:
             parser.error("--dry-run and --batch-dry-run are mutually exclusive.")
         issues: list[str] = []
         priority_by_issue: dict[str, int] = {}
+        seen: set[str] = set()
         if args.issues_file:
             try:
                 for parsed_issue, priority in _read_issues_file(args.issues_file):
+                    if parsed_issue in seen:
+                        # Duplicate issue: keep the best (lowest-number)
+                        # explicit priority; an unweighted duplicate never
+                        # downgrades an explicit one.
+                        if priority is not None:
+                            current = priority_by_issue.get(parsed_issue)
+                            if current is None or priority < current:
+                                priority_by_issue[parsed_issue] = priority
+                        continue
+                    seen.add(parsed_issue)
                     issues.append(parsed_issue)
                     if priority is not None:
                         priority_by_issue[parsed_issue] = priority
             except OSError as exc:
                 parser.error(f"could not read issues file: {exc}")
-        if args.issue:
+        if args.issue and args.issue not in seen:
             issues.append(args.issue)
         if not issues:
             parser.error(
