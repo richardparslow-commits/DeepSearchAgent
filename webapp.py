@@ -53,6 +53,7 @@ from va_legal_agent.config import get_settings
 _APP_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
 _MAX_JOBS = 50
+_RUNS_LIMIT = 20
 _MAX_CONCURRENT = int(os.environ.get("WEBAPP_MAX_CONCURRENT", "2"))
 
 _JOBS: dict[str, dict[str, object]] = {}
@@ -66,7 +67,8 @@ app = Flask(__name__)
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Millisecond precision so the recent-runs list orders sub-second submissions.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _job_path(job_id: str) -> Path:
@@ -277,6 +279,25 @@ def status(job_id: str):
     return jsonify(job)
 
 
+@app.get("/api/runs")
+def runs():
+    """Recent jobs, newest first (drives the page's Recent runs list)."""
+    with _LOCK:
+        items = [
+            {
+                "job_id": job.get("job_id"),
+                "issue": job.get("issue"),
+                "status": job.get("status"),
+                "started_at": job.get("started_at"),
+                "finished_at": job.get("finished_at"),
+                "error": job.get("error"),
+            }
+            for job in _JOBS.values()
+        ]
+    items.sort(key=lambda j: j.get("started_at") or "", reverse=True)
+    return jsonify(items[:_RUNS_LIMIT])
+
+
 def _serve(host: str, port: int) -> None:
     try:
         from waitress import serve
@@ -332,6 +353,19 @@ _INDEX_HTML = """<!doctype html>
         overflow-x:auto; white-space:pre; }
   #status { color:var(--muted); font-size:13px; margin:10px 0; }
   #status.running { color:var(--accent); } #status.error { color:var(--red); }
+  .runs-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .run-row { display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:6px;
+             cursor:pointer; border:1px solid transparent; }
+  .run-row:hover { background:var(--panel2); border-color:var(--border); }
+  .run-issue { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+  .run-badge { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--border); color:var(--muted); }
+  .run-badge.done { color:var(--green); border-color:#2c5138; background:#14251b; }
+  .run-badge.running { color:var(--accent); }
+  .run-badge.error { color:var(--red); }
+  .run-time { font-size:11px; color:var(--muted); font-family:var(--mono); }
+  .empty { color:var(--muted); font-size:13px; padding:6px 0; }
+  button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border);
+                     margin-top:0; padding:4px 12px; font-size:12px; font-weight:500; }
   .note { color:var(--muted); font-size:12.5px; margin-top:12px; }
 </style>
 </head>
@@ -367,6 +401,14 @@ _INDEX_HTML = """<!doctype html>
     <div id="status"></div>
   </div>
 
+  <div class="card">
+    <div class="runs-head">
+      <div style="font-size:15px;color:var(--accent);font-weight:600">Recent runs</div>
+      <button type="button" id="refresh" class="secondary">Refresh</button>
+    </div>
+    <div id="runs"><div class="empty">Loading…</div></div>
+  </div>
+
   <pre id="result" hidden></pre>
   <p class="note">Research support derived from public decisions, not legal advice.
   Status updates and the final report appear above; the page polls every 2 seconds.</p>
@@ -398,6 +440,7 @@ _INDEX_HTML = """<!doctype html>
       btn.disabled = false;
       return;
     }
+    loadRuns();
     poll(data.run_id);
   });
 
@@ -417,7 +460,7 @@ _INDEX_HTML = """<!doctype html>
     btn.disabled = false;
     if (data.status === 'done') {
       statusEl.className = '';
-      statusEl.textContent = 'Done.';
+      statusEl.textContent = 'Done (' + shortId(runId) + ').';
       if (selectedFormat() === 'json' && data.result_json) {
         resultEl.textContent = JSON.stringify(data.result_json, null, 2);
       } else {
@@ -428,7 +471,53 @@ _INDEX_HTML = """<!doctype html>
       statusEl.className = 'error';
       statusEl.textContent = 'Run failed: ' + (data.error || 'unknown error');
     }
+    loadRuns();
   }
+
+  const runsEl = document.getElementById('runs');
+
+  function esc(value) {
+    const d = document.createElement('div');
+    d.textContent = value == null ? '' : String(value);
+    return d.innerHTML;
+  }
+
+  function shortId(id) { return (id || '').slice(0, 8); }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function loadRuns() {
+    try {
+      const res = await fetch('/api/runs');
+      const jobs = await res.json();
+      if (!Array.isArray(jobs) || jobs.length === 0) {
+        runsEl.innerHTML = '<div class="empty">No runs yet.</div>';
+        return;
+      }
+      runsEl.innerHTML = jobs.map(j => {
+        const badge = j.status === 'done' ? 'done' : (j.status === 'running' ? 'running' : 'error');
+        return '<div class="run-row" data-id="' + esc(j.job_id) + '">' +
+          '<span class="run-issue">' + esc(j.issue) + '</span>' +
+          '<span class="run-badge ' + badge + '">' + badge + '</span>' +
+          '<span class="run-time">' + esc(fmtTime(j.started_at)) + '</span>' +
+          '</div>';
+      }).join('');
+    } catch (e) {
+      runsEl.innerHTML = '<div class="empty">Could not load runs.</div>';
+    }
+  }
+
+  runsEl.addEventListener('click', (ev) => {
+    const row = ev.target.closest('.run-row');
+    if (row) poll(row.dataset.id);
+  });
+
+  document.getElementById('refresh').addEventListener('click', loadRuns);
+  loadRuns();
 </script>
 </body>
 </html>
