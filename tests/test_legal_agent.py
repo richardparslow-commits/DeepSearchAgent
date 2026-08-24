@@ -2097,7 +2097,7 @@ def test_research_issue_citation_traversal_merges_new_opinions(monkeypatch):
             }
         ]
 
-    def fake_traverse(urls, max_results=10):
+    def fake_traverse(urls, max_results=10, deadline=None):
         assert urls == ["https://uscourts.cavc.gov/smith"]
         assert max_results == 5  # the loop forwards its own max_results, not a default
         return [

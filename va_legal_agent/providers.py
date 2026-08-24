@@ -709,7 +709,9 @@ def check_courtlistener_minute_budget(min_remaining: int) -> dict[str, object]:
     return budget
 
 
-def traverse_citations(urls: list[str], max_results: int = 10) -> list[dict[str, str]]:
+def traverse_citations(
+    urls: list[str], max_results: int = 10, deadline: float | None = None
+) -> list[dict[str, str]]:
     """Follow one hop of the CourtListener citation graph from *urls*.
 
     For each CourtListener opinion URL, fetch the opinions citing it and the
@@ -722,6 +724,12 @@ def traverse_citations(urls: list[str], max_results: int = 10) -> list[dict[str,
     merged: list[dict[str, str]] = []
     seen: set[str] = set()
     for url in urls:
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning(
+                "Citation traversal aborted: deadline reached (%d opinions found so far).",
+                len(merged),
+            )
+            break
         opinion_id = extract_courtlistener_opinion_id(url)
         if opinion_id is None:
             continue

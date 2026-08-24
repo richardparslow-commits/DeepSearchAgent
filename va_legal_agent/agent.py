@@ -628,11 +628,32 @@ def research_issue(
     # before the final ranking.
     if get_settings().citation_traversal:
         seeds = _dedupe(cases)[: get_settings().citation_traverse_limit]
-        for raw in traverse_citations([case.url for case in seeds], max_results=max_results):
-            court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
-            found = normalize_case(raw, court_name, claim_issue)
-            found.relevance_score = score_case_relevance(found, claim_issue)
-            cases.append(found)
+        if deadline and time.monotonic() >= deadline:
+            logger.warning(
+                "Citation traversal skipped: wall-time budget exhausted before "
+                "traversal started (deadline %.1f, now %.1f).",
+                deadline,
+                time.monotonic(),
+            )
+        else:
+            traversed = 0
+            for raw in traverse_citations(
+                [case.url for case in seeds], max_results=max_results, deadline=deadline
+            ):
+                if deadline and time.monotonic() >= deadline:
+                    logger.warning(
+                        "Citation traversal aborted mid-loop: wall-time budget "
+                        "exhausted (deadline %.1f, now %.1f). %d new opinions found.",
+                        deadline,
+                        time.monotonic(),
+                        traversed,
+                    )
+                    break
+                court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
+                found = normalize_case(raw, court_name, claim_issue)
+                found.relevance_score = score_case_relevance(found, claim_issue)
+                cases.append(found)
+                traversed += 1
 
     return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read, deep_read_limit)
 
