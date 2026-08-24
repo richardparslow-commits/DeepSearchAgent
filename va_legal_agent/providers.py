@@ -247,6 +247,69 @@ def _courtlistener_retry_delay(
     return max(base, min(retry_after, settings.search_backoff_max_seconds))
 
 
+def _minimize_courtlistener_query(query: str) -> str:
+    """Adapt a recall query for CourtListener's full-text search engine.
+
+    CourtListener's search engine matches quoted phrases literally, so a
+    phrase-quoted issue (``"Service connection for Aid and Attendance"``)
+    returns 0 results while the unquoted words match real opinions. Unlike
+    :func:`_minimize_bva_query`, this adapter preserves statute/regulation
+    fragments (``1110``, ``3.303``) because CourtListener's full-text index
+    includes them and they add useful specificity.
+
+    For a broad recall query such as
+    ``site:uscourts.cavc.gov "tinnitus" "Compensation" veterans compensation``,
+    the first non-statute quoted phrase is taken as the issue (unquoted) and
+    remaining boilerplate is dropped, yielding ``tinnitus``.
+
+    For a statute-anchored query such as
+    ``"1110" "tinnitus" veterans compensation``, both the statute fragment and
+    the issue phrase are kept, yielding ``1110 tinnitus`` instead of dropping
+    the statute number entirely.
+    """
+    text = strip_site_prefixes(query).replace("\u201c", '"').replace("\u201d", '"')
+
+    if text.lstrip().startswith('"'):
+        phrases = _BVA_QUOTED_PHRASE.findall(text)
+        parts: list[str] = []
+        found_issue = False
+        for phrase in phrases:
+            phrase = phrase.strip()
+            if not phrase:
+                continue
+            if _BVA_STATUTE_PHRASE.match(phrase):
+                # Statute/regulation fragment: CourtListener's full-text
+                # index includes these, so keep it for specificity.
+                parts.append(phrase)
+            elif not found_issue:
+                # First non-statute quoted phrase is the issue. Insert it
+                # unquoted so CourtListener tokenizes on individual words
+                # rather than requiring an exact phrase match.
+                parts.append(phrase)
+                found_issue = True
+            # Skip remaining quoted phrases (boilerplate: "Compensation",
+            # "veterans compensation", etc.) — the court_id filter already
+            # scopes to veterans courts.
+        if parts:
+            return " ".join(parts)
+
+    # Fallback: unquoted query (or a query whose only quoted phrases are
+    # statute fragments with nothing else). Shed the boilerplate suffix,
+    # then any trailing recall-boilerplate words, never emptying the query.
+    leading = text.split('"', 1)[0].strip()
+    lower = leading.lower()
+    for suffix in _BVA_BOILERPLATE_SUFFIXES:
+        if lower.endswith(suffix):
+            candidate = leading[: -len(suffix)].rstrip()
+            if candidate:
+                leading = candidate
+            break
+    words = leading.split()
+    while len(words) > 1 and words[-1].lower() in _BVA_BOILERPLATE:
+        words.pop()
+    return " ".join(words)
+
+
 class CourtListenerProvider:
     """Structured case search over CourtListener's REST API.
 
@@ -337,12 +400,11 @@ class CourtListenerProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         # CourtListener has its own court filter; site: tokens are noise there.
-        # Also reduce the recall query to the issue phrase: phrase-quoted
-        # boilerplate such as '"Service connection for Aid and Attendance"
-        # "Compensation" veterans compensation' returns 0 results because
-        # CourtListener's search engine matches the quoted phrases literally,
-        # while the issue phrase alone (unquoted) matches real opinions.
-        query = _minimize_bva_query(query)
+        # Minimize the recall query for CourtListener's full-text engine:
+        # drop the quoted boilerplate, keep statute fragments for specificity,
+        # and de-quote the issue phrase so the tokenizer matches individual
+        # words rather than requiring exact phrase matches.
+        query = _minimize_courtlistener_query(query)
         # The search endpoint returns up to 20 results per page regardless of
         # page_size and paginates with an opaque cursor in ``next``, so a
         # numeric page N means: follow the cursor chain N-1 times, then read
