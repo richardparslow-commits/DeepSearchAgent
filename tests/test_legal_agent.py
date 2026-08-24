@@ -2130,6 +2130,136 @@ def test_research_issue_citation_traversal_merges_new_opinions(monkeypatch):
     assert wilson.court == COURT_CAVC
 
 
+def test_research_issue_citation_traversal_skipped_when_deadline_expired(monkeypatch):
+    """Citation traversal is skipped when the wall-time deadline is already past."""
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    traversed: list[str] = []
+
+    def fake_traverse(urls, max_results=10, deadline=None):
+        traversed.extend(urls)
+        return []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    # Passing 0.001 as max_wall_seconds gives a deadline essentially now; by the
+    # time the search phase finishes (it returns instantly with our fake), the
+    # real monotonic clock is past the deadline and traversal is skipped.
+    research_issue("test issue", max_results=5, max_wall_seconds=0.001)
+
+    assert traversed == [], "traversal should have been skipped entirely"
+
+
+def test_research_issue_citation_traversal_aborted_mid_loop_when_deadline_passes(
+    monkeypatch,
+):
+    """Citation traversal stops mid-iteration when the deadline passes between yields."""
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    class FakeMonotonic:
+        def __init__(self):
+            self.t = 0.0
+
+        def __call__(self):
+            return self.t
+
+    fake_time = FakeMonotonic()
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", fake_time)
+
+    yield_count = 0
+
+    def fake_traverse(urls, max_results=10, deadline=None):
+        nonlocal yield_count
+        # Yield one result, then simulate the deadline passing.
+        yield {
+            "title": "First Case",
+            "url": "https://www.courtlistener.com/opinion/1/first/",
+            "court": "Court of Appeals for Veterans Claims",
+            "snippet": "evidence",
+        }
+        yield_count += 1
+        # Advance the fake clock past the deadline (deadline was set at t=0 + 10s).
+        fake_time.t = 100.0
+        # The next iteration's deadline check in the loop will see 100 >= 10
+        # and abort before yielding this second result.
+        yield {
+            "title": "Second Case (should not be added)",
+            "url": "https://www.courtlistener.com/opinion/2/second/",
+            "snippet": "evidence",
+        }
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    # max_wall_seconds=10 → deadline = fake_time.t + 10 = 10.
+    cases = research_issue("test issue", max_results=5, max_wall_seconds=10)
+
+    # Only the first traversed opinion should be merged; the second is
+    # blocked by the deadline check that fires after fake_time advances.
+    titles = {c.title for c in cases}
+    assert "First Case" in titles
+    assert "Second Case (should not be added)" not in titles
+    assert yield_count == 1  # exactly one yield before deadline hit
+
+
+def test_traverse_citations_deadline_aborts_between_seeds(monkeypatch):
+    """traverse_citations stops processing seeds when the deadline is reached."""
+    from va_legal_agent.providers import traverse_citations
+
+    class FakeProvider:
+        def cited_opinions(self, opinion_id, max_results=10):
+            # This should never be called because the deadline check aborts first.
+            raise AssertionError("cited_opinions should not be called")
+
+        def citing_opinions(self, opinion_id, max_results=10):
+            raise AssertionError("citing_opinions should not be called")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider", lambda: FakeProvider()
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.providers.extract_courtlistener_opinion_id",
+        lambda url: url.split("/")[-2],
+    )
+
+    # deadline=0 means time.monotonic() >= 0 is always True, so traversal
+    # aborts before processing any seed.
+    result = traverse_citations(
+        ["https://www.courtlistener.com/opinion/99/test/"],
+        max_results=5,
+        deadline=0.0,
+    )
+
+    assert result == []
+
+
 def test_research_issue_raises_when_round_one_all_fails(monkeypatch):
     queries = build_case_queries("tinnitus", "Compensation")
 
