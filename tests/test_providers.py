@@ -24,6 +24,7 @@ from va_legal_agent.providers import (
     _courtlistener_query,
     _fetch_bva_decision_text,
     _minimize_bva_query,
+    _minimize_courtlistener_query,
     _parse_bva_leaf_sitemap,
     _parse_bva_sitemap_index,
     _parse_retry_after,
@@ -1135,6 +1136,108 @@ def test_minimize_bva_query_boilerplate_only():
     # A query that is entirely boilerplate (no issue) matches the suffix but
     # the candidate is empty, so the query is never stripped to nothing.
     assert _minimize_bva_query("veterans compensation") == "veterans"
+
+
+# ---------------------------------------------------------------------------
+# _minimize_courtlistener_query
+# ---------------------------------------------------------------------------
+
+
+def test_minimize_courtlistener_query_broad_recall():
+    """The broad recall drops site tokens and boilerplate, keeps issue unquoted."""
+    assert (
+        _minimize_courtlistener_query(
+            'site:uscourts.cavc.gov "tinnitus" "Compensation" veterans compensation'
+        )
+        == "tinnitus"
+    )
+
+
+def test_minimize_courtlistener_query_statute_anchor_preserved():
+    """Statute fragments are kept; the issue follows unquoted."""
+    assert (
+        _minimize_courtlistener_query('"1110" "tinnitus" veterans compensation')
+        == "1110 tinnitus"
+    )
+    assert (
+        _minimize_courtlistener_query('"38 U.S.C. 1110" "service connection" veterans law')
+        == "38 U.S.C. 1110 service connection"
+    )
+    assert (
+        _minimize_courtlistener_query('"3.303" "hearing loss" veterans benefits')
+        == "3.303 hearing loss"
+    )
+    assert (
+        _minimize_courtlistener_query('"5107" "benefit of the doubt" veterans benefits')
+        == "5107 benefit of the doubt"
+    )
+
+
+def test_minimize_courtlistener_query_statute_fragment_only():
+    """A query with only statute fragments (no issue phrase) preserves them."""
+    assert (
+        _minimize_courtlistener_query('"1110" veterans compensation')
+        == "1110"
+    )
+
+
+def test_minimize_courtlistener_query_only_quoted_issue():
+    """A single quoted issue with no surrounding boilerplate returns unquoted."""
+    assert _minimize_courtlistener_query('"Aid and Attendance"') == "Aid and Attendance"
+    assert _minimize_courtlistener_query('"PTSD"') == "PTSD"
+
+
+def test_minimize_courtlistener_query_whitespace_only_content_skipped():
+    """Quoted whitespace-only phrases are stripped to empty and skipped."""
+    assert _minimize_courtlistener_query('"   " "tinnitus" "Compensation"') == "tinnitus"
+
+
+def test_minimize_courtlistener_query_unquoted_sheds_boilerplate():
+    """Unquoted issue + boilerplate suffix is stripped to the bare issue."""
+    assert (
+        _minimize_courtlistener_query(
+            "service connection for tinnitus veterans compensation decision"
+        )
+        == "service connection for tinnitus"
+    )
+    assert _minimize_courtlistener_query("tinnitus veterans benefits law") == "tinnitus"
+    assert _minimize_courtlistener_query("tinnitus veterans benefits court") == "tinnitus"
+
+
+def test_minimize_courtlistener_query_unquoted_service_connection_suffix():
+    """The CAVC recall suffix 'service connection veterans law' is fully shed."""
+    assert (
+        _minimize_courtlistener_query(
+            "service connection for tinnitus service connection veterans law"
+        )
+        == "service connection for tinnitus"
+    )
+
+
+def test_minimize_courtlistener_query_short_unquoted_unchanged():
+    """A short issue with no boilerplate passes through untouched."""
+    assert _minimize_courtlistener_query("tinnitus") == "tinnitus"
+    assert (
+        _minimize_courtlistener_query("service connection tinnitus")
+        == "service connection tinnitus"
+    )
+
+
+def test_minimize_courtlistener_query_stopword_issue_not_emptied():
+    """An issue that is itself a boilerplate word is never stripped away."""
+    assert _minimize_courtlistener_query("compensation veterans law") == "compensation"
+
+
+def test_minimize_courtlistener_query_suffix_match_empty_candidate():
+    """When the entire query is the boilerplate suffix, candidate is empty."""
+    assert (
+        _minimize_courtlistener_query("veterans compensation decision") == "veterans"
+    )
+
+
+def test_minimize_courtlistener_query_unmatched_quote_falls_through():
+    """A single unmatched quote finds no phrases and falls through to fallback."""
+    assert _minimize_courtlistener_query('"') == ""
 
 
 def test_bva_provider_minimizes_query_before_request(monkeypatch):
