@@ -337,7 +337,12 @@ class CourtListenerProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         # CourtListener has its own court filter; site: tokens are noise there.
-        query = strip_site_prefixes(query)
+        # Also reduce the recall query to the issue phrase: phrase-quoted
+        # boilerplate such as '"Service connection for Aid and Attendance"
+        # "Compensation" veterans compensation' returns 0 results because
+        # CourtListener's search engine matches the quoted phrases literally,
+        # while the issue phrase alone (unquoted) matches real opinions.
+        query = _minimize_bva_query(query)
         # The search endpoint returns up to 20 results per page regardless of
         # page_size and paginates with an opaque cursor in ``next``, so a
         # numeric page N means: follow the cursor chain N-1 times, then read
@@ -946,7 +951,7 @@ def _bva_sitemap_index() -> list[tuple[str, str]]:
         response = requests.get(
             _SITEMAP_INDEX_URL,
             headers={"User-Agent": settings.user_agent},
-            timeout=settings.request_timeout_seconds,
+            timeout=(10, settings.request_timeout_seconds),
             **http_proxy_kwargs(),
         )
         response.raise_for_status()
@@ -972,7 +977,7 @@ def _bva_leaf_sitemap(year_code: str) -> list[tuple[str, str]]:
         response = requests.get(
             url,
             headers={"User-Agent": settings.user_agent},
-            timeout=settings.request_timeout_seconds,
+            timeout=(10, settings.request_timeout_seconds),
             **http_proxy_kwargs(),
         )
         response.raise_for_status()
@@ -997,7 +1002,7 @@ def _fetch_bva_decision_text(url: str) -> str:
         response = requests.get(
             url,
             headers={"User-Agent": settings.user_agent},
-            timeout=settings.request_timeout_seconds,
+            timeout=(10, settings.request_timeout_seconds),
             **http_proxy_kwargs(),
         )
         response.raise_for_status()

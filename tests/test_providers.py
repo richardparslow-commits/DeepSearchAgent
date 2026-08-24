@@ -1429,7 +1429,7 @@ def test_bva_sitemap_index_sends_user_agent_timeout_and_proxy(monkeypatch):
     _bva_sitemap_index()
 
     assert captured["headers"] == {"User-Agent": get_settings().user_agent}
-    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["timeout"] == (10, get_settings().request_timeout_seconds)
     assert captured["proxies"] == {
         "http": "http://proxy.example:8080",
         "https": "http://proxy.example:8080",
@@ -1504,7 +1504,7 @@ def test_bva_leaf_sitemap_sends_user_agent_timeout_and_proxy(monkeypatch):
     _bva_leaf_sitemap("26")
 
     assert captured["headers"] == {"User-Agent": get_settings().user_agent}
-    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["timeout"] == (10, get_settings().request_timeout_seconds)
     assert captured["proxies"] == {
         "http": "http://proxy.example:8080",
         "https": "http://proxy.example:8080",
@@ -1543,7 +1543,7 @@ def test_bva_fetch_decision_text_sends_user_agent_timeout_and_proxy(monkeypatch)
     _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/26000001.txt")
 
     assert captured["headers"] == {"User-Agent": get_settings().user_agent}
-    assert captured["timeout"] == get_settings().request_timeout_seconds
+    assert captured["timeout"] == (10, get_settings().request_timeout_seconds)
     assert captured["proxies"] == {
         "http": "http://proxy.example:8080",
         "https": "http://proxy.example:8080",
