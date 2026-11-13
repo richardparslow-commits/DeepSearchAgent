@@ -308,7 +308,7 @@ batch1.jsonl batch1.jsonl same path: True
 ### P3-008 — Mutation gate — High — **FIXED**
 
 **Location:** `scripts/mutmut_pass.py:126-147` (pre-fix subprocess calls; current lines
-`143`/`148`)
+`151`/`157`/`164`)
 
 **Offending code (before the fix):**
 ```python
@@ -340,25 +340,28 @@ guard is skipped precisely because it also requires a non-empty list. The script
 A module can therefore be entirely unmeasured and still satisfy the 100%-kill gate.
 
 **Fix:** `_require_success()` checks the exit code of the coverage run, `mutmut run` and
-`mutmut results`. A non-zero code prints the failing command, its exit code and captured
-stderr, then exits 1 before any survivor file is written. An empty `mutmut results` output
-remains valid when every mutant was killed; the existing all-“not checked” guard still
-catches a pass that produced result lines but executed none of them.
+`mutmut results`. A non-zero code prints the failing step, its exit code and captured
+stderr, then exits 1 before any survivor file is written. The pass now asks for
+`mutmut results --all`, so killed mutants are included in the output. An empty result
+means mutmut generated or checked nothing and exits 1; a result containing only
+“not checked” is rejected by the existing vacuous-pass guard. An all-killed pass lists
+its killed mutants and correctly reports zero survivors.
 
-**Evidence:** the failure-path regression is parameterised over all three commands:
+**Evidence:** the focused regression suite:
 ```text
 $ .venv/bin/python -m pytest -q tests/test_mutmut_pass.py \
     tests/test_check_mutation_baseline.py tests/test_mutation_gate_integrity.py
-11 passed in 0.34s
+13 passed in 0.45s
 ```
-Regression test: `test_main_fails_when_required_command_fails` covers the coverage run,
+Regression tests: `test_main_fails_when_required_command_fails` covers the coverage run,
 `mutmut run` and `mutmut results`; each case asserts exit 1, the captured stderr, and
-restoration of `pyproject.toml`.
+restoration of `pyproject.toml`. `test_main_accepts_all_killed_pass` and
+`test_main_rejects_empty_results` cover the all-killed and no-mutants cases.
 
 ### P3-009 — Mutation configuration — Medium — **FIXED**
 
 **Location:** `scripts/mutmut_pass.py:86-100` (pre-fix rewrite); current
-`_scoped_pyproject()` at `:79`
+`_scoped_pyproject()` at `:92`
 
 **Offending code (before the fix):**
 ```python
@@ -388,7 +391,7 @@ restores the original in `finally`; `main()` runs the entire pass under it.
 then assert the file is byte-for-byte restored:
 ```text
 $ .venv/bin/python -m pytest -q tests/test_mutmut_pass.py
-3 passed
+8 passed
 ```
 Regression tests: `test_scoped_pyproject_restores_after_exception`,
 `test_scoped_pyproject_restores_after_success`, and

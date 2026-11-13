@@ -162,14 +162,24 @@ def main() -> None:
         _require_success(run, "mutmut run")
 
         result = subprocess.run(
-            [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
+            [sys.executable, "-m", "mutmut", "results", "--all"],
+            capture_output=True,
+            text=True,
         )
         _require_success(result, "mutmut results")
         result_lines = [ln for ln in result.stdout.splitlines() if ":" in ln]
+        if not result_lines:
+            # --all includes killed mutants, so an empty result means mutmut did
+            # not generate or check anything. That is not a perfect score.
+            print(
+                "FATAL: mutmut reported no mutants -- refusing to report a vacuous pass",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         checked = [
             ln for ln in result_lines if ln.rsplit(":", 1)[1].strip() != "not checked"
         ]
-        if result_lines and not checked:
+        if not checked:
             # Every mutant came back "not checked": mutmut's stats collection
             # failed (e.g. a test crashed in the sandbox), so nothing was actually
             # executed. Reporting a vacuous green here would let the gate pass
