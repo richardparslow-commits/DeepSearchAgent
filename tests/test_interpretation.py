@@ -122,21 +122,24 @@ def test_outcome_direction_secretary_flips_affirmed_and_dismissed():
     assert _outcome_direction("dismissed", appellant_role="secretary") == 1
 
 
+def test_outcome_direction_secretary_denied_means_veteran_won():
+    """A denied Secretary appeal upholds the veteran's favorable outcome.
+
+    ``extract_outcome`` reads the appeal's disposition ("denied"); when the
+    Secretary is the appellant, that denial means the veteran's grant stands.
+    The same inversion applies to every other signal: a granted Secretary
+    appeal, or a vacatur/remand of the grant, goes against the veteran.
+    """
+    assert _outcome_direction("denied", appellant_role="secretary") == 1
+    assert _outcome_direction("granted", appellant_role="secretary") == -1
+    assert _outcome_direction("vacated", appellant_role="secretary") == -1
+    assert _outcome_direction("remanded", appellant_role="secretary") == -1
+
+
 def test_outcome_direction_veteran_stays_unfavorable_for_affirmed():
     # When the veteran appealed, "affirmed" stays unfavorable.
     assert _outcome_direction("affirmed", appellant_role="veteran") == -1
     assert _outcome_direction("dismissed", appellant_role="veteran") == -1
-
-
-def test_outcome_direction_secretary_does_not_flip_denied():
-    # "denied" is always unfavorable regardless of appellant.
-    assert _outcome_direction("denied", appellant_role="secretary") == -1
-
-
-def test_outcome_direction_secretary_does_not_flip_favorable():
-    # "granted"/"vacated"/"remanded" are always favorable regardless.
-    assert _outcome_direction("granted", appellant_role="secretary") == 1
-    assert _outcome_direction("vacated", appellant_role="secretary") == 1
 
 
 def test_outcome_direction_unknown_role_stays_default():

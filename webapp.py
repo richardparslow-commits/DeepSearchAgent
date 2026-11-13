@@ -13,8 +13,8 @@ Production hardening:
   runs survive restarts. A job left in ``running`` at startup is marked
   ``error`` ("interrupted by server restart") — orphaned threads cannot
   survive a process restart.
-- **Concurrent-run cap**: at most ``WEBAPP_MAX_CONCURRENT`` (default 2)
-  analysis jobs run at once; extra submissions get HTTP 429.
+- **Concurrent-run cap**: at most ``WEBAPP_MAX_CONCURRENT`` (default 2,
+  validated 1–32) analysis jobs run at once; extra submissions get HTTP 429.
 - **Text or JSON output**: every run stores both renderings; a Text/JSON
   toggle on the page switches the display, and ``POST /api/analyze`` accepts
   the same request as JSON (``{"issue": ..., "max_results": ...,
@@ -54,7 +54,26 @@ _APP_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
 _MAX_JOBS = 50
 _RUNS_LIMIT = 20
-_MAX_CONCURRENT = int(os.environ.get("WEBAPP_MAX_CONCURRENT", "2"))
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Read an integer environment variable, failing with a named range."""
+    raw = os.environ.get(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise SystemExit(
+            f"error: {name} must be an integer between {minimum} and {maximum}, "
+            f"got {raw!r}"
+        ) from None
+    if not minimum <= value <= maximum:
+        raise SystemExit(
+            f"error: {name} must be between {minimum} and {maximum}, got {value}"
+        )
+    return value
+
+
+_MAX_CONCURRENT = _env_int("WEBAPP_MAX_CONCURRENT", 2, 1, 32)
 
 _JOBS: dict[str, dict[str, object]] = {}
 _LOCK = threading.Lock()
@@ -223,16 +242,16 @@ def _start_job(
         )
 
     job_id = uuid.uuid4().hex
-    with _LOCK:
-        _JOBS[job_id] = {
-            "job_id": job_id,
-            "issue": issue,
-            "status": "running",
-            "started_at": _now_iso(),
-        }
-        _save_job(_JOBS[job_id])
-
     try:
+        with _LOCK:
+            _JOBS[job_id] = {
+                "job_id": job_id,
+                "issue": issue,
+                "status": "running",
+                "started_at": _now_iso(),
+            }
+            _save_job(_JOBS[job_id])
+
         threading.Thread(
             target=_run_job,
             args=(job_id, issue, max_results, max_wall_seconds),
@@ -525,5 +544,5 @@ _INDEX_HTML = """<!doctype html>
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
+    port = _env_int("PORT", 8080, 1, 65535)
     _serve("127.0.0.1", port)

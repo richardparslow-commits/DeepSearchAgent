@@ -173,15 +173,11 @@ def _case_text(case: CaseRecord) -> str:
 _FAVORABLE_OUTCOMES = frozenset({"granted", "vacated", "remanded"})
 _UNFAVORABLE_OUTCOMES = frozenset({"denied", "affirmed", "dismissed"})
 
-# Outcomes that *flip* when the Secretary is the appellant (i.e. the same
-# disposition that's unfavorable to the veteran when the veteran appealed
-# becomes favorable when the Secretary cross-appealed). "affirmed" when the
-# Secretary appealed means the veteran's grant was upheld; "dismissed" when
-# the Secretary's cross-appeal was dismissed means the veteran wins. Only
-# these two flip: "denied" is always unfavorable (the veteran's claim was
-# denied), and "granted"/"vacated"/"remanded" are always favorable regardless
-# of appellant.
-_SECRETARY_FLIPPED = frozenset({"affirmed", "dismissed"})
+# Every disposition is read from the appellant's point of view, so when the
+# Secretary appealed, the veteran's direction is the opposite of the
+# Secretary's. The common posture is a Secretary appeal of a favorable Board
+# decision: "affirmed"/"dismissed"/"denied" then uphold the veteran's grant,
+# while "granted"/"vacated"/"remanded" disturb it.
 
 
 def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
@@ -192,9 +188,10 @@ def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
     unrecognized signal resolves to 0 rather than guessing, so the deterministic
     detector never flags on ambiguous postures.
 
-    When *appellant_role* is ``"secretary"``, the outcomes ``affirmed`` and
-    ``dismissed`` flip to favorable: a Secretary cross-appeal that was affirmed
-    or dismissed means the veteran's grant stands. Without this, every
+    When *appellant_role* is ``"secretary"``, every disposition flips: the
+    outcome is read from the appellant's point of view, so a denial of the
+    Secretary's appeal upholds the veteran's grant, while a grant or vacatur
+    of that appeal goes against the veteran. Without this, every
     ``"affirmed"`` was classified as unfavorable, which is wrong half the time
     in VA law (the Secretary appeals grants far more often than veterans
     appeal denials in the CAVC dataset).
@@ -206,16 +203,12 @@ def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
     directions: set[int] = set()
     for signal in signals:
         if signal in _FAVORABLE_OUTCOMES:
-            directions.add(1)
+            direction = 1
         elif signal in _UNFAVORABLE_OUTCOMES:
-            # When the Secretary is the appellant, "affirmed" and "dismissed"
-            # flip: they mean the veteran's grant was upheld.
-            if is_secretary and signal in _SECRETARY_FLIPPED:
-                directions.add(1)
-            else:
-                directions.add(-1)
+            direction = -1
         else:
             return 0
+        directions.add(-direction if is_secretary else direction)
     if len(directions) == 1:
         return directions.pop()
     return 0

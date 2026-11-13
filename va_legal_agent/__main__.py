@@ -989,6 +989,7 @@ def _auto_run(
     max_results: int,
     max_wall_seconds: float | None,
     max_batch_requests: int | None = None,
+    run_id: str = "",
 ) -> list[dict[str, object]]:
     """Execute the batch: run the packed issues now, wait for the reset, repeat.
 
@@ -997,10 +998,11 @@ def _auto_run(
     :func:`analyze_cases_for_claim`; issues that were deferred or aborted
     stay pending. After the pass, the remainder is re-planned against a
     fresh live usage snapshot: if CourtListener's daily window is exhausted
-    the loop waits (sleeps) for its reset time before retrying. Returns
-    per-issue result rows with verdicts ``run`` / ``error`` for the
-    executed issues, and ``deferred`` / ``abort`` for the backlog that
-    could not fit in the first pass (and would need a later window).
+    the loop waits (sleeps) for its reset time before retrying. Every per-issue
+    analysis and terminal event carries *run_id*. Returns per-issue result rows
+    with verdicts ``run`` / ``error`` for the executed issues, and ``deferred``
+    / ``abort`` for the backlog that could not fit in the first pass (and would
+    need a later window).
     """
     results: dict[str, str] = {}
     pending = list(issues)
@@ -1017,15 +1019,18 @@ def _auto_run(
             verdict = row["verdict"]
             if verdict == "proceed":
                 try:
-                    analyze_cases_for_claim(
+                    analysis = analyze_cases_for_claim(
                         issue,
                         claim_type=claim_type,
                         max_results=max_results,
                         telemetry=None,
                         max_wall_seconds=max_wall_seconds,
                     )
+                    analysis.run_id = run_id
+                    _emit_completion_event(analysis, run_id)
                     results[issue] = "run"
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 - per-issue failure is recorded
+                    _emit_failure_event(issue, exc, run_id)
                     results[issue] = "error"
             else:
                 # Keep the first non-run verdict for issues still pending
@@ -1281,12 +1286,14 @@ def main() -> None:
             parser.error(
                 "--auto-run needs at least one issue (positional or --issues-file)."
             )
+        run_id = _run_id(args.run_id)
         results = _auto_run(
             auto_issues,
             claim_type=args.claim_type,
             max_results=max(max_results, 1),
             max_wall_seconds=args.max_wall_time,
             max_batch_requests=args.max_batch_requests,
+            run_id=run_id,
         )
         summary = _auto_run_summary(results)
         print(

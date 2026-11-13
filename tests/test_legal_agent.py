@@ -58,6 +58,32 @@ def test_detect_court_name_handles_all_courts():
     assert detect_court_name("https://cafc.uscourts.gov/opinions/2") == COURT_FEDERAL_CIRCUIT
 
 
+def test_detect_court_name_rejects_forged_hosts():
+    """Court identity comes from the URL host, never a substring of it.
+
+    Search results are third-party content.  A forged host that merely
+    contains an official domain (or mentions it in a path/query/userinfo)
+    must not inherit that court's authority weight.
+    """
+    assert (
+        detect_court_name("https://uscourts.cavc.gov.evil.example/opinions/1")
+        == COURT_UNKNOWN
+    )
+    assert (
+        detect_court_name("https://evil.example/?next=uscourts.cavc.gov")
+        == COURT_UNKNOWN
+    )
+    assert (
+        detect_court_name("https://evil.example/uscourts.cavc.gov/1")
+        == COURT_UNKNOWN
+    )
+    assert detect_court_name("https://uscourts.cavc.gov@evil.example/1") == COURT_UNKNOWN
+    assert detect_court_name("https://www.uscourts.cavc.gov/opinions/1") == COURT_CAVC
+    assert detect_court_name("uscourts.cavc.gov/opinions/1") == COURT_CAVC
+    assert detect_court_name("") == COURT_UNKNOWN
+    assert detect_court_name("javascript:alert(1)") == COURT_UNKNOWN
+
+
 def test_summarize_case_impact_handles_service_connection_language():
     case = CaseRecord(
         title="Holton v. Shinseki",

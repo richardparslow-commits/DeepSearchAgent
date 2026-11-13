@@ -15,7 +15,7 @@
 # Environment overrides (all optional):
 #   ISSUES_FILE          path to the issues file (default: $ROOT/issues.txt)
 #   LOG_DIR              directory for per-run logs (default: $ROOT/logs)
-#   LOG_KEEP             how many recent logs to keep (default: 14)
+#   LOG_KEEP             positive number of recent logs to keep (default: 14)
 #   MAX_BATCH_REQUESTS   cap total CourtListener requests per pass (optional)
 #   PY                   python interpreter (default: $ROOT/.venv/bin/python)
 #
@@ -31,9 +31,17 @@ LOG_KEEP="${LOG_KEEP:-14}"
 MODE="${MODE:-auto}"
 MAX_BATCH_REQUESTS="${MAX_BATCH_REQUESTS:-}"
 
+# A non-numeric or non-positive LOG_KEEP would make the rotation arithmetic
+# keep every log or delete the whole directory; reject it before doing work.
+if ! [[ "$LOG_KEEP" =~ ^[0-9]+$ ]] || (( 10#$LOG_KEEP < 1 )); then
+    echo "error: LOG_KEEP must be a positive integer (got '$LOG_KEEP')" >&2
+    exit 1
+fi
+LOG_KEEP=$((10#$LOG_KEEP))
+
 # Correlate all invocations in one daily pass. The app reads RUN_ID from the
-# environment for single-issue runs; auto-run emits its own summary lines, so
-# this mainly labels the log and gives operators a stable handle per day.
+# environment and stamps it on every per-issue analysis and event; passing it
+# explicitly also keeps the id fixed if the environment is later overridden.
 export RUN_ID="${RUN_ID:-batch-$(date +%Y%m%d)}"
 
 mkdir -p "$LOG_DIR"
@@ -58,6 +66,7 @@ else
     args+=(--auto-run)
 fi
 args+=(--issues-file "$ISSUES_FILE")
+args+=(--run-id "$RUN_ID")
 if [[ -n "$MAX_BATCH_REQUESTS" ]]; then
     args+=(--max-batch-requests "$MAX_BATCH_REQUESTS")
 fi

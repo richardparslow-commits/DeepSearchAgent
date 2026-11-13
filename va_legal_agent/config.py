@@ -255,7 +255,7 @@ class Settings:
             user_agent=os.getenv("USER_AGENT", d.user_agent),
             max_fetch_bytes=env_int("MAX_FETCH_BYTES", d.max_fetch_bytes),
             search_http_proxy=os.getenv("SEARCH_HTTP_PROXY", d.search_http_proxy),
-            batch_state_dir=os.getenv("BATCH_STATE_DIR", d.batch_state_dir),
+            batch_state_dir=os.getenv("BATCH_STATE_DIR") or d.batch_state_dir,
             search_max_workers=env_int(
                 "SEARCH_MAX_WORKERS", d.search_max_workers, max_value=MAX_SEARCH_WORKERS
             ),

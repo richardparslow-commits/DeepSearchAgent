@@ -52,8 +52,9 @@ jobs:
       # don't starve the remaining passes.
       - name: Mutation pass — heavy modules (providers, queries)
         run: |
-          .venv/bin/python scripts/mutmut_pass.py providers.py tests/test_providers.py tests/test_search.py || echo "WARNING: providers mutation pass exited non-zero"
-          .venv/bin/python scripts/mutmut_pass.py queries.py tests/test_providers.py tests/test_search.py || echo "WARNING: queries mutation pass exited non-zero"
+          set -euo pipefail
+          .venv/bin/python scripts/mutmut_pass.py providers.py tests/test_providers.py tests/test_search.py
+          .venv/bin/python scripts/mutmut_pass.py queries.py tests/test_providers.py tests/test_search.py
         timeout-minutes: 20
 
       - name: Run the mutation pass (remaining modules)

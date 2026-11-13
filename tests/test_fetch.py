@@ -424,6 +424,32 @@ def test_extract_precedential_status_single_judge():
     assert extract_precedential_status("single judge disposition") is False
 
 
+def test_extract_precedential_status_reads_single_judge_heading():
+    """A single-judge heading marks the disposition non-precedential.
+
+    Real orders are headed "SINGLE JUDGE DECISION" or carry a
+    "Before: Single Judge" caption; the older marker required the words
+    "designation"/"disposition" after "single judge" and missed both.
+    """
+    assert (
+        extract_precedential_status("SINGLE JUDGE DECISION\nThe appeal is denied.")
+        is False
+    )
+    assert (
+        extract_precedential_status("Before: Single Judge\nThe appeal is denied.")
+        is False
+    )
+    # Prose that mentions a single-judge decision must not demote a published
+    # opinion (the marker is line-anchored, and only the header is scanned).
+    assert (
+        extract_precedential_status(
+            "SMITH v. WILKIE\n30 Vet.App. 123\n\n"
+            "The Board's single judge decision was affirmed."
+        )
+        is True
+    )
+
+
 def test_extract_precedential_status_no_precedential_value():
     assert extract_precedential_status("no precedential value") is False
     assert extract_precedential_status("No precedential effect.") is False
@@ -1905,3 +1931,130 @@ def test_fetch_full_text_uppercase_txt_extension(monkeypatch):
 
     text = fetch_full_text("https://www.va.gov/decision/2100634.TXT")
     assert text == "Citation Nr: 2100634"
+
+
+# ── Disposition/scoping accuracy regressions ────────────────────────────────
+
+
+def test_extract_outcome_reads_only_the_order_disposition():
+    """A granted claim must not be reported as "granted and denied" because the
+    body recites the earlier regional-office denial, or because the ORDER also
+    denies a collateral motion."""
+    text = (
+        "The Veteran served on active duty from 2001 to 2005. In a February 2019 "
+        "rating decision, the regional office denied service connection for "
+        "tinnitus. The Board finds that the denial was proper as to the earlier "
+        "effective date but the claim is granted in part, and the matter is "
+        "remanded for further development.\n\n"
+        "ORDER\n\n"
+        "Entitlement to service connection for tinnitus is granted.\n"
+        "The motion for an extension of time is denied.\n"
+    )
+
+    assert extract_outcome(text) == "granted"
+
+    # Without an ORDER heading, the last claim-disposition sentence still wins
+    # over the recited denial.
+    assert extract_outcome(
+        "The regional office denied the claim. The claim is granted."
+    ) == "granted"
+
+
+def test_extract_outcome_reads_disposition_on_the_order_heading_line():
+    """A disposition on the heading's own line is inside the ORDER block.
+
+    ``ORDER: Granted.`` must be recognised without a line break after the
+    heading; otherwise the fallback reports the earlier recited denial.
+    """
+    assert extract_outcome(
+        "The claim for service connection was denied by the regional office.\n\n"
+        "ORDER: Granted."
+    ) == "granted"
+
+    # Multi-word headings accept same-line content too.
+    assert extract_outcome(
+        "BACKGROUND: service connection was denied.\n\n"
+        "CONCLUSIONS OF LAW: Granted."
+    ) == "granted"
+
+
+def test_extract_precedential_status_reads_the_header_not_the_body():
+    """A published opinion that discusses an unpublished order stays precedential;
+    the same marker in the header still designates the decision non-precedential."""
+    body = (
+        "The Court holds that the Board erred in weighing the evidence. "
+        + "The Board's discussion continues. " * 120
+    )
+    published = (
+        "SMITH v. WILKIE, 30 Vet.App. 123 (2018)\nARGUMENT\n"
+        + body
+        + "\nThe Board relied on an unpublished order in XYZ v. Shinseki."
+    )
+
+    assert len(published) > 1500  # the marker is beyond the header window
+    assert extract_precedential_status(published) is True
+    assert extract_precedential_status("NOT FOR PUBLICATION\n" + body) is False
+
+
+def test_extract_citation_falls_back_to_the_body_beyond_the_header():
+    """A citation past the header window is still found when the header has none."""
+    text = "X" * 2100 + "\nSee Smith v. Wilkie, 30 Vet.App. 123 (2018)."
+    assert extract_citation(text) == "30 Vet.App. 123"
+    # The body pass tries the remaining reporter patterns and exits cleanly.
+    assert extract_citation("X" * 2100 + "\n590 F.4th 1300") == "590 F.4th 1300"
+    assert extract_citation("X" * 2100 + "\nno reporters here") == ""
+
+
+def test_extract_outcome_collapses_duplicate_signals():
+    """Repeated disposition sentences report the signal once."""
+    text = "ORDER\nThe claim is granted. The claim is granted."
+    assert extract_outcome(text) == "granted"
+
+
+def test_extract_statutes_keeps_cfr_sections_under_the_cap():
+    """A long U.S.C. list must not crowd every C.F.R. regulation out."""
+    result = extract_statutes(
+        "38 U.S.C. §§ 1110, 1131, 1151, 5103, 5107, 7104; "
+        "38 C.F.R. §§ 3.303, 3.304"
+    )
+    assert result == [
+        "38 U.S.C. § 1110",
+        "38 U.S.C. § 1131",
+        "38 U.S.C. § 1151",
+        "38 U.S.C. § 5103",
+        "38 C.F.R. § 3.303",
+        "38 C.F.R. § 3.304",
+    ]
+    # A C.F.R.-only overflow still fills the cap with regulations.
+    assert len(
+        extract_statutes("38 C.F.R. §§ 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8")
+    ) == 6
+
+
+def test_extract_statutes_matches_plural_section_citations():
+    """A plural §§ citation names every listed section, not just the first."""
+    assert extract_statutes("38 U.S.C. §§ 1110, 1131") == [
+        "38 U.S.C. § 1110",
+        "38 U.S.C. § 1131",
+    ]
+    assert extract_statutes("38 C.F.R. §§ 3.303, 3.304") == [
+        "38 C.F.R. § 3.303",
+        "38 C.F.R. § 3.304",
+    ]
+
+
+def test_extract_citation_prefers_own_citation_over_quoted_case():
+    """The decision's own header citation wins over a case quoted in the body."""
+    bva = (
+        "Citation Nr: 2100634\nDecision Date: 01/14/2021\n\nORDER\n"
+        "The claim is granted.\n"
+        "See Smith v. Wilkie, 30 Vet.App. 123 (2018).\n"
+    )
+    assert extract_citation(bva) == "BVA Citation Nr. 2100634"
+
+    # A CAVC opinion's caption cite likewise beats a case quoted later.
+    cavc = (
+        "SMITH v. WILKIE\n30 Vet.App. 123\n\n"
+        "The Board relied on Jones v. Shinseki, 25 Vet.App. 45.\n"
+    )
+    assert extract_citation(cavc) == "30 Vet.App. 123"

@@ -79,7 +79,7 @@ MUTATE_MODULES = \
 	"ranking.py tests/test_ranking.py"
 
 mutate: ## Mutation-testing pass (mutmut) over every module; survivors to /tmp
-	@for spec in $(MUTATE_MODULES); do \
+	@set -e; for spec in $(MUTATE_MODULES); do \
 		$(PYTHON) scripts/mutmut_pass.py $$spec; \
 	done
 

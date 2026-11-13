@@ -8,6 +8,7 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 
 import re
 from collections import Counter
+from urllib.parse import urlsplit
 
 from .config import get_settings
 from .deep_read import deep_read_cases
@@ -115,16 +116,36 @@ def build_case_queries(claim_issue: str, claim_type: str) -> list[str]:
     return plan_queries(decompose_issue(claim_issue, claim_type))
 
 
+_COURT_HOSTS: tuple[tuple[str, str], ...] = (
+    ("uscourts.cavc.gov", COURT_CAVC),
+    ("cafc.uscourts.gov", COURT_FEDERAL_CIRCUIT),
+    ("caafc.uscourts.gov", COURT_FEDERAL_CIRCUIT),
+    ("supremecourt.gov", COURT_SUPREME),
+    ("bva.va.gov", COURT_BVA),
+)
+
+
 def detect_court_name(url: str) -> str:
-    normalized = (url or "").lower()
-    if "uscourts.cavc.gov" in normalized:
-        return COURT_CAVC
-    if "cafc.uscourts.gov" in normalized or "caafc.uscourts.gov" in normalized:
-        return COURT_FEDERAL_CIRCUIT
-    if "supremecourt.gov" in normalized:
-        return COURT_SUPREME
-    if "bva.va.gov" in normalized:
-        return COURT_BVA
+    """Return the court for *url*, matching only its hostname.
+
+    Search results are third-party content, so a URL that merely contains an
+    official domain in a path, query or userinfo -- or in a lookalike host
+    such as ``uscourts.cavc.gov.evil.example`` -- must not inherit that
+    court's authority weight.
+    """
+    candidate = (url or "").strip()
+    if not candidate:
+        return COURT_UNKNOWN
+    parsed = urlsplit(candidate)
+    if parsed.scheme and parsed.scheme.lower() not in {"http", "https"}:
+        return COURT_UNKNOWN
+    host = (parsed.hostname or "").rstrip(".")
+    if not host:
+        # A scheme-less URL ("uscourts.cavc.gov/opinion/1") parses as a path.
+        host = (urlsplit("//" + candidate).hostname or "").rstrip(".")
+    for domain, court in _COURT_HOSTS:
+        if host == domain or host.endswith("." + domain):
+            return court
     return COURT_UNKNOWN
 
 

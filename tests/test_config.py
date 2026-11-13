@@ -188,6 +188,11 @@ def test_settings_defaults(monkeypatch):
     assert settings.deep_chunk_chars == 6000
 
 
+def test_empty_batch_state_dir_falls_back_to_temp(monkeypatch):
+    monkeypatch.setenv("BATCH_STATE_DIR", "")
+    assert get_settings().batch_state_dir.endswith("va_legal_agent_batches")
+
+
 def test_search_max_workers_is_capped(monkeypatch):
     # The worker pool has a hard upper bound so a mistyped env var fails fast
     # back to the default instead of spawning thousands of daemon threads.

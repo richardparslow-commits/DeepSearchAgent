@@ -49,10 +49,10 @@ OUTCOME_NOTES: dict[str, str] = {
     "denied": "The request was denied, which may counsel caution when relying on the theory discussed.",
 }
 
-# Party-aware overrides: when the Secretary cross-appealed, "affirmed" and
-# "dismissed" flip to favorable (the veteran's grant stands). These notes
-# replace the default unfavorable phrasing above so the impact narrative
-# reflects the actual claimant position.
+# Party-aware overrides: when the Secretary appealed, every disposition is
+# read from the appellant's point of view, so the veteran's direction is the
+# opposite of the Secretary's. These notes replace the default phrasing above
+# so the impact narrative reflects the actual claimant position.
 _SECRETARY_OVERRIDES: dict[str, str] = {
     "affirmed": (
         "The Secretary's cross-appeal was affirmed, meaning the veteran's "
@@ -61,6 +61,22 @@ _SECRETARY_OVERRIDES: dict[str, str] = {
     "dismissed": (
         "The Secretary's cross-appeal was dismissed, meaning the veteran's "
         "favorable outcome below stands."
+    ),
+    "denied": (
+        "The Secretary's appeal was denied, meaning the veteran's favorable "
+        "outcome below stands."
+    ),
+    "granted": (
+        "The Secretary's appeal was granted, so the favorable outcome below "
+        "was reversed."
+    ),
+    "vacated": (
+        "The Secretary's appeal resulted in vacatur of the favorable outcome "
+        "below."
+    ),
+    "remanded": (
+        "The Secretary's appeal resulted in a remand, so the favorable "
+        "outcome below is not final."
     ),
 }
 
@@ -98,10 +114,10 @@ def detect_outcome(case: CaseRecord) -> str:
 def outcome_note_for(outcome: str, appellant_role: str = "") -> str:
     """Map an outcome string to its nuance note via the leading signal.
 
-    When *appellant_role* is ``"secretary"``, the notes for ``affirmed`` and
-    ``dismissed`` flip to favorable (the Secretary's cross-appeal failed, so
-    the veteran's grant stands). This mirrors the party-aware direction
-    classification in :func:`interpretation._outcome_direction`.
+    When *appellant_role* is ``"secretary"``, every disposition is read from
+    the appellant's point of view, so the veteran's direction is the opposite
+    of the Secretary's. This mirrors the party-aware direction classification
+    in :func:`interpretation._outcome_direction`.
     """
     first_signal = outcome.split(" ", 1)[0].lower() if outcome else ""
     if appellant_role == "secretary" and first_signal in _SECRETARY_OVERRIDES:

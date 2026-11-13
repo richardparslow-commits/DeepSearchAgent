@@ -800,6 +800,7 @@ def test_auto_run_executes_proceed_issues(capsys, monkeypatch, tmp_path):
 
     def fake_analyze(issue, **kwargs):
         ran.append(issue)
+        return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr(
@@ -838,6 +839,7 @@ def test_auto_run_defers_and_waits_for_reset(capsys, monkeypatch, tmp_path):
 
     def fake_analyze(issue, **kwargs):
         ran.append(issue)
+        return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
@@ -878,6 +880,7 @@ def test_auto_run_abort_keeps_pending_and_waits(capsys, monkeypatch, tmp_path):
 
     def fake_analyze(issue, **kwargs):
         ran.append(issue)
+        return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
@@ -906,6 +909,7 @@ def test_auto_run_positional_issue_works(capsys, monkeypatch, tmp_path):
 
     def fake_analyze(issue, **kwargs):
         ran.append(issue)
+        return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr(
@@ -935,6 +939,7 @@ def test_auto_run_analyze_failure_records_error(capsys, monkeypatch, tmp_path):
         ran.append(issue)
         if issue == "alpha":
             raise RuntimeError("boom")
+        return _sample_analysis()
 
     monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr(
@@ -948,6 +953,39 @@ def test_auto_run_analyze_failure_records_error(capsys, monkeypatch, tmp_path):
     assert "Auto-run complete" in out
     assert "1 failed" in out
     assert sorted(ran) == ["alpha", "beta"]
+
+
+def test_auto_run_passes_batch_run_id_to_per_issue_analyses(capsys, monkeypatch):
+    """The exported batch RUN_ID reaches each analysis and completion event."""
+    monkeypatch.setenv("RUN_ID", "batch-42")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--log-format", "json", "tinnitus"],
+    )
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    analyses: list[LegalAnalysis] = []
+
+    def fake_analyze(issue, **kwargs):
+        analysis = _sample_analysis()
+        analyses.append(analysis)
+        return analysis
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        _auto_run_fake_batch([("tinnitus", "proceed")]),
+    )
+
+    main()
+
+    assert analyses[0].run_id == "batch-42"
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.strip()
+    ]
+    completion = next(e for e in events if e.get("event") == "analysis_complete")
+    assert completion["run_id"] == "batch-42"
 
 
 def test_auto_run_json_summary(capsys, monkeypatch, tmp_path):
@@ -966,7 +1004,10 @@ def test_auto_run_json_summary(capsys, monkeypatch, tmp_path):
         ],
     )
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
-    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", lambda issue, **kw: None)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kw: _sample_analysis(),
+    )
     monkeypatch.setattr(
         "va_legal_agent.__main__.batch_dry_run",
         _auto_run_fake_batch([("alpha", "proceed")]),
@@ -1018,7 +1059,10 @@ def test_auto_run_json_summary_deferred_and_aborted(capsys, monkeypatch, tmp_pat
             {"issues": len(issues)},
         )
 
-    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", lambda issue, **kw: ran.append(issue))
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kw: ran.append(issue) or _sample_analysis(),
+    )
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
     monkeypatch.setattr(
         "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: {"current_usage": []}

@@ -5,7 +5,7 @@
 #   sudo deploy/install.sh --cron              # install and print a cron line instead
 #   deploy/install.sh --target "$HOME/vla"     # install to a user-owned dir (no root)
 #
-# Env overrides: TARGET, INSTALL_USER, CRON_MIN, CRON_HOUR.
+# Env defaults: TARGET, INSTALL_USER, CRON_MIN, CRON_HOUR; --target overrides TARGET.
 #
 # What it does:
 #   1. Copies the project (code, deploy/, .env.example) into the target dir.
@@ -19,7 +19,51 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${TARGET:-/opt/va-legal-agent}"
 USER_NAME="${INSTALL_USER:-vaagent}"
 MODE_SYSTEMD=1
-[[ "${1:-}" == "--cron" ]] && MODE_SYSTEMD=0
+
+usage() {
+    cat <<'EOF'
+Usage: deploy/install.sh [--cron] [--target DIR]
+
+  --cron        print a cron line instead of installing systemd units
+  --target DIR  install to DIR (default: TARGET env or /opt/va-legal-agent)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --cron)
+            MODE_SYSTEMD=0
+            shift
+            ;;
+        --target)
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+                echo "error: --target requires a directory" >&2
+                usage >&2
+                exit 2
+            fi
+            TARGET="$2"
+            shift 2
+            ;;
+        --target=*)
+            TARGET="${1#*=}"
+            if [[ -z "$TARGET" ]]; then
+                echo "error: --target requires a directory" >&2
+                usage >&2
+                exit 2
+            fi
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 # System-level targets need root; user dirs can install without it.
 IS_ROOT_TARGET=0
@@ -36,11 +80,15 @@ fi
 echo "==> Installing DeepSearchAgent to $TARGET"
 mkdir -p "$TARGET"
 
-# 1. Copy the project, skipping local junk.
+# 1. Copy the project, skipping local junk, secrets, and runtime state.
+# .env and .webapp are created/owned in the target by step 3 and the app;
+# copying them would reuse the operator's keys or stale job state. In-place
+# re-installs keep the target's existing files because they are not copied.
 tar --exclude='.git' --exclude='.venv' --exclude='venv' --exclude='logs' \
     --exclude='.bva_index' --exclude='__pycache__' --exclude='.pytest_cache' \
     --exclude='.coverage' --exclude='mutants' --exclude='.freebuff' \
-    --exclude='*.egg-info' -C "$ROOT" -cf - . | tar -C "$TARGET" -xf -
+    --exclude='.env' --exclude='.webapp' --exclude='issues.txt' \
+    --exclude='issues.retry' --exclude='*.egg-info' -C "$ROOT" -cf - . | tar -C "$TARGET" -xf -
 
 # 2. venv + package install.
 if [[ ! -x "$TARGET/.venv/bin/python" ]]; then

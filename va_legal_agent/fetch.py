@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime
 
 import requests
@@ -39,7 +40,16 @@ _DATE_HINT = re.compile(r"\b(?:decided|filed|issued|handed down)\b", re.IGNORECA
 
 # Reporter/docket citation patterns, compiled once at import and reused by
 # every fetch (extract_citation runs once per fetched page/PDF).
-_CITATION_PATTERNS: tuple[tuple[re.Pattern[str], object], ...] = (
+_CitationPattern = tuple[re.Pattern[str], Callable[[re.Match[str]], str]]
+
+_BVA_CITATION: _CitationPattern = (
+    # BVA citation numbers look like "2100634" or "A25049742" (letter prefix).
+    # The label is usually written "Citation Nr." (with a period), but also
+    # appears as "Nr:" or bare "Nr", so the period and colon are each optional.
+    re.compile(r"Citation\s*Nr\.?:?\s*([A-Za-z]?\d{4,})"),
+    lambda m: f"BVA Citation Nr. {m.group(1)}",
+)
+_CITATION_PATTERNS: tuple[_CitationPattern, ...] = (
     (re.compile(r"\b(\d{1,3})\s+Vet\.?\s?App\.?\s+(\d{1,4})\b"),
      lambda m: f"{m.group(1)} Vet.App. {m.group(2)}"),
     (re.compile(r"\b(\d{1,4})\s+(F\.2d|F\.3d|F\.4th)\s+(\d{1,4})\b"),
@@ -50,20 +60,53 @@ _CITATION_PATTERNS: tuple[tuple[re.Pattern[str], object], ...] = (
      lambda m: f"{m.group(1)} U.S. {m.group(2)}"),
     (re.compile(r"\b(\d{4})\s+WL\s+(\d+)\b"),
      lambda m: f"{m.group(1)} WL {m.group(2)}"),
-    # BVA citation numbers look like "2100634" or "A25049742" (letter prefix).
-    # The label is usually written "Citation Nr." (with a period), but also
-    # appears as "Nr:" or bare "Nr", so the period and colon are each optional.
-    (re.compile(r"Citation\s*Nr\.?:?\s*([A-Za-z]?\d{4,})"),
-     lambda m: f"BVA Citation Nr. {m.group(1)}"),
+    _BVA_CITATION,
 )
 
 
-def extract_citation(text: str) -> str:
-    """Return the first recognized reporter/docket citation found in the text, or ''."""
-    for pattern, formatter in _CITATION_PATTERNS:
-        match = pattern.search(text)
+# A decision's own citation lives in its header: BVA decisions carry
+# "Citation Nr: 2100634" above the body, and CAVC opinions carry their reporter
+# cite in the caption.  Reading the body first returns the first *quoted* case
+# from the discussion instead of the decision actually being read.
+_CITATION_HEADER_CHARS = 2000
+_CAVC_CAPTION_CITATION: _CitationPattern = (
+    # A CAVC reporter cite that opens a line, as in a caption rather than a
+    # "See Smith v. Wilkie, 30 Vet.App. 123" sentence in the body.
+    re.compile(r"^[ \t]*(\d{1,3})\s+Vet\.?\s?App\.?\s+(\d{1,4})\b", re.MULTILINE),
+    lambda m: f"{m.group(1)} Vet.App. {m.group(2)}",
+)
+_OWN_CITATION_PATTERNS: tuple[_CitationPattern, ...] = (
+    _BVA_CITATION,
+    _CAVC_CAPTION_CITATION,
+)
+
+
+def extract_citation(text: str, header_chars: int = _CITATION_HEADER_CHARS) -> str:
+    """Return the decision's own citation, preferring the header.
+
+    The header (BVA ``Citation Nr.`` line, or the CAVC reporter cite in the
+    caption) identifies the decision itself; only if it carries no citation is
+    the body searched.  Otherwise a BVA decision discussing
+    ``Smith v. Wilkie, 30 Vet.App. 123`` is cited as that quoted case rather
+    than as its own Citation Nr., which misattributes the holding.
+    """
+    if not text:
+        return ""
+    header = text[:header_chars]
+    for pattern, formatter in _OWN_CITATION_PATTERNS:
+        match = pattern.search(header)
         if match:
             return formatter(match)
+    for pattern, formatter in _CITATION_PATTERNS:
+        match = pattern.search(header)
+        if match:
+            return formatter(match)
+    # A short text is entirely header, so the body pass would repeat the scan.
+    if len(text) > header_chars:
+        for pattern, formatter in _CITATION_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                return formatter(match)
     return ""
 
 
@@ -103,20 +146,45 @@ _JUDGE_PATTERN = re.compile(
     r"((?:[A-Z]\.\s*)*[A-Z][A-Za-z'\-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'\-]+){1,2})\b"
 )
 _PER_CURIAM_PATTERN = re.compile(r"\bper\s+curiam\b", re.IGNORECASE)
+# A section token is a number with optional parenthetical subsections; the
+# spaced parenthetical is the original single-cite form ("§ 1114 (iv) (West)")
+# and is preserved so normalization behaviour does not change.  The trailing
+# group captures the follow-on sections of a plural "§§ 1110, 1131" cite.
+_USC_BASE = r"[0-9]{2,4}[A-Za-z]?(?:\([A-Za-z0-9]+\)){0,2}"
+_USC_SECTION = _USC_BASE + r"(?:\s*\([A-Za-z0-9]+\))?"
 _USC_PATTERN = re.compile(
-    r"\b38\s*(?:U\.\s*S\.\s*C(?:\.\s*A)?\.?|U\.S\.C(?:\.A)?\.?|USC)\s*(?:§|\s+)?\s*([0-9]{2,4}[A-Za-z]?(?:\([A-Za-z0-9]+\))?(?:\([A-Za-z0-9]+\))?(?:\s*\([A-Za-z0-9]+\))?)",
+    r"\b38\s*(?:U\.\s*S\.\s*C(?:\.\s*A)?\.?|USC)\s*(?:§§?|\s+)?\s*"
+    r"(" + _USC_SECTION + r")"
+    r"((?:\s*,\s*(?:and\s+)?(?:\d{1,2}\s+U\.S\.C\.?\s*§{1,2}\s*)?" + _USC_BASE + r")*)",
     re.IGNORECASE,
 )
+_CFR_SECTION = r"[0-9]{1,2}\.[0-9A-Za-z]{1,6}(?:\([A-Za-z0-9]+\))?"
 _CFR_PATTERN = re.compile(
-    r"\b38\s*(?:C\.\s*F\.\s*R\.?|CFR)\s*(?:§|\s+)?\s*([0-9]{1,2}\.[0-9A-Za-z]{1,6}(?:\([A-Za-z0-9]+\))?)",
+    r"\b38\s*(?:C\.\s*F\.\s*R\.?|CFR)\s*(?:§§?|\s+)?\s*(" + _CFR_SECTION + r")"
+    r"((?:\s*,\s*(?:and\s+)?(?:\d{1,2}\s+C\.\s*F\.\s*R\.?\s*§{1,2}\s*)?" + _CFR_SECTION + r")*)",
     re.IGNORECASE,
 )
 # Detects the "A" annotator inside a matched 38 U.S.C.A. citation header (e.g.
 # "38 U.S.C.A. § "), so annotated cites can be labeled apart from "38 U.S.C.".
 _USCA_PREFIX = re.compile(r"\b38\s*U\.?\s*S\.?\s*C\.?\s*A\b", re.IGNORECASE)
-# Checked in priority order; most appellate dispositions lead with vacatur/remand.
 # Procedural-outcome signals scanned by extract_outcome.
 OUTCOME_SIGNALS: tuple[str, ...] = ("vacated", "remanded", "affirmed", "dismissed", "granted", "denied")
+_OUTCOME_SIGNAL_RE = re.compile(r"\b(" + "|".join(OUTCOME_SIGNALS) + r")\b", re.IGNORECASE)
+# The disposition is announced under a heading, never by the word "order" in
+# ordinary prose ("in order to establish service connection").  The heading may
+# stand alone or carry the disposition on the same line after a colon
+# ("ORDER: The claim is granted.").
+_DISPOSITION_ANCHOR = re.compile(
+    r"^[ \t]*(?:ORDER|CONCLUSIONS?(?:\s+OF\s+LAW)?|JUDGMENT)\b[ \t]*(?::[ \t]*|(?=[ \t]*$))",
+    re.IGNORECASE | re.MULTILINE,
+)
+# A disposition sentence names what was decided; a collateral ruling on a
+# motion or an extension does not.
+_CLAIM_SUBJECT = re.compile(
+    r"\b(?:claims?|service connection|entitlement|benefits?|appeals?|rating|remand|Board(?:'s)?\s+decision)\b",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 # Legal-standard-of-review patterns scanned by extract_legal_standard.
 # Veterans-law opinions routinely name the standard in a specific phrase
@@ -247,32 +315,108 @@ def _normalize_statute_value(value: str) -> str:
     return re.sub(r"\([A-Za-z]{2,}\)$", "", value)
 
 
-def _format_us_citation(match: "re.Match[str]") -> str:
-    """Format one 38 U.S.C. match, keeping an explicit 38 U.S.C.A. annotation."""
+def _us_citation_prefix(match: "re.Match[str]") -> str:
+    """The canonical label for one 38 U.S.C. match, preserving a U.S.C.A. cite."""
     header = match.group(0)[: match.start(1) - match.start(0)]
-    prefix = "38 U.S.C.A. § " if _USCA_PREFIX.search(header) else "38 U.S.C. § "
-    return prefix + _normalize_statute_value(match.group(1))
+    return "38 U.S.C.A. § " if _USCA_PREFIX.search(header) else "38 U.S.C. § "
+
+
+def _section_values(match: "re.Match[str]", followon: str) -> list[str]:
+    """Lead section plus every follow-on section listed by a plural citation.
+
+    ``38 C.F.R. §§ 3.303, 3.304`` matches once but names two sections; keeping
+    only the first silently drops cited authority from the case record.
+    """
+    values = [match.group(1)]
+    values.extend(re.findall(followon, match.group(2), re.IGNORECASE))
+    return values
+
+
+def _merge_statute_families(usc: list[str], cfr: list[str], limit: int) -> list[str]:
+    """Keep both statutory families visible under one shared cap.
+
+    A decision citing six U.S.C. sections and two C.F.R. regulations used to
+    lose the regulations entirely, even though VA claims are decided under
+    both.  When both families are present and the cap binds, reserve up to a
+    third of the slots for C.F.R. (at least one, never the last remaining
+    slot).
+    """
+    if not cfr or len(usc) + len(cfr) <= limit:
+        return (usc + cfr)[:limit]
+    if not usc:
+        return cfr[:limit]
+    cfr_slots = min(len(cfr), max(1, limit // 3), max(limit - 1, 0))
+    return usc[: limit - cfr_slots] + cfr[:cfr_slots]
 
 
 def extract_statutes(text: str, limit: int = 6) -> list[str]:
     """Return unique cited VA statutes in normalized form (38 U.S.C. / 38 C.F.R.)."""
-    statutes: list[str] = []
+    usc: list[str] = []
+    cfr: list[str] = []
+
+    def add(bucket: list[str], entry: str) -> None:
+        if entry not in bucket:
+            bucket.append(entry)
+
     for match in _USC_PATTERN.finditer(text):
-        entry = _format_us_citation(match)
-        if entry not in statutes:
-            statutes.append(entry)
+        prefix = _us_citation_prefix(match)
+        for value in _section_values(match, _USC_BASE):
+            add(usc, prefix + _normalize_statute_value(value))
     for match in _CFR_PATTERN.finditer(text):
-        entry = "38 C.F.R. § " + _normalize_statute_value(match.group(1))
-        if entry not in statutes:
-            statutes.append(entry)
-    return statutes[:limit]
+        for value in _section_values(match, _CFR_SECTION):
+            add(cfr, "38 C.F.R. § " + _normalize_statute_value(value))
+    return _merge_statute_families(usc, cfr, limit)
+
+
+def _disposition_scope(text: str) -> str:
+    """Return the text that carries the decision's disposition.
+
+    The ORDER/CONCLUSION block is authoritative.  Without one, the last
+    sentence that both names the claim and states a disposition wins, because
+    decisions announce the outcome at the end, after the procedural history
+    (which often recites an earlier denial); otherwise the whole text is used
+    so short snippets keep their historical behaviour.  Within the chosen
+    region, sentences naming the claim outrank collateral rulings, so an ORDER
+    that also denies a motion reports only the claim's disposition.
+    """
+    anchors = list(_DISPOSITION_ANCHOR.finditer(text))
+    if anchors:
+        region = text[anchors[-1].end():]
+    else:
+        region = next(
+            (
+                sentence
+                for sentence in reversed(_SENTENCE_SPLIT.split(text))
+                if _OUTCOME_SIGNAL_RE.search(sentence)
+                and _CLAIM_SUBJECT.search(sentence)
+            ),
+            text,
+        )
+    claim_sentences = [
+        sentence
+        for sentence in _SENTENCE_SPLIT.split(region)
+        if _OUTCOME_SIGNAL_RE.search(sentence) and _CLAIM_SUBJECT.search(sentence)
+    ]
+    return " ".join(claim_sentences) or region
 
 
 def extract_outcome(text: str, limit: int = 2) -> str:
-    """Return the detected procedural outcome, e.g. 'vacated and remanded'."""
-    lowered = text.lower()
-    hits = [signal for signal in OUTCOME_SIGNALS if re.search(rf"\b{signal}\b", lowered)]
-    return " and ".join(hits[:limit])
+    """Return the disposition announced in the ORDER/CONCLUSION block.
+
+    Only the disposition block is scanned, so a background recitation ("the
+    regional office denied the claim") or a collateral ruling ("the motion for
+    an extension is denied") is not reported as the claim's outcome.  Signals
+    are returned in document order with duplicates collapsed, e.g.
+    ``"vacated and remanded"``.
+    """
+    if not text:
+        return ""
+    ordered: list[str] = []
+    for match in _OUTCOME_SIGNAL_RE.finditer(_disposition_scope(text)):
+        signal = match.group(1).lower()
+        if signal not in ordered:
+            ordered.append(signal)
+    return " and ".join(ordered[:limit])
 
 
 def extract_appellant_role(text: str) -> str:
@@ -411,7 +555,7 @@ def extract_citation_treatments(text: str) -> list[dict[str, str]]:
 # use "NOT PRECEDENTIAL" or "Do not cite as precedent"; some federal circuits
 # use "unpublished".
 _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(pattern, re.IGNORECASE)
+    re.compile(pattern, re.IGNORECASE | re.MULTILINE)
     for pattern in (
         r"\bnot\s+for\s+publication\b",
         r"\bnon[-\s]?precedential\b",
@@ -423,21 +567,34 @@ _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
         r"\b(?:this|the)\s+disposition\s+is\s+not\s+(?:precedential|[a-z]+\s+as\s+precedent)\b",
         r"\bthis\s+order\b.*\bnot\s+(?:to\s+be|citable\s+as)\b",
         r"\bsingle\s+judge\b.*\b(?:designation|disposition)\b",
+        # A line that is just the single-judge designation: "SINGLE JUDGE
+        # DECISION", "Single-Judge Disposition", "Before: Single Judge".
+        # Line-anchored so prose mentioning a single-judge decision (e.g. a
+        # published opinion discussing one) is not demoted.
+        r"^[ \t]*(?:before:[ \t]*)?single[ -]judge(?:[ \t]+(?:decision|designation|disposition))?[ \t]*$",
         r"\bmemorandum\s+decision\b",
         r"\bnon-?citable\b",
     )
 )
 
 
+# Non-precedential status is designated in the header ("NOT FOR PUBLICATION"
+# stamp, "unpublished" docket line, single-judge designation).  A published
+# opinion's body routinely *discusses* unpublished orders, so scanning the
+# whole document marks precedential decisions non-precedential.
+_PRECEDENTIAL_HEADER_CHARS = 1500
+
+
 def extract_precedential_status(text: str) -> bool:
-    """Return ``False`` when the text signals a non-precedential decision.
+    """Return ``False`` when the decision's header designates it non-precedential.
 
     Veterans-law decisions come in two flavors: precedential (published, can
     be cited as binding authority) and non-precedential (memorandum
     dispositions, unpublished orders, single-judge designations — persuasive
-    at best).  A decision is deemed precedential (``True``) unless at least
-    one non-precedential marker is found in *text*.  Returns ``True`` for
-    empty text (assume precedential when no body is available).
+    at best).  The designation is read from the header only, so a published
+    opinion that cites or discusses an unpublished order is not itself
+    demoted.  Returns ``True`` for empty text (assume precedential when no
+    body is available).
 
     The result feeds the ranking layer (a 0.25 penalty to ``composite_score``
     for non-precedential decisions within their tier) and the interpretation
@@ -445,10 +602,13 @@ def extract_precedential_status(text: str) -> bool:
     """
     if not text or not text.strip():
         return True
+    header = text[:_PRECEDENTIAL_HEADER_CHARS]
     for regex in _PRECEDENTIAL_MARKERS:
-        if regex.search(text):
+        if regex.search(header):
             return False
     return True
+
+
 # Veterans-law opinions often articulate multiple holdings (e.g. one on
 # nexus analysis and one on benefit-of-the-doubt); the cap bounds the field
 # size while still capturing the common case of 2–3 holdings.

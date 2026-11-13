@@ -26,6 +26,10 @@ Usage::
 
     make mutate
     python scripts/check_mutation_baseline.py
+
+A partial local run can pass ``--allow-missing`` to keep missing modules visible
+without failing; CI never passes it, so an unmeasured module still fails the
+gate there.
 """
 
 from __future__ import annotations
@@ -54,7 +58,20 @@ def read_survivor_counts(module: str) -> tuple[int, int]:
     return int(match.group(2)), int(match.group(3) or 0)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    allow_missing = False
+    for arg in args:
+        if arg == "--allow-missing":
+            allow_missing = True
+            continue
+        print(f"error: unknown argument: {arg}", file=sys.stderr)
+        print(
+            "usage: check_mutation_baseline.py [--allow-missing]",
+            file=sys.stderr,
+        )
+        return 2
+
     baseline = json.loads(BASELINE_PATH.read_text())
     violations: list[str] = []
     warnings: list[str] = []
@@ -63,11 +80,18 @@ def main() -> int:
         try:
             actual, timeout_count = read_survivor_counts(module)
         except FileNotFoundError:
-            warnings.append(
+            message = (
                 f"{module}: no survivor file — the pass did not run (likely "
                 "timed out on CI); verify locally with `make mutate-check`"
             )
             rows.append((module, -1, 0, expected))
+            if allow_missing:
+                warnings.append(f"{message} [allowed by --allow-missing]")
+            else:
+                violations.append(
+                    f"{module}: no survivor file — the pass did not run; re-run it "
+                    "or pass --allow-missing for a partial local check"
+                )
             continue
         rows.append((module, actual, timeout_count, expected))
         if timeout_count > 0:
@@ -107,7 +131,16 @@ def main() -> int:
         for violation in violations:
             print(f"  - {violation}")
         return 1
-    print("\nMutation kill-gate passed: every completed module is at or under its triaged baseline.")
+    if allow_missing and has_missing:
+        print(
+            "\nMutation kill-gate passed with --allow-missing: missing modules "
+            "were not measured."
+        )
+    else:
+        print(
+            "\nMutation kill-gate passed: every completed module is at or under "
+            "its triaged baseline."
+        )
     return 0
 
 

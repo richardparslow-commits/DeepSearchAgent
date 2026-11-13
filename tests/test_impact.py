@@ -104,6 +104,19 @@ def test_outcome_note_secretary_override_dismissed():
     assert "Secretary's cross-appeal was dismissed" in note
 
 
+def test_outcome_note_secretary_denied_is_favorable():
+    # A denied Secretary appeal means the veteran's grant stands.
+    note = outcome_note_for("denied", appellant_role="secretary")
+    assert "Secretary's appeal was denied" in note
+    assert "stands" in note
+
+
+def test_outcome_note_secretary_override_granted_and_vacatur():
+    assert "was granted" in outcome_note_for("granted", appellant_role="secretary")
+    assert "vacatur" in outcome_note_for("vacated", appellant_role="secretary")
+    assert "remand" in outcome_note_for("remanded", appellant_role="secretary")
+
+
 def test_outcome_note_no_override_for_veteran():
     # When the veteran appealed, "affirmed" stays unfavorable.
     note = outcome_note_for("affirmed", appellant_role="veteran")
