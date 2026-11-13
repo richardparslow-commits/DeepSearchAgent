@@ -2131,7 +2131,11 @@ def test_research_issue_citation_traversal_merges_new_opinions(monkeypatch):
 
 
 def test_research_issue_citation_traversal_skipped_when_deadline_expired(monkeypatch):
-    """Citation traversal is skipped when the wall-time deadline is already past."""
+    """Citation traversal is skipped when the wall-time deadline is already past.
+
+    The clock is frozen and jumped past the deadline at the seed-selection step
+    instead of being raced against a real 1ms budget — see the comment below.
+    """
     monkeypatch.setenv("CITATION_TRAVERSAL", "1")
     monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
     monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
@@ -2156,10 +2160,28 @@ def test_research_issue_citation_traversal_skipped_when_deadline_expired(monkeyp
     monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
     monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
 
-    # Passing 0.001 as max_wall_seconds gives a deadline essentially now; by the
-    # time the search phase finishes (it returns instantly with our fake), the
-    # real monotonic clock is past the deadline and traversal is skipped.
-    research_issue("test issue", max_results=5, max_wall_seconds=0.001)
+    # This used to pass max_wall_seconds=0.001 and rely on the real monotonic
+    # clock having moved past the deadline by the time the search phase
+    # finished. That is a race: on a warm interpreter the whole phase can
+    # complete inside 1ms, the guard never fires, and the assertion fails. A
+    # flaky test also kills mutants non-deterministically, which makes the
+    # mutation gate unreproducible -- so freeze the clock instead and jump it
+    # past the deadline at the seed-selection step (_dedupe(cases) is evaluated
+    # immediately before the guard).
+    clock = {"t": 0.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["t"])
+
+    calls = {"n": 0}
+
+    def dedupe_then_expire(records):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            clock["t"] = 1e6  # long past the 10s deadline
+        return _dedupe(records)
+
+    monkeypatch.setattr("va_legal_agent.agent._dedupe", dedupe_then_expire)
+
+    research_issue("test issue", max_results=5, max_wall_seconds=10)
 
     assert traversed == [], "traversal should have been skipped entirely"
 
@@ -2229,35 +2251,177 @@ def test_research_issue_citation_traversal_aborted_mid_loop_when_deadline_passes
     assert yield_count == 1  # exactly one yield before deadline hit
 
 
-def test_traverse_citations_deadline_aborts_between_seeds(monkeypatch):
-    """traverse_citations stops processing seeds when the deadline is reached."""
-    from va_legal_agent.providers import traverse_citations
+def test_research_issue_citation_traversal_skipped_at_exact_deadline(monkeypatch, caplog):
+    """The skip guard fires when the clock lands exactly on the deadline.
 
-    class FakeProvider:
-        def cited_opinions(self, opinion_id, max_results=10):
-            # This should never be called because the deadline check aborts first.
-            raise AssertionError("cited_opinions should not be called")
+    ``_dedupe(cases)`` is evaluated immediately before the guard, so the frozen
+    clock is advanced to ``deadline`` there — the last point at which the search
+    phase still needs the budget intact. This pins the ``>=`` boundary (with
+    ``>`` the traversal runs anyway) and the rendered warning text and its
+    ``deadline`` / ``time.monotonic()`` arguments.
+    """
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
 
-        def citing_opinions(self, opinion_id, max_results=10):
-            raise AssertionError("citing_opinions should not be called")
+    clock = {"t": 0.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["t"])
 
-    monkeypatch.setattr(
-        "va_legal_agent.providers.CourtListenerProvider", lambda: FakeProvider()
+    traversed: list[str] = []
+
+    def fake_traverse(urls, max_results=10, deadline=None):
+        traversed.extend(urls)
+        return []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    calls = {"n": 0}
+
+    def dedupe_then_expire(records):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the seed selection immediately before the guard
+            clock["t"] = 10.0  # == deadline (0.0 + max_wall_seconds)
+        return _dedupe(records)
+
+    monkeypatch.setattr("va_legal_agent.agent._dedupe", dedupe_then_expire)
+
+    cases = research_issue(
+        "service connection and rating", max_results=5, max_wall_seconds=10
     )
-    monkeypatch.setattr(
-        "va_legal_agent.providers.extract_courtlistener_opinion_id",
-        lambda url: url.split("/")[-2],
+
+    assert traversed == [], "traversal should have been skipped entirely"
+    assert {c.title for c in cases} == {"Smith v. Wilkie"}
+    assert any(
+        r.getMessage()
+        == "Citation traversal skipped: wall-time budget exhausted before "
+        "traversal started (deadline 10.0, now 10.0)."
+        for r in caplog.records
     )
 
-    # deadline=0 means time.monotonic() >= 0 is always True, so traversal
-    # aborts before processing any seed.
-    result = traverse_citations(
-        ["https://www.courtlistener.com/opinion/99/test/"],
-        max_results=5,
-        deadline=0.0,
+
+def test_research_issue_citation_traversal_aborts_at_exact_deadline_and_counts(
+    monkeypatch, caplog
+):
+    """The mid-loop guard fires at ``monotonic() == deadline`` and reports the count.
+
+    Two opinions merge, then the frozen clock lands exactly on the deadline
+    before the third is consumed: the guard must ``break`` (with ``>`` the third
+    opinion is merged) and the warning must render the two opinions already
+    merged. That ``%d`` is the only observable use of the ``traversed`` counter,
+    so this is what pins ``traversed = 0`` and ``traversed += 1``.
+    """
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["t"])
+
+    def fake_traverse(urls, max_results=10, deadline=None):
+        yield {
+            "title": "First Case",
+            "url": "https://www.courtlistener.com/opinion/1/first/",
+            "court": "Court of Appeals for Veterans Claims",
+            "snippet": "rating evidence",
+        }
+        yield {
+            "title": "Second Case",
+            "url": "https://www.courtlistener.com/opinion/2/second/",
+            "snippet": "rating evidence",
+        }
+        # The budget runs out exactly on the deadline, not past it.
+        clock["t"] = 10.0
+        yield {
+            "title": "Third Case (should not be added)",
+            "url": "https://www.courtlistener.com/opinion/3/third/",
+            "snippet": "rating evidence",
+        }
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    cases = research_issue(
+        "service connection and rating", max_results=5, max_wall_seconds=10
     )
 
-    assert result == []
+    titles = {c.title for c in cases}
+    assert "First Case" in titles
+    assert "Second Case" in titles
+    assert "Third Case (should not be added)" not in titles
+    assert any(
+        r.getMessage()
+        == "Citation traversal aborted mid-loop: wall-time budget exhausted "
+        "(deadline 10.0, now 10.0). 2 new opinions found."
+        for r in caplog.records
+    )
+
+
+def test_research_issue_forwards_deadline_to_citation_traversal(monkeypatch):
+    """The citation hop receives the run's own deadline, never the default.
+
+    Pins ``deadline=deadline`` in the ``traverse_citations`` call: dropping the
+    keyword (or passing ``None``) would let the hop run unbounded after the
+    wall-time budget is already spent — the 429-retry stall the guard exists to
+    prevent.
+    """
+    monkeypatch.setenv("CITATION_TRAVERSAL", "1")
+    monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "1")
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "0")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {})
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: clock["t"])
+
+    seen: dict[str, object] = {}
+
+    def fake_traverse(urls, max_results=10, deadline=None):
+        seen["urls"] = list(urls)
+        seen["max_results"] = max_results
+        seen["deadline"] = deadline
+        return []
+
+    def fake_search_all(query, max_results=10, telemetry=None, deadline=None):
+        return [
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection rating evidence",
+            }
+        ]
+
+    monkeypatch.setattr("va_legal_agent.agent.search_all", fake_search_all)
+    monkeypatch.setattr("va_legal_agent.agent.traverse_citations", fake_traverse)
+
+    research_issue("service connection and rating", max_results=5, max_wall_seconds=10)
+
+    assert seen["urls"] == ["https://uscourts.cavc.gov/smith"]
+    assert seen["max_results"] == 5  # the loop forwards its own max_results
+    # Frozen clock: _deadline_for(10) == 0.0 + 10.
+    assert seen["deadline"] == 10.0
 
 
 def test_research_issue_raises_when_round_one_all_fails(monkeypatch):

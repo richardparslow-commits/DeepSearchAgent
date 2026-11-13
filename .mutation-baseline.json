@@ -1,5 +1,5 @@
 {
-  "agent.py": 90,
+  "agent.py": 87,
   "batch.py": 20,
   "config.py": 41,
   "deep_read.py": 7,
@@ -9,7 +9,7 @@
   "llm.py": 30,
   "models.py": 0,
   "planning.py": 3,
-  "providers.py": 203,
+  "providers.py": 202,
   "queries.py": 2,
   "ranking.py": 5,
   "reliability.py": 2,

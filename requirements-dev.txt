@@ -2,7 +2,11 @@
 pytest>=8.0.0
 pytest-cov>=5.0.0
 ruff>=0.6.0
-mutmut>=3.7.0
+# Pinned exactly -- see the note in pyproject.toml. A mutmut release changes
+# the generated mutant set, which silently invalidates every triaged count in
+# .mutation-baseline.json (3.8.0 moved config.py from 41 survivors to 117 with
+# no source change). Upgrade deliberately, then re-triage the baseline.
+mutmut==3.7.0
 debugpy==1.8.14
 agent-dev-cli==0.0.1b260427
 openai>=1.35.0,<4

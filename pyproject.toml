@@ -22,7 +22,13 @@ dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
     "ruff>=0.6.0",
-    "mutmut>=3.7.0",
+    # Pinned exactly, not floored: .mutation-baseline.json records a *triaged*
+    # count of surviving mutants, and a mutmut release changes which mutants
+    # are generated in the first place -- so floating this version silently
+    # invalidates every entry in that file. mutmut 3.8.0 alone moved config.py
+    # from 41 survivors to 117 with no source change at all. Upgrading mutmut
+    # is therefore a deliberate act that requires re-triaging the baseline.
+    "mutmut==3.7.0",
     "debugpy==1.8.14",
     "agent-dev-cli==0.0.1b260427",
 ]

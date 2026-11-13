@@ -1240,6 +1240,65 @@ def test_minimize_courtlistener_query_unmatched_quote_falls_through():
     assert _minimize_courtlistener_query('"') == ""
 
 
+def test_minimize_courtlistener_query_normalizes_curly_quotes():
+    """Both curly-quote folds must run before the phrase scan.
+
+    Typographic quotes reach here whenever an issue phrase is copied out of a
+    PDF or a Word filing. Dropping either ``str.replace`` leaves the curly
+    character in place, so ``text.lstrip().startswith('"')`` is False and the
+    query degrades to the unquoted fallback — ``“tinnitus”`` (or ``XX`` when
+    the replacement text is corrupted) instead of ``tinnitus``.
+    """
+    assert (
+        _minimize_courtlistener_query("\u201ctinnitus\u201d veterans compensation")
+        == "tinnitus"
+    )
+    assert (
+        _minimize_courtlistener_query("\u201cAid and Attendance\u201d")
+        == "Aid and Attendance"
+    )
+
+
+def test_minimize_courtlistener_query_leading_whitespace_takes_quote_path():
+    """Whitespace around the query never bypasses the phrase scan.
+
+    ``strip_site_prefixes`` already ``.strip()``s its result, so ``text`` is
+    always free of surrounding whitespace and the ``text.lstrip()`` guard is
+    reached with a clean string. (That also makes the ``lstrip`` -> ``rstrip``
+    mutant provably equivalent: both are no-ops on an already-stripped string.)
+    """
+    assert (
+        _minimize_courtlistener_query('  "tinnitus" veterans compensation')
+        == "tinnitus"
+    )
+
+
+def test_minimize_courtlistener_query_unquoted_keeps_text_before_first_quote():
+    """The fallback takes the text before the *first* quote, not the last.
+
+    Pins ``text.split('"', 1)[0]``: ``rsplit`` would keep everything up to the
+    final quote (``tinnitus "38 U.S.C. 1110``), leaking the quoted fragment
+    back into the CourtListener query.
+    """
+    assert (
+        _minimize_courtlistener_query('tinnitus "38 U.S.C. 1110" veterans compensation')
+        == "tinnitus"
+    )
+
+
+def test_minimize_courtlistener_query_sheds_only_trailing_boilerplate():
+    """The word-level backstop pops from the end only, never from the middle.
+
+    ``veterans`` is boilerplate but is not the last word here, so nothing may
+    be shed. Pins ``words[-1]``: indexing ``words[1]`` or ``words[-2]`` would
+    find ``veterans`` and strip the query down to ``tinnitus``.
+    """
+    assert (
+        _minimize_courtlistener_query("tinnitus veterans rating")
+        == "tinnitus veterans rating"
+    )
+
+
 def test_bva_provider_minimizes_query_before_request(monkeypatch):
     # search.usa.gov's WAF challenges long, quote-bearing, boilerplate-laden
     # recall queries, so BVA reduces the query to the issue phrase before
@@ -4175,6 +4234,91 @@ def test_traverse_citations_skips_failed_node(monkeypatch, caplog):
     assert [r["url"] for r in result] == ["https://www.courtlistener.com/opinion/102/"]
     assert any(
         r.getMessage() == "Citation traversal skipped opinion 1: rate limited"
+        for r in caplog.records
+    )
+
+
+def test_traverse_citations_deadline_aborts_between_seeds(monkeypatch):
+    """traverse_citations stops processing seeds when the deadline is reached.
+
+    This lives here rather than in ``tests/test_legal_agent.py`` on purpose: the
+    mutation pass for ``providers.py`` only runs ``tests/test_providers.py`` and
+    ``tests/test_search.py``, so while this test sat in the agent file it never
+    executed against the providers mutants it was written for — and the
+    ``break`` -> ``return`` mutant (a bare ``return`` yields ``None``, not
+    ``merged``) survived unnoticed as a result.
+    """
+    from va_legal_agent.providers import traverse_citations
+
+    class FakeProvider:
+        def cited_opinions(self, opinion_id, max_results=10):
+            # This should never be called because the deadline check aborts first.
+            raise AssertionError("cited_opinions should not be called")
+
+        def citing_opinions(self, opinion_id, max_results=10):
+            raise AssertionError("citing_opinions should not be called")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider", lambda: FakeProvider()
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.providers.extract_courtlistener_opinion_id",
+        lambda url: url.split("/")[-2],
+    )
+
+    # deadline=0 means time.monotonic() >= 0 is always True, so traversal
+    # aborts before processing any seed.
+    result = traverse_citations(
+        ["https://www.courtlistener.com/opinion/99/test/"],
+        max_results=5,
+        deadline=0.0,
+    )
+
+    assert result == []
+
+
+def test_traverse_citations_deadline_equality_aborts_and_logs_count(monkeypatch, caplog):
+    """The guard fires at ``monotonic() == deadline`` and logs the merge count.
+
+    The clock is frozen and advanced onto the deadline by the first seed's
+    ``cited_opinions`` call, so the second seed must be skipped with the two
+    opinions already merged reported in the warning. This pins the ``>=``
+    boundary (with ``>`` the second seed is traversed and nothing is logged)
+    and the rendered message text and ``len(merged)`` argument.
+    """
+    from va_legal_agent.providers import traverse_citations
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr("va_legal_agent.providers.time.monotonic", lambda: clock["t"])
+
+    def cited(self, opinion_id, max_results=10):
+        # The budget runs out while the first seed is still being traversed.
+        clock["t"] = 500.0
+        return [{"title": "A", "url": "https://www.courtlistener.com/opinion/100/"}]
+
+    def citing(self, opinion_id, max_results=10):
+        return [{"title": "B", "url": "https://www.courtlistener.com/opinion/101/"}]
+
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.cited_opinions", cited)
+    monkeypatch.setattr("va_legal_agent.providers.CourtListenerProvider.citing_opinions", citing)
+
+    result = traverse_citations(
+        [
+            "https://www.courtlistener.com/opinion/1/",
+            "https://www.courtlistener.com/opinion/2/",
+        ],
+        max_results=5,
+        deadline=500.0,
+    )
+
+    # Only the first seed was traversed; the second was cut off by the guard.
+    assert [r["url"] for r in result] == [
+        "https://www.courtlistener.com/opinion/100/",
+        "https://www.courtlistener.com/opinion/101/",
+    ]
+    assert any(
+        r.getMessage()
+        == "Citation traversal aborted: deadline reached (2 opinions found so far)."
         for r in caplog.records
     )
 
