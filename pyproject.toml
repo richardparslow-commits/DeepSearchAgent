@@ -52,7 +52,9 @@ select = ["E", "F", "W"]
 ignore = ["E501"]
 
 [tool.mutmut]
-source_paths = ["va_legal_agent/agent.py"]
+# Defaults for a direct mutmut run; scripts/mutmut_pass.py temporarily scopes
+# these to one module and restores them afterwards.
+source_paths = ["va_legal_agent"]
 use_coverage = true
 # Wall-clock budget for one mutant's test run is
 # (estimated_time + timeout_constant) * timeout_multiplier. The executor tests
@@ -61,4 +63,4 @@ use_coverage = true
 # generous constant keeps mutmut from misclassifying that slow kill as a
 # SIGXCPU "timeout" instead of a "killed" mutant.
 timeout_constant = 2.0
-pytest_add_cli_args_test_selection = ["tests/test_legal_agent.py", "tests/test_research.py"]
+pytest_add_cli_args_test_selection = []

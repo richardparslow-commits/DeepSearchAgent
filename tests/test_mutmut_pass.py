@@ -16,8 +16,8 @@ mutmut_pass = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(mutmut_pass)
 
 _ORIGINAL = """[tool.mutmut]
-source_paths = ["va_legal_agent/agent.py"]
-pytest_add_cli_args_test_selection = ["tests/test_legal_agent.py"]
+source_paths = ["va_legal_agent"]
+pytest_add_cli_args_test_selection = []
 """
 
 

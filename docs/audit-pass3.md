@@ -425,7 +425,8 @@ then assert the file is byte-for-byte restored:
 $ .venv/bin/python -m pytest -q tests/test_mutmut_pass.py
 8 passed
 ```
-Regression tests: `test_scoped_pyproject_restores_after_exception`,
+The restore fixture uses the checked-in package-wide/empty-selection shape, so the
+scoped rewrite is tested against the actual defaults. Regression tests: `test_scoped_pyproject_restores_after_exception`,
 `test_scoped_pyproject_restores_after_success`, and
 `test_main_restores_pyproject_when_pass_fails`.
 
