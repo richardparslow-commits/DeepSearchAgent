@@ -32,6 +32,7 @@ def _prepare_pass_workspace(
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_config.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(mutmut_pass, "SURVIVOR_DIR", tmp_path)
     monkeypatch.setattr(
         sys, "argv", ["mutmut_pass.py", "config.py", "tests/test_config.py"]
     )
@@ -53,16 +54,8 @@ def _fake_pass_run(
                 stderr=f"{fail_match} exploded",
             )
         if "mutmut" in cmd and "results" in cmd:
-            stdout = results_stdout
-            if "--all" not in cmd:
-                # mutmut hides killed mutants unless --all is requested.
-                stdout = "".join(
-                    f"{line}\n"
-                    for line in stdout.splitlines()
-                    if not line.strip().endswith(": killed")
-                )
             return subprocess.CompletedProcess(
-                args=cmd, returncode=0, stdout=stdout, stderr=""
+                args=cmd, returncode=0, stdout=results_stdout, stderr=""
             )
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout="", stderr=""
@@ -175,6 +168,29 @@ def test_main_accepts_all_killed_pass(
 
     assert "config.py: 0 survivors" in capsys.readouterr().out
     assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == _ORIGINAL
+
+
+def test_main_requests_all_mutmut_statuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mutmut 3.7 exposes --all as a boolean option, not a bare flag."""
+    _prepare_pass_workspace(tmp_path, monkeypatch)
+    calls: list[list[str]] = []
+    fake = _fake_pass_run()
+
+    def recording_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append([str(part) for part in args])
+        return fake(args, **kwargs)
+
+    monkeypatch.setattr(mutmut_pass.subprocess, "run", recording_run)
+
+    mutmut_pass.main()
+
+    assert any(
+        "mutmut" in cmd and "results" in cmd and "--all=true" in cmd
+        for cmd in calls
+    )
 
 
 def test_main_rejects_empty_results(

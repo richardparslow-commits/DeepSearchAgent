@@ -14,7 +14,7 @@ ExecStart=__TARGET__/deploy/run_batch.sh
 # --auto-run sleeps through CourtListener window resets, so no start timeout.
 TimeoutStartSec=0
 TimeoutStopSec=30
-# Retry real crashes (e.g. an unreachable usage endpoint) with a backoff.
+# Retry crashes and incomplete batches with a backoff.
 Restart=on-failure
 RestartSec=120
 # Flush logs promptly so journald / the per-run log file stay current.

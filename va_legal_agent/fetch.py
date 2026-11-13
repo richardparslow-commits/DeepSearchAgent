@@ -146,11 +146,11 @@ _JUDGE_PATTERN = re.compile(
     r"((?:[A-Z]\.\s*)*[A-Z][A-Za-z'\-]+(?:\s+(?:[A-Z]\.\s*)?[A-Z][A-Za-z'\-]+){1,2})\b"
 )
 _PER_CURIAM_PATTERN = re.compile(r"\bper\s+curiam\b", re.IGNORECASE)
-# A section token is a number with optional parenthetical subsections; the
-# spaced parenthetical is the original single-cite form ("§ 1114 (iv) (West)")
-# and is preserved so normalization behaviour does not change.  The trailing
-# group captures the follow-on sections of a plural "§§ 1110, 1131" cite.
-_USC_BASE = r"[0-9]{2,4}[A-Za-z]?(?:\([A-Za-z0-9]+\)){0,2}"
+# A section token is a number with any attached parenthetical subsections.
+# The optional spaced parenthetical absorbs a detached annotation ("§ 1114
+# (iv) (West)") so normalization can drop it.  The trailing group captures the
+# follow-on sections of a plural "§§ 1110, 1131" cite.
+_USC_BASE = r"[0-9]{2,4}[A-Za-z]?(?:\([A-Za-z0-9]+\))*"
 _USC_SECTION = _USC_BASE + r"(?:\s*\([A-Za-z0-9]+\))?"
 _USC_PATTERN = re.compile(
     r"\b38\s*(?:U\.\s*S\.\s*C(?:\.\s*A)?\.?|USC)\s*(?:§§?|\s+)?\s*"
@@ -158,7 +158,7 @@ _USC_PATTERN = re.compile(
     r"((?:\s*,\s*(?:and\s+)?(?:\d{1,2}\s+U\.S\.C\.?\s*§{1,2}\s*)?" + _USC_BASE + r")*)",
     re.IGNORECASE,
 )
-_CFR_SECTION = r"[0-9]{1,2}\.[0-9A-Za-z]{1,6}(?:\([A-Za-z0-9]+\))?"
+_CFR_SECTION = r"[0-9]{1,2}\.[0-9A-Za-z]{1,6}(?:\([A-Za-z0-9]+\))*"
 _CFR_PATTERN = re.compile(
     r"\b38\s*(?:C\.\s*F\.\s*R\.?|CFR)\s*(?:§§?|\s+)?\s*(" + _CFR_SECTION + r")"
     r"((?:\s*,\s*(?:and\s+)?(?:\d{1,2}\s+C\.\s*F\.\s*R\.?\s*§{1,2}\s*)?" + _CFR_SECTION + r")*)",
@@ -310,9 +310,15 @@ def extract_judge(text: str) -> str:
 
 
 def _normalize_statute_value(value: str) -> str:
-    """Strip whitespace and trailing parentheticals from a matched section number."""
-    value = re.sub(r"\s+", "", value)
-    return re.sub(r"\([A-Za-z]{2,}\)$", "", value)
+    """Normalize a matched section number without dropping real subsections.
+
+    Parentheticals attached to the section number are subsections and are kept,
+    including Roman numerals such as ``(iv)``. Parentheticals separated from
+    the section by whitespace are citation annotations (``(West)``, ``(2023)``)
+    and are stripped.
+    """
+    value = re.sub(r"(?:\s+\([^()]*\))+\s*$", "", value)
+    return re.sub(r"\s+", "", value)
 
 
 def _us_citation_prefix(match: "re.Match[str]") -> str:

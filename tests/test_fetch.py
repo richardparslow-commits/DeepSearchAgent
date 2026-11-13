@@ -809,6 +809,26 @@ def test_normalize_statute_value_strips_whitespace_and_parenthetical():
     assert extract_statutes("See 38 U.S.C. § 1114 (iv) (West).") == ["38 U.S.C. § 1114"]
 
 
+def test_normalize_statute_value_preserves_two_letter_subsection():
+    # (aa)/(bb) are CFR paragraph identifiers, not annotator parentheticals.
+    assert extract_statutes("38 C.F.R. § 3.1(aa)") == ["38 C.F.R. § 3.1(aa)"]
+    assert extract_statutes("38 C.F.R. § 3.1(bb)") == ["38 C.F.R. § 3.1(bb)"]
+    assert extract_statutes("38 C.F.R. § 3.1(aa) (West)") == [
+        "38 C.F.R. § 3.1(aa)"
+    ]
+
+
+def test_normalize_statute_value_preserves_attached_subsections():
+    # Attached parentheticals are nested subsections even when Roman or
+    # numeric; only whitespace-separated parentheticals are annotations.
+    assert extract_statutes("38 U.S.C. § 5107(b)(1)(A)(iv)") == [
+        "38 U.S.C. § 5107(b)(1)(A)(iv)"
+    ]
+    assert extract_statutes("38 C.F.R. § 3.1(aa)(1)(i)") == [
+        "38 C.F.R. § 3.1(aa)(1)(i)"
+    ]
+
+
 def test_extract_holding_sentence_keeps_exactly_min_words():
     # A holding with exactly MIN words is kept; the <= mutant would drop it.
     assert extract_holding_sentence("We hold that the VA erred.") == "We hold that the VA erred."
@@ -2011,6 +2031,12 @@ def test_extract_outcome_collapses_duplicate_signals():
     assert extract_outcome(text) == "granted"
 
 
+def test_extract_outcome_ignores_trailing_non_disposition_claim_sentence():
+    """A later sentence that names the claim but decides nothing is not the disposition."""
+    text = "The claim is granted. The Board's decision discusses benefits."
+    assert extract_outcome(text) == "granted"
+
+
 def test_extract_statutes_keeps_cfr_sections_under_the_cap():
     """A long U.S.C. list must not crowd every C.F.R. regulation out."""
     result = extract_statutes(
@@ -2041,6 +2067,70 @@ def test_extract_statutes_matches_plural_section_citations():
         "38 C.F.R. § 3.303",
         "38 C.F.R. § 3.304",
     ]
+
+
+@pytest.mark.parametrize(
+    ("text", "limit", "expected"),
+    [
+        (
+            "38 U.S.C. §§ 1110, 1131, 1151; 38 C.F.R. §§ 3.303, 3.304, 3.305",
+            6,
+            [
+                "38 U.S.C. § 1110",
+                "38 U.S.C. § 1131",
+                "38 U.S.C. § 1151",
+                "38 C.F.R. § 3.303",
+                "38 C.F.R. § 3.304",
+                "38 C.F.R. § 3.305",
+            ],
+        ),
+        (
+            "38 U.S.C. §§ 1110, 1131, 1151, 5103, 5107, 7104; 38 C.F.R. § 3.303",
+            6,
+            [
+                "38 U.S.C. § 1110",
+                "38 U.S.C. § 1131",
+                "38 U.S.C. § 1151",
+                "38 U.S.C. § 5103",
+                "38 U.S.C. § 5107",
+                "38 C.F.R. § 3.303",
+            ],
+        ),
+        (
+            "38 U.S.C. §§ 1110, 1131; 38 C.F.R. §§ 3.303, 3.304",
+            3,
+            [
+                "38 U.S.C. § 1110",
+                "38 U.S.C. § 1131",
+                "38 C.F.R. § 3.303",
+            ],
+        ),
+        ("38 U.S.C. § 1110; 38 C.F.R. § 3.303", 1, ["38 U.S.C. § 1110"]),
+        (
+            "38 U.S.C. § 1110; 38 C.F.R. § 3.303",
+            2,
+            ["38 U.S.C. § 1110", "38 C.F.R. § 3.303"],
+        ),
+        (
+            "38 U.S.C. §§ 1110, 1131; 38 C.F.R. § 3.303",
+            2,
+            ["38 U.S.C. § 1110", "38 C.F.R. § 3.303"],
+        ),
+        (
+            "38 U.S.C. §§ 1110, 1131, 1151; 38 C.F.R. §§ 3.303, 3.304",
+            4,
+            [
+                "38 U.S.C. § 1110",
+                "38 U.S.C. § 1131",
+                "38 U.S.C. § 1151",
+                "38 C.F.R. § 3.303",
+            ],
+        ),
+    ],
+)
+def test_extract_statutes_preserves_both_families_at_each_cap(text, limit, expected):
+    """Neither family may crowd the other out at any shared-cap boundary."""
+    assert extract_statutes(text, limit) == expected
 
 
 def test_extract_citation_prefers_own_citation_over_quoted_case():

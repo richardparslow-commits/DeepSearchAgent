@@ -22,17 +22,17 @@ to claims that could be executed. No claim below is inferred from reading alone.
 | File | Total lines verified | Findings | Fixed | Open |
 |---|---:|---:|---:|---:|
 | `va_legal_agent/__init__.py` | 7 | 0 | 0 | 0 |
-| `va_legal_agent/__main__.py` | 1476 | 6 | 0 | 6 |
+| `va_legal_agent/__main__.py` | 1613 | 6 | 1 | 5 |
 | `va_legal_agent/config.py` | 350 | 2 | 0 | 2 |
 | `va_legal_agent/models.py` | 161 | 2 | 0 | 2 |
 | `va_legal_agent/llm.py` | 233 | 2 | 0 | 2 |
-| `va_legal_agent/providers.py` | 1759 | 6 | 0 | 6 |
+| `va_legal_agent/providers.py` | 1759 | 6 | 1 | 5 |
 | `va_legal_agent/search.py` | 277 | 3 | 0 | 3 |
-| `va_legal_agent/fetch.py` | 797 | 9 | 4 | 5 |
+| `va_legal_agent/fetch.py` | 797 | 9 | 5 | 4 |
 | `va_legal_agent/deep_read.py` | 225 | 2 | 0 | 2 |
-| **Total** | **5285** | **32** | **4** | **28** |
+| **Total** | **5422** | **32** | **7** | **25** |
 
-Severity: **8 High, 16 Medium, 8 Low** (including the four fixed items).
+Severity: **8 High, 16 Medium, 8 Low** (including the seven fixed items).
 
 ---
 
@@ -73,8 +73,8 @@ not binding in future CAVC or VA cases)" while "panel and en banc decisions are 
 precedential and bind both the CAVC and VA in all future cases." "Published" is not the test
 by itself: CAVC memorandum decisions are posted "designated for electronic publication only"
 and are still non-precedential. The code's `memorandum decision` marker catches them; the
-authority note does not (L-1). Also, 38 U.S.C. § 7104(c) does **not** supply the court-precedent
-rule — it covers VA regulations, Secretary instructions and OGC precedent opinions. CAVC
+authority note now carries the case's precedential status (L-1; fixed). Also, 38 U.S.C. §
+7104(c) does **not** supply the court-precedent rule — it covers VA regulations, Secretary instructions and OGC precedent opinions. CAVC
 binding effect rests on the court's appellate jurisdiction, 38 U.S.C. § 7252, and its
 precedential decisions.
 
@@ -120,12 +120,12 @@ and records the end-to-end extraction result.
 [38 C.F.R. § 3.102](https://www.ecfr.gov/current/title-38/section-3.102);
 [CRS Report IF11365](https://crsreports.congress.gov/product/pdf/IF/IF11365).
 
-### L-1 — Non-precedential CAVC decisions are labelled binding — High (outside Pass 1 scope)
+### L-1 — Non-precedential CAVC decisions are labelled binding — High (outside Pass 1 scope) — **FIXED**
 
-**Location:** `va_legal_agent/impact.py:144-150`, called from `analyze_case_impact` at
-`:160`.
+**Location:** `va_legal_agent/impact.py:160-176` (`authority_note_for`), called from
+`analyze_case_impact` at `:186`.
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
 def authority_note_for(court: str) -> str:
     """Describe the weight of authority for the issuing body."""
@@ -136,16 +136,29 @@ def authority_note_for(court: str) -> str:
     return "The issuing body is unidentified, so treat this ruling as persuasive only."
 ```
 
-**Root cause & impact:** the note keys only on `court`, so every CAVC case — including a
-single-judge or memorandum decision that Rule 30(a) says may not be cited as precedent — is
-described as "binding on the Board and VA adjudicators." This contradicts the 0.25
-non-precedential penalty and the `[non-precedential]` report flag, and it overstates
-authority in the generated narrative. The BVA branch is correct.
+**Root cause & impact:** the note keyed only on `court`, so every CAVC case — including a
+single-judge or memorandum decision that Rule 30(a) says may not be cited as precedent — was
+described as "binding on the Board and VA adjudicators." This contradicted the 0.25
+non-precedential penalty and the `[non-precedential]` report flag, and it overstated
+authority in the generated narrative. The BVA branch was correct.
 
-**Remediation:** pass the case's `precedential` status into the note; for `BINDING_COURTS`
-with `precedential=False`, return a "persuasive only — non-precedential" note. Add a test
-using a CAVC memorandum decision. This file is outside Pass 1's scope, so the finding is
-recorded here rather than in the totals.
+**Fix:** `authority_note_for` accepts the case's `precedential` flag, and
+`analyze_case_impact` passes `case.precedential`. A binding court with
+`precedential=False` now receives the "persuasive only — not binding" note; BVA and unknown
+courts retain their existing notes.
+
+**Verification:**
+```python
+>>> authority_note_for(CAVC, precedential=False)
+'As a non-precedential appellate decision, this ruling is persuasive only and is not binding on the Board or VA adjudicators.'
+```
+Regression tests: `test_authority_note_nonprecedential_cavc_is_persuasive` and
+`test_analyze_case_impact_nonprecedential_cavc_uses_persuasive_note`; the binding/BVA/unknown
+branches remain covered by `test_authority_note_binding_vs_board_vs_unknown`.
+
+**Remediation:** implemented by threading `precedential` through the authority note instead
+of keying only on the court; this file is outside Pass 1's scope, so the finding remains
+outside the Pass 1 totals but is marked fixed here.
 
 ---
 
@@ -247,11 +260,12 @@ ValueError: Port could not be cast to integer value as 'notaport'
 **Remediation:** read the port inside a `try/except ValueError` and fall back to
 `"***"` (or mask the authority without the port) on failure.
 
-### P1-004 — Batch orchestration — High
+### P1-004 — Batch orchestration — High — **FIXED**
 
-**Location:** `va_legal_agent/__main__.py:726-818` (`batch_dry_run`), `769` (`packing_cap`)
+**Location:** `va_legal_agent/__main__.py:784-785` (`batch_dry_run` guard), `:1019-1179`
+(bounded `_auto_run`), `:1431-1434` (incomplete exit)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
     packing_cap = max_batch_requests if max_batch_requests is not None else None
     ...
@@ -262,13 +276,22 @@ ValueError: Port could not be cast to integer value as 'notaport'
                 packed_total += cl_requests
 ```
 
-**Root cause & impact:** `--max-batch-requests` is passed straight from `argparse`
-(`type=int`, no lower bound). A value of `0` or less makes the first comparison true for every
-issue, so every row is `deferred` and `packed_total` never advances. `_auto_run` re-plans the
-same all-deferred backlog, sleeps for the CourtListener reset, and repeats forever without
+**Root cause & impact:** `--max-batch-requests` was passed straight from `argparse`
+(`type=int`, no lower bound). A value of `0` or less made the first comparison true for every
+issue, so every row was `deferred` and `packed_total` never advanced. `_auto_run` re-planned the
+same all-deferred backlog, slept for the CourtListener reset, and repeated forever without
 running anything — a silent, quota-paced hang.
 
-**Evidence:**
+**Fix:** `--max-batch-requests` now uses a positive-integer argparse type, and
+`batch_dry_run` raises `ValueError` for a non-positive programmatic cap. `_auto_run` has a
+100-planning-pass ceiling, caps each wait at 24 hours, and stops when a pass cannot change the
+pending set: an all-deferred backlog is a cap configuration error (no amount of waiting can
+raise the cap), and two consecutive unchanged quota-abort passes are treated as a stalled
+window. An incomplete auto-run prints `Auto-run incomplete` plus the summary and exits `1`;
+per-issue failures also produce an incomplete exit. Usage lookup failures stop cleanly with
+an error instead of escaping.
+
+**Evidence (before the fix):**
 ```python
 >>> batch_dry_run(["a", "b"], max_batch_requests=-1)
 (['deferred', 'deferred'], {'deferred_issues': 2, ...})
@@ -277,10 +300,17 @@ running anything — a silent, quota-paced hang.
 4 negative cap verdicts: ['deferred', 'deferred'] deferred: 2
 ```
 
-**Remediation:** validate at argument parse time (`positive_int` type, `parser.error` for
-`<= 0`), and guard `batch_dry_run` itself (`if max_batch_requests is not None and
-max_batch_requests < 1: raise ValueError`). Treat "deferred for lack of a positive cap" as a
-configuration error, not a schedulable verdict.
+**Verification:**
+```text
+$ .venv/bin/python -m pytest -q tests/test_cli.py -k 'auto_run or max_batch_requests'
+21 passed
+```
+Regression tests cover parser and function-level rejection, immediate failure without sleeping
+on a deferred backlog, the planning-pass ceiling, the wait ceiling, repeated stall detection,
+a usage lookup failure, a planner omission, and the non-zero incomplete exit status.
+
+**Remediation:** validate at argument parse time (`_positive_int` type) and guard
+`batch_dry_run` itself; keep `deferred` a schedulable verdict only for a positive cap.
 
 ### P1-005 — Observability — Medium
 
@@ -541,12 +571,12 @@ True
 
 ## `va_legal_agent/providers.py` (Total Lines Verified: 1759)
 
-### P1-013 — Legal accuracy — High
+### P1-013 — Legal accuracy — High — **FIXED**
 
-**Location:** `va_legal_agent/providers.py:817-880` (`_minimize_bva_query`), used at
-`BVAProvider.search`
+**Location:** `va_legal_agent/providers.py:817-858` (`_minimize_bva_query`), used at
+`:913-915` (`BVAProvider.search`)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
     if text.lstrip().startswith('"'):
         for match in _BVA_QUOTED_PHRASE.finditer(text):
@@ -558,13 +588,19 @@ True
 ```
 
 **Root cause & impact:** a query made only of quoted statute fragments (`"1110"`, `"3.303"`)
-never returns from the loop — every phrase matches `_BVA_STATUTE_PHRASE` — and the fallback
-takes the text *before the first quote*, which is empty. `BVAProvider.search` then requests
-`query=""` from search.usa.gov, which returns unfiltered recent decisions. Those results are
+never returned from the loop — every phrase matched `_BVA_STATUTE_PHRASE` — and the fallback
+took the text *before the first quote*, which was empty. `BVAProvider.search` then requested
+`query=""` from search.usa.gov, which returned unfiltered recent decisions. Those results were
 tagged `court="BVA"` and passed downstream as if they answered the issue, so statute-anchored
-queries silently become "whatever the Board decided lately".
+queries silently became "whatever the Board decided lately".
 
-**Evidence:**
+**Fix:** `_minimize_bva_query` now falls back to the site-stripped original query when the
+selection logic produces nothing. The fallback lives in the shared minimizer and reuses the
+already-trimmed query, so `BVAProvider`, `BvaSitemapProvider`, and `BvaLocalIndexProvider`
+all get the same non-empty statute-anchored query without repeating the fallback or
+re-stripping it, and no provider can silently send `query=""`.
+
+**Evidence (before the fix):**
 ```python
 >>> _minimize_bva_query('"1110"')
 ''
@@ -574,10 +610,23 @@ queries silently become "whatever the Board decided lately".
 28 bva statute-only query: ''
 ```
 
-**Remediation:** when minimization empties the query, fall back to the stripped original
-(`strip_site_prefixes(query)`) — the same fallback `BvaSitemapProvider` and
-`BvaLocalIndexProvider` already use — or drop the statute quoting and keep the number. Add a
-test pinning `_minimize_bva_query('"1110"') != ""`.
+**Verification:**
+```python
+>>> _minimize_bva_query('"1110"')
+'"1110"'
+>>> _minimize_bva_query('site:bva.va.gov "1110"')
+'"1110"'
+```
+Regression tests: `test_minimize_bva_query_statute_only_anchor`,
+`test_bva_provider_statute_only_query_is_not_empty`,
+`test_bva_sitemap_search_statute_only_query_matches`,
+`test_statute_only_query_uses_centralized_fallback`, and
+`test_bva_provider_rejects_truly_empty_query` pin the shared fallback and the provider
+boundary.
+
+**Remediation:** implemented by keeping `strip_site_prefixes(query)` as the shared fallback
+instead of returning an empty query; the provider still rejects a truly empty query with
+`SearchError`.
 
 ### P1-014 — Legal accuracy — Medium
 
@@ -975,11 +1024,12 @@ BVA quoting CAVC -> 'BVA Citation Nr. 2100634' want BVA Citation Nr. 2100634
 ```
 Regression test: `tests/test_fetch.py::test_extract_citation_prefers_own_citation_over_quoted_case`.
 
-### P1-026 — Legal accuracy — High
+### P1-026 — Legal accuracy — High — **FIXED**
 
-**Location:** `va_legal_agent/fetch.py:300-303` (`_normalize_statute_value`)
+**Location:** `va_legal_agent/fetch.py:312-321` (`_normalize_statute_value`); section
+patterns at `:149-164`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
 def _normalize_statute_value(value: str) -> str:
     """Strip whitespace and trailing parentheticals from a matched section number."""
@@ -988,14 +1038,21 @@ def _normalize_statute_value(value: str) -> str:
 ```
 
 **Root cause & impact:** the trailing-parenthetical strip was added to drop annotations like
-`§ 1114 (iv) (West)`, but it also removes a legitimate **two-letter subsection identifier**.
+`§ 1114 (iv) (West)`, but it also removed a legitimate **two-letter subsection identifier**.
 CFR parts number paragraphs `(a)`–`(z)` and then `(aa)`, `(bb)`, …; `38 C.F.R. § 3.1(aa)` —
-the definition of fraud — is normalized to `38 C.F.R. § 3.1`, silently changing which
-provision is cited. In veterans law this matters: `3.1` subsections define different terms,
+the definition of fraud — was normalized to `38 C.F.R. § 3.1`, silently changing which
+provision was cited. In veterans law this matters: `3.1` subsections define different terms,
 and a case cited under the fraud definition is not the same authority as the section as a
 whole.
 
-**Evidence:**
+**Fix:** the normalizer distinguishes citation structure rather than the parenthetical
+text: parentheticals attached to the section (`5107(b)(1)(A)(iv)`, `3.1(aa)(1)`) are
+subsections and are preserved, while trailing parentheticals separated by whitespace
+(`1114 (iv) (West)`, `(2023)`) are annotations and are stripped. The U.S.C. and C.F.R.
+section patterns now accept any number of attached subsections, so nested citations are
+not truncated before normalization.
+
+**Evidence (before the fix):**
 ```python
 >>> _normalize_statute_value("3.1(aa)")
 '3.1'
@@ -1003,9 +1060,27 @@ whole.
 ['38 C.F.R. § 3.1']
 ```
 
-**Remediation:** widen the pattern to three or more letters (`\\([A-Za-z]{3,}\\)$`) so `(aa)`
-and `(bb)` survive while `(West)` / `(Ivy)` are still stripped, or — better — normalize only
-known annotator words (`West`, `Lexis`, `Supp`) instead of any alphabetic parenthetical.
+**Verification:**
+```python
+>>> _normalize_statute_value("3.1(aa)")
+'3.1(aa)'
+>>> extract_statutes("38 C.F.R. § 3.1(aa)")
+['38 C.F.R. § 3.1(aa)']
+>>> extract_statutes("See 38 U.S.C. § 1114 (iv) (West).")
+['38 U.S.C. § 1114']
+>>> extract_statutes("38 U.S.C. § 5107(b)(1)(A)(iv)")
+['38 U.S.C. § 5107(b)(1)(A)(iv)']
+>>> extract_statutes("38 C.F.R. § 3.1(aa)(1)(i)")
+['38 C.F.R. § 3.1(aa)(1)(i)']
+```
+Regression tests: `test_normalize_statute_value_preserves_two_letter_subsection`,
+`test_normalize_statute_value_preserves_attached_subsections`,
+`test_normalize_statute_value_strips_whitespace_and_parenthetical`, and
+`test_normalize_statute_value_strips_uppercase_parenthetical`.
+
+**Remediation:** implemented by preserving attached parentheticals and stripping only
+trailing whitespace-separated annotations, with the U.S.C. and C.F.R. section patterns
+widened to capture nested subsections.
 
 ### P1-027 — Legal accuracy — Medium
 

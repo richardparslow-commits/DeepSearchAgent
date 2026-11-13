@@ -23,6 +23,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+SURVIVOR_DIR = Path("/tmp")
+
 
 def _reverify_segfault(name: str, tests: list[str], target: str) -> str:
     """Recover the true verdict for a mutant mutmut reported as ``segfault``.
@@ -162,14 +164,14 @@ def main() -> None:
         _require_success(run, "mutmut run")
 
         result = subprocess.run(
-            [sys.executable, "-m", "mutmut", "results", "--all"],
+            [sys.executable, "-m", "mutmut", "results", "--all=true"],
             capture_output=True,
             text=True,
         )
         _require_success(result, "mutmut results")
         result_lines = [ln for ln in result.stdout.splitlines() if ":" in ln]
         if not result_lines:
-            # --all includes killed mutants, so an empty result means mutmut did
+            # --all=true includes killed mutants, so an empty result means mutmut did
             # not generate or check anything. That is not a perfect score.
             print(
                 "FATAL: mutmut reported no mutants -- refusing to report a vacuous pass",
@@ -230,7 +232,8 @@ def main() -> None:
                 survivors.append((name, status))
         timeout_count = sum(1 for _, status in survivors if status == "timeout")
         suffix = f" ({timeout_count} timeout)" if timeout_count else ""
-        with open(f"/tmp/mutmut_survivors_{module}.txt", "w") as f:
+        survivor_path = SURVIVOR_DIR / f"mutmut_survivors_{module}.txt"
+        with survivor_path.open("w") as f:
             f.write(f"### {module}: {len(survivors)} survivors{suffix}\n\n")
             for name, _status in survivors:
                 show = subprocess.run(
@@ -243,7 +246,7 @@ def main() -> None:
         print(
             f"{module}: {len(survivors)} survivors"
             + (f" ({timeout_count} timeout)" if timeout_count else "")
-            + f" -> /tmp/mutmut_survivors_{module}.txt"
+            + f" -> {survivor_path}"
         )
         # Echo the survivor names, their mutmut verdict, and how many tests are
         # associated with their function to stdout so a CI failure is actionable

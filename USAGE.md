@@ -188,7 +188,8 @@ Blocked issues are written automatically next to the CSV (`plan.csv` →
 them straight back after the window resets.
 
 **Run a batch unattended** (dry-runs, runs what fits, sleeps until the
-CourtListener daily reset, repeats until everything is done; Ctrl-C to stop):
+CourtListener daily reset, and repeats under a bounded retry limit until done;
+Ctrl-C to stop):
 
 ```bash
 python -m va_legal_agent --auto-run --issues-file issues.txt
@@ -465,7 +466,8 @@ The `deploy/` directory holds everything needed to run the agent as an
 unattended daily batch on a Linux host (systemd is the primary path; cron is
 fully supported). This is the *preferred* way to run many issues over time:
 `--auto-run` executes what fits the current quota windows, sleeps through the
-CourtListener daily reset, and repeats until every issue has run.
+CourtListener daily reset, and repeats under a bounded retry limit until every
+issue has run; if the batch is incomplete it exits non-zero.
 
 ```
 deploy/
@@ -537,8 +539,10 @@ per-run log files.
   stops. A single pass can therefore span hours; the service has no start
   timeout (`TimeoutStartSec=0`).
 - **Failure handling**: individual issue errors become `error` verdicts in the
-  per-pass summary, not crashes. Real crashes (e.g. an unreachable usage
-  endpoint) exit non-zero and systemd retries with `Restart=on-failure`.
+  per-pass summary, not crashes. Auto-run exits non-zero whenever any issue
+  remains failed, deferred, or aborted after its bounded retries, including
+  when the quota usage endpoint cannot be read; systemd retries with
+  `Restart=on-failure`.
 - **Rotation / retry files**: batch plans write `plan.retry.txt` (or
   `issues.retry`) next to the CSV — feed those back into `issues.txt` to resume
   quota-blocked issues after the window resets.

@@ -13,8 +13,12 @@ footprint small and out of the project tree.
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import get_settings
@@ -35,22 +39,41 @@ def batch_state_dir() -> Path:
 class BatchTracker:
     """Append and aggregate terminal outcomes for one run_id.
 
-    The state file is a JSON Lines file at ``<state_dir>/<run_id>.jsonl``;
-    each line is one outcome. Files accumulate until the batch reaches its
-    declared size and :meth:`finalize` removes them.
+    The state file is a JSON Lines file at
+    ``<state_dir>/<sanitized-run_id>-<digest>.jsonl``; each line is one
+    outcome. Files accumulate until the batch reaches its declared size and
+    :meth:`finalize` removes them.
     """
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
-        # Sanitize so the id can't escape the state directory or contain slashes.
+        # Sanitize so the id can't escape the state directory, then append a
+        # digest so ids that sanitize to the same stem still get separate files.
         safe = "".join(ch for ch in run_id if ch.isalnum() or ch in "._-") or "run"
-        self.path = batch_state_dir() / f"{safe}.jsonl"
+        digest = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:8]
+        self.path = batch_state_dir() / f"{safe}-{digest}.jsonl"
+
+    @contextmanager
+    def _exclusive_lock(self) -> Iterator[None]:
+        """Hold this run's advisory lock across a read-modify-write operation.
+
+        The lock file is intentionally persistent. Removing it while another
+        process has it open would let a third process lock a different inode
+        and bypass the lock.
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.with_suffix(".lock").open("a", encoding="utf-8") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def record(self, outcome: dict[str, object]) -> None:
         """Append one terminal outcome line to this run_id's state file."""
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(outcome, ensure_ascii=False) + "\n")
+        with self._exclusive_lock():
+            with self.path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(outcome, ensure_ascii=False) + "\n")
 
     def outcomes(self) -> list[dict[str, object]]:
         """Read all recorded outcomes, skipping malformed lines."""
@@ -122,10 +145,15 @@ class BatchTracker:
         return rollup_search_telemetry(records)
 
     def finalize(self) -> dict[str, object]:
-        """Aggregate the batch summary and delete the state file."""
-        summary = self.summary()
-        try:
-            self.path.unlink()
-        except OSError as exc:
-            logger.warning("Could not remove batch state %s: %s", self.path, exc)
-        return summary
+        """Aggregate the batch summary and delete the state file.
+
+        The lock covers both steps so a concurrent recorder cannot append after
+        the summary has read the file but before the file is removed.
+        """
+        with self._exclusive_lock():
+            summary = self.summary()
+            try:
+                self.path.unlink()
+            except OSError as exc:
+                logger.warning("Could not remove batch state %s: %s", self.path, exc)
+            return summary

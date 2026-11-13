@@ -84,6 +84,14 @@ def test_detect_court_name_rejects_forged_hosts():
     assert detect_court_name("javascript:alert(1)") == COURT_UNKNOWN
 
 
+def test_detect_court_name_accepts_http_and_trailing_dot_hosts():
+    # Both the plain-HTTP scheme and a trailing root-label dot are valid host
+    # forms; neither may turn a court URL into an unknown source.
+    assert detect_court_name("http://uscourts.cavc.gov/opinions/1") == COURT_CAVC
+    assert detect_court_name("https://uscourts.cavc.gov./opinions/1") == COURT_CAVC
+    assert detect_court_name("uscourts.cavc.gov./opinions/1") == COURT_CAVC
+
+
 def test_summarize_case_impact_handles_service_connection_language():
     case = CaseRecord(
         title="Holton v. Shinseki",

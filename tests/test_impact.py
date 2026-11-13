@@ -238,6 +238,13 @@ def test_analyze_case_impact_nonprecedential_cavc_uses_persuasive_note():
 
     assert profile.authority_note == authority_note_for(CAVC, precedential=False)
     assert "persuasive only" in profile.nuance
+    assert "As appellate precedent, this ruling is binding" not in profile.nuance
+
+
+def test_analyze_case_impact_precedential_cavc_keeps_binding_note():
+    profile = analyze_case_impact(_case(court=CAVC, precedential=True))
+
+    assert profile.authority_note == authority_note_for(CAVC, precedential=True)
 
 
 def test_nuance_layers_posture_statute_and_authority_notes():

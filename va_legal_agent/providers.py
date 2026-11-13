@@ -833,7 +833,7 @@ def _minimize_bva_query(query: str) -> str:
     and its trailing recall boilerplate is shed instead.
     """
     text = strip_site_prefixes(query).replace("\u201c", '"').replace("\u201d", '"')
-    if text.lstrip().startswith('"'):
+    if text.startswith('"'):
         for match in _BVA_QUOTED_PHRASE.finditer(text):
             phrase = match.group(1).strip()
             if phrase and not _BVA_STATUTE_PHRASE.match(phrase):
@@ -852,7 +852,10 @@ def _minimize_bva_query(query: str) -> str:
     words = leading.split()
     while len(words) > 1 and words[-1].lower() in _BVA_BOILERPLATE:
         words.pop()
-    return " ".join(words)
+    # A statute-only quoted query has no issue phrase to select. Returning an
+    # empty query makes search.usa.gov serve unfiltered recent decisions, so
+    # keep the already site-stripped and trimmed query as a non-empty fallback.
+    return " ".join(words) or text
 
 
 class BVAProvider:
@@ -908,6 +911,8 @@ class BVAProvider:
         # recall string's site:/quote/claim-type/statute-anchor noise is
         # dropped rather than sent. See :func:`_minimize_bva_query`.
         query = _minimize_bva_query(query)
+        if not query:
+            raise SearchError("BVA search requires a non-empty query")
         params = {"affiliate": self.AFFILIATE, "query": query}
         if page > 1:
             params["page"] = page
@@ -1164,9 +1169,7 @@ class BvaSitemapProvider:
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
         settings = get_settings()
-        issue = _minimize_bva_query(query).strip()
-        if not issue:
-            issue = strip_site_prefixes(query).strip()
+        issue = _minimize_bva_query(query)
         leaf = self._most_recent_leaf()
         if not leaf:
             raise SearchError("No BVA decisions indexed; the va.gov sitemap is unavailable.")
@@ -1443,9 +1446,7 @@ class BvaLocalIndexProvider:
                 "bvalocal provider is disabled "
                 "(SEARCH_BVA_LOCAL_INDEX_DIR is empty)."
             )
-        issue = _minimize_bva_query(query).strip()
-        if not issue:
-            issue = strip_site_prefixes(query).strip()
+        issue = _minimize_bva_query(query)
         tokens = _bva_issue_tokens(issue)
         corpus_path, manifest_path = _bva_local_index_paths(directory)
         # The agent fans queries out across a worker pool, so several threads

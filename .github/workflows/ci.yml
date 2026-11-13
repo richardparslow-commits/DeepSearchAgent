@@ -26,8 +26,10 @@ jobs:
       - name: Install dependencies
         run: |
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -e ".[web]"
-          .venv/bin/pip install pytest pytest-cov ruff
+          .venv/bin/pip install -e ".[dev,web]"
+
+      - name: Verify web extra is installed
+        run: .venv/bin/python -c "import flask, waitress"
 
       - name: Lint (ruff)
         run: make lint

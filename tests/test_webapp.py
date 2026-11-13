@@ -93,6 +93,14 @@ def isolated_client(
     return webapp.app.test_client()
 
 
+def _prevent_job_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep an accepted request from starting a real analysis."""
+    sem = Mock()
+    sem.acquire.return_value = True
+    monkeypatch.setattr(webapp, "_SEM", sem)
+    monkeypatch.setattr(webapp.threading, "Thread", Mock())
+
+
 def test_status_serializes_snapshot(isolated_client, monkeypatch) -> None:
     """A status poll must not serialize the live dict the worker mutates."""
     webapp._JOBS["snapshot"] = {
@@ -176,6 +184,15 @@ def test_load_jobs_persists_restart_correction(
     assert on_disk["finished_at"]
 
 
+def test_load_jobs_skips_non_object_state(isolated_client, tmp_path: Path) -> None:
+    """A valid JSON value that is not a job object must not abort startup."""
+    (tmp_path / "bad.json").write_text("[]", encoding="utf-8")
+
+    webapp._load_jobs()
+
+    assert webapp._JOBS == {}
+
+
 def test_foreign_origin_is_rejected(isolated_client) -> None:
     """A cross-site page must not be able to start a quota-spending run."""
     headers = {"Origin": "https://evil.example"}
@@ -187,6 +204,33 @@ def test_foreign_origin_is_rejected(isolated_client) -> None:
     for response in responses:
         assert response.status_code == 403
         assert response.get_json()["error"] == "cross-origin request rejected"
+    assert webapp._JOBS == {}
+
+
+def test_missing_origin_without_fetch_metadata_is_allowed(
+    isolated_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-browser clients without Origin or Sec-Fetch-Site may POST."""
+    _prevent_job_start(monkeypatch)
+
+    response = isolated_client.post("/api/analyze", json={"issue": "tinnitus"})
+
+    assert response.status_code == 200
+    assert response.get_json()["run_id"]
+
+
+def test_missing_origin_with_cross_site_fetch_metadata_is_rejected(
+    isolated_client,
+) -> None:
+    """Missing Origin must not bypass a cross-site Sec-Fetch-Site signal."""
+    response = isolated_client.post(
+        "/api/analyze",
+        json={"issue": "tinnitus"},
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "cross-origin request rejected"
     assert webapp._JOBS == {}
 
 
@@ -225,11 +269,7 @@ def test_same_origin_submissions_are_accepted(
     isolated_client, monkeypatch: pytest.MonkeyPatch, path: str, payload: dict
 ) -> None:
     """Valid same-origin form/API submissions must pass the Host guard."""
-    # Keep the accepted request from starting a real analysis.
-    sem = Mock()
-    sem.acquire.return_value = True
-    monkeypatch.setattr(webapp, "_SEM", sem)
-    monkeypatch.setattr(webapp.threading, "Thread", Mock())
+    _prevent_job_start(monkeypatch)
     headers = {
         "Origin": "http://localhost",
         "Sec-Fetch-Site": "same-origin",

@@ -1,5 +1,6 @@
 """Tests for per-run_id batch tracking (va_legal_agent.batch)."""
 
+import hashlib
 import threading
 
 import pytest
@@ -257,6 +258,56 @@ def test_finalize_removes_state_file(state_dir):
     assert not tracker.outcomes()  # re-created empty afterwards
 
 
+def test_finalize_locks_read_and_delete_against_recorders(state_dir):
+    """A recorder between summary() and unlink() must not be lost."""
+    tracker = BatchTracker("batch-race")
+    tracker.record({"event": "analysis_complete", "issue": "recorded-before"})
+
+    summary_read = threading.Event()
+    release_summary = threading.Event()
+    original_summary = tracker.summary
+
+    def paused_summary() -> dict[str, object]:
+        summary = original_summary()
+        summary_read.set()
+        assert release_summary.wait(5)
+        return summary
+
+    tracker.summary = paused_summary
+    finalized: dict[str, object] = {}
+    finalizer = threading.Thread(
+        target=lambda: finalized.update(tracker.finalize()), daemon=True
+    )
+    finalizer.start()
+    assert summary_read.wait(5)
+
+    recorder = BatchTracker("batch-race")
+    record_started = threading.Event()
+    record_finished = threading.Event()
+
+    def record_late() -> None:
+        record_started.set()
+        recorder.record({"event": "analysis_complete", "issue": "late"})
+        record_finished.set()
+
+    late_thread = threading.Thread(target=record_late, daemon=True)
+    late_thread.start()
+    assert record_started.wait(5)
+    try:
+        # Without the lock this writes during paused_summary() and is then
+        # deleted by finalize; with it, the recorder waits for the unlink.
+        assert not record_finished.wait(0.5)
+    finally:
+        release_summary.set()
+        finalizer.join(5)
+        late_thread.join(5)
+
+    assert not finalizer.is_alive()
+    assert not late_thread.is_alive()
+    assert finalized["total"] == 1
+    assert [outcome["issue"] for outcome in tracker.outcomes()] == ["late"]
+
+
 def test_sanitizes_run_id_in_filename(state_dir):
     tracker = BatchTracker("batch/../evil")
     # Path separators are stripped, so the id can't escape the state dir.
@@ -267,10 +318,25 @@ def test_sanitizes_run_id_in_filename(state_dir):
 
 def test_sanitized_run_id_filename_is_exact(state_dir):
     tracker = BatchTracker("run-1")
+    digest = hashlib.sha256(b"run-1").hexdigest()[:8]
     assert tracker.run_id == "run-1"
-    assert tracker.path.name == "run-1.jsonl"
+    assert tracker.path.name == f"run-1-{digest}.jsonl"
     # An id with nothing valid falls back to a safe literal.
-    assert BatchTracker("!!!").path.name == "run.jsonl"
+    empty_digest = hashlib.sha256(b"!!!").hexdigest()[:8]
+    assert BatchTracker("!!!").path.name == f"run-{empty_digest}.jsonl"
+
+
+def test_distinct_run_ids_cannot_collide_after_sanitizing(state_dir):
+    """Punctuation-only differences must not share state files."""
+    slash = BatchTracker("batch/1")
+    plain = BatchTracker("batch1")
+
+    assert slash.path != plain.path
+    slash.record({"event": "analysis_complete", "issue": "slash"})
+    plain.record({"event": "analysis_complete", "issue": "plain"})
+
+    assert [o["issue"] for o in slash.outcomes()] == ["slash"]
+    assert [o["issue"] for o in plain.outcomes()] == ["plain"]
 
 
 def test_record_creates_missing_state_dir(tmp_path, monkeypatch):

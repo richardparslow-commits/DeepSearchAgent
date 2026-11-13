@@ -157,6 +157,17 @@ def _run_id(cli_value: str | None = None) -> str:
     return cli_value or os.getenv("RUN_ID") or uuid.uuid4().hex
 
 
+def _positive_int(value: str) -> int:
+    """argparse type for options that must be strictly positive integers."""
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _emit_batch_summary(summary: dict[str, object]) -> None:
     """Emit a structured batch summary event for fleet monitoring.
 
@@ -174,10 +185,15 @@ def _emit_batch_summary(summary: dict[str, object]) -> None:
 
 
 def _mask_secret(value: str | None) -> str | None:
-    """Mask a secret, keeping first/last 4 characters (or ``***`` for short values)."""
+    """Mask a secret, revealing only a long value's first/last 4 characters.
+
+    Values of 16 characters or fewer are masked completely: revealing four
+    characters from each end of an 8- or 9-character API key would expose most
+    of the secret in a dump intended to be safe to share.
+    """
     if not isinstance(value, str) or not value:
         return value
-    return f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
+    return f"{value[:4]}...{value[-4:]}" if len(value) > 16 else "***"
 
 
 def _mask_proxy_url(value: str | None) -> str | None:
@@ -190,24 +206,48 @@ def _mask_proxy_url(value: str | None) -> str | None:
     the ``host:port`` stays visible so operators can still see which proxy is
     configured. A proxy without userinfo is returned unchanged; an unparseable
     value is masked wholesale rather than leaked.
+
+    ``requests``/``curl_cffi`` also accept a scheme-less proxy such as
+    ``user:pass@proxy.example:8080``. Prepend ``//`` before parsing so that
+    form is treated as an authority instead of a path. A bad port is omitted
+    from the displayed authority rather than raised out of ``--show-config``.
     """
     if not isinstance(value, str) or not value:
         return value
+
+    # urlsplit treats a scheme-less proxy as a path, hiding its userinfo. Add
+    # the temporary network-path prefix for parsing, then remove it below.
+    has_scheme = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", value) is not None
+    prefixed = not has_scheme and not value.startswith("//")
+    parse_value = f"//{value}" if prefixed else value
     try:
-        parts = urlsplit(value)
+        parts = urlsplit(parse_value)
     except ValueError:
         return "***"
     if parts.username is None and parts.password is None:
         return value
+
+    host = parts.hostname or ""
+    try:
+        port = parts.port
+    except ValueError:
+        # Keep the host visible but omit the malformed port: the config dump
+        # is diagnostic output and must not crash on an operator typo.
+        port = None
+
     # Rebuild the authority with the userinfo fully redacted, re-bracketing an
     # IPv6 host if present.
-    host = parts.hostname or ""
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     netloc = f"***@{host}"
-    if parts.port is not None:
-        netloc += f":{parts.port}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+    if port is not None:
+        netloc += f":{port}"
+    masked = urlunsplit(
+        (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+    )
+    if prefixed and masked.startswith("//"):
+        masked = masked[2:]
+    return masked
 
 
 def _redacted_settings() -> dict[str, object]:
@@ -741,6 +781,9 @@ def batch_dry_run(
     summary)`` where every row carries a flat ``courtlistener_requests`` and
     ``courtlistener_after`` field for table rendering.
     """
+    if max_batch_requests is not None and max_batch_requests < 1:
+        raise ValueError("max_batch_requests must be a positive integer")
+
     settings = get_settings()
     usage_error: str | None = None
     usage: dict[str, object] | None = None
@@ -969,8 +1012,16 @@ def _emit_output(text: str, output_file: str | None) -> None:
 # Auto-run (--auto-run): dry-run the batch first, then actually execute the
 # issues that fit (proceed), and loop -- waiting for the CourtListener window
 # to reset when needed -- until the deferred/aborted remainder has been run
-# or the operator stops it (Ctrl-C).
+# or the operator stops it (Ctrl-C). The loop is intentionally bounded so an
+# unattended process cannot wait forever on an impossible backlog.
 # ---------------------------------------------------------------------------
+
+# A daily quota window can require many passes for a large batch, but an
+# unattended process must not spin forever if the quota endpoint is stale or
+# the backlog can never fit. One planning pass is made per iteration; each
+# wait is capped at one day (the longest useful daily-window wait).
+_AUTO_RUN_MAX_ITERATIONS = 100
+_AUTO_RUN_MAX_WAIT_SECONDS = 24 * 60 * 60
 
 
 def _sleep_with_log(seconds: float, reason: str) -> None:
@@ -990,6 +1041,8 @@ def _auto_run(
     max_wall_seconds: float | None,
     max_batch_requests: int | None = None,
     run_id: str = "",
+    max_iterations: int | None = None,
+    max_wait_seconds: float | None = None,
 ) -> list[dict[str, object]]:
     """Execute the batch: run the packed issues now, wait for the reset, repeat.
 
@@ -1001,12 +1054,36 @@ def _auto_run(
     the loop waits (sleeps) for its reset time before retrying. Every per-issue
     analysis and terminal event carries *run_id*. Returns per-issue result rows
     with verdicts ``run`` / ``error`` for the executed issues, and ``deferred``
-    / ``abort`` for the backlog that could not fit in the first pass (and would
-    need a later window).
+    / ``abort`` for the backlog that could not fit (and would need a later
+    window).
+
+    The planning/wait loop is bounded by *max_iterations* and each sleep by
+    *max_wait_seconds*. It stops early when a pass cannot change the pending
+    set: a cap-deferred backlog is impossible to schedule without changing
+    ``--max-batch-requests``, and a second consecutive quota-stalled pass means
+    the reset did not free the window. In either case the pending rows retain
+    their verdicts so the caller can report an incomplete run.
     """
+    logger = logging.getLogger(__name__)
     results: dict[str, str] = {}
     pending = list(issues)
+    iterations = 0
+    stalled_waits = 0
+    iteration_limit = (
+        _AUTO_RUN_MAX_ITERATIONS if max_iterations is None else max(1, max_iterations)
+    )
+    wait_limit = (
+        _AUTO_RUN_MAX_WAIT_SECONDS if max_wait_seconds is None else max_wait_seconds
+    )
     while pending:
+        if iterations >= iteration_limit:
+            logger.error(
+                "auto-run stopped after %d planning pass(es): %d issue(s) remain",
+                iterations,
+                len(pending),
+            )
+            break
+        iterations += 1
         rows, _summary = batch_dry_run(
             pending,
             claim_type=claim_type,
@@ -1014,10 +1091,14 @@ def _auto_run(
             max_batch_requests=max_batch_requests,
         )
         next_pending: list[str] = []
+        next_verdicts: dict[str, str] = {}
+        ran_this_pass = False
+        planned = {str(row["issue"]) for row in rows}
         for row in rows:
-            issue = row["issue"]
-            verdict = row["verdict"]
+            issue = str(row["issue"])
+            verdict = str(row["verdict"])
             if verdict == "proceed":
+                ran_this_pass = True
                 try:
                     analysis = analyze_cases_for_claim(
                         issue,
@@ -1037,14 +1118,50 @@ def _auto_run(
                 # (deferred/abort); a later successful pass overwrites it.
                 results.setdefault(issue, verdict)
                 next_pending.append(issue)
+                next_verdicts[issue] = verdict
+        # Defensive: a planner row is expected for every pending issue. If one
+        # is omitted, keep it pending rather than silently dropping it from the
+        # summary and exiting successfully.
+        for issue in pending:
+            if issue not in planned:
+                results.setdefault(issue, "deferred")
+                next_pending.append(issue)
+                next_verdicts[issue] = "deferred"
         if not next_pending:
             break
-        # Remainders still need the window: wait for the daily reset.
-        usage = fetch_courtlistener_usage()
-        daily = courtlistener_daily_budget(usage)
+        if not ran_this_pass and set(next_pending) == set(pending):
+            if "deferred" in next_verdicts.values():
+                logger.error(
+                    "auto-run stopped: no progress is possible while %d issue(s) "
+                    "remain deferred by --max-batch-requests=%s",
+                    len(next_pending),
+                    max_batch_requests,
+                )
+                break
+            stalled_waits += 1
+            if stalled_waits >= 2:
+                logger.error(
+                    "auto-run stopped: no progress after waiting for the quota "
+                    "reset (%d issue(s) remain)",
+                    len(next_pending),
+                )
+                break
+        else:
+            stalled_waits = 0
+        # Remainders still need the window: wait for the daily reset, but keep
+        # each sleep bounded even if the endpoint reports a far-future reset.
+        try:
+            usage = fetch_courtlistener_usage()
+            daily = courtlistener_daily_budget(usage)
+        except SearchError as exc:
+            logger.error(
+                "auto-run stopped: could not determine the next quota window: %s", exc
+            )
+            break
         reset = daily.get("reset_at")
         delay = _seconds_until_utc(str(reset)) if reset else 3600.0
-        _sleep_with_log(max(delay, 60.0), "the CourtListener daily window reset")
+        wait = min(max(delay, 60.0), wait_limit)
+        _sleep_with_log(wait, "the CourtListener daily window reset")
         pending = next_pending
     return [{"issue": issue, "verdict": verdict} for issue, verdict in results.items()]
 
@@ -1164,13 +1281,14 @@ def main() -> None:
     parser.add_argument(
         "--max-batch-requests",
         dest="max_batch_requests",
-        type=int,
+        type=_positive_int,
         default=None,
         help=(
-            "With --batch-dry-run: cap the CourtListener request total for the "
-            "batch; issues that would exceed the cap get a 'deferred' verdict "
-            "instead of consuming quota. Defaults to the daily-window remainder "
-            "when CourtListener is configured; no cap otherwise."
+            "With --batch-dry-run or --auto-run: cap the CourtListener request "
+            "total for each pass; issues that would exceed the cap get a "
+            "'deferred' verdict instead of consuming quota. Must be a positive "
+            "integer. Defaults to the daily-window remainder when CourtListener "
+            "is configured; no cap otherwise."
         ),
     )
     parser.add_argument(
@@ -1296,12 +1414,24 @@ def main() -> None:
             run_id=run_id,
         )
         summary = _auto_run_summary(results)
+        complete = summary["successful"] == summary["issues"]
+        status = "complete" if complete else "incomplete"
         print(
-            "Auto-run complete: %d issue(s) run, %d failed, %d deferred, %d aborted"
-            % (summary["successful"], summary["failed"], summary["deferred"], summary["aborted"])
+            "Auto-run %s: %d issue(s) run, %d failed, %d deferred, %d aborted"
+            % (
+                status,
+                summary["successful"],
+                summary["failed"],
+                summary["deferred"],
+                summary["aborted"],
+            )
         )
         if args.output_format == "json":
             print(json.dumps(summary, indent=2))
+        if not complete:
+            # Cron/systemd and run_batch.sh consume this status; a partial
+            # batch must not look successful in an unattended run.
+            raise SystemExit(1)
         return
 
     if args.batch_dry_run:

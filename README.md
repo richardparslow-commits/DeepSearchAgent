@@ -36,11 +36,11 @@ State as of August 2026: **1134 tests at 100% line + branch coverage**, ruff cle
 | Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 864 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
-| Mutation kill-property | `make mutate-check` | every module at/under `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
+| Mutation kill-property | `make mutate-check` | every module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
 | CI (pushes + PRs) | `.github/workflows/ci.yml`, Python 3.11–3.14 | green |
 | Mutation gate | `.github/workflows/mutation.yml`, on every code push + cron 03:00 UTC + `workflow_dispatch` | green |
 
-Two gate scripts carry the mutation enforcement: `scripts/mutmut_pass.py` runs a scoped pass over one module (survivor diffs land in `/tmp/mutmut_survivors_<module>.txt`) and hard-fails if mutmut reports no checked mutants, so a failed stats-collection run can never masquerade as a pass; `scripts/check_mutation_baseline.py` fails on any count above baseline or any timeout. When extending the app, keep coverage at 100% and hold the baselines — triage new survivors with the pass script before bumping `.mutation-baseline.json`.
+Two gate scripts carry the mutation enforcement: `scripts/mutmut_pass.py` runs a scoped pass over one module (survivor diffs land in `/tmp/mutmut_survivors_<module>.txt`) and hard-fails if mutmut reports no checked mutants, so a failed stats-collection run can never masquerade as a pass; `scripts/check_mutation_baseline.py` fails on any survivor-name change (including an equal-count swap) or any timeout. When extending the app, keep coverage at 100% and hold the baselines — triage new survivors with the pass script before updating `.mutation-baseline.json`.
 
 ### Operating
 
@@ -139,12 +139,15 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    Without an explicit cap the batch may use the full daily-window remainder.
    For unattended operation, `--auto-run` turns the whole flow into a loop:
    it runs the issues the current windows can accommodate (in priority
-   order, honoring `--max-batch-requests`), re-plans, and when anything is
-   still deferred or aborted it waits (sleeps, logging the wait) until the
-   CourtListener daily window resets before trying again — so a batch
-   eventually completes on its own. Stop it any time with Ctrl-C; results
-   accumulate into a per-issue summary (run/error/deferred/aborted),
-   printed as a line and as JSON with `--output-format json`.
+   order, honoring `--max-batch-requests`), re-plans, and when quota-blocked
+   issues remain it waits (sleeps, logging the wait) for the CourtListener
+   daily reset before trying again. The retry loop is bounded (100 planning
+   passes, each wait at most 24 hours) and stops immediately for a
+   cap-deferred backlog that waiting cannot fix; repeated no-progress passes
+   also stop it. Any incomplete run exits non-zero, so cron/systemd can report
+   failure instead of hanging. Stop it any time with Ctrl-C; results
+   accumulate into a per-issue summary (run/error/deferred/aborted), printed
+   as a line and as JSON with `--output-format json`.
 
    When a run finishes, an `analysis_complete` event is always logged on stderr
    (even if `--log-level` would suppress INFO diagnostics) carrying a run id,
@@ -207,28 +210,32 @@ covered via a mocked `openai` client, so it needs no network or API key. CI
 enforced, not just measured.
 
 Coverage measures *execution*; `make mutate` checks whether the tests would
-actually *catch* a fault. It runs a mutmut pass per module (each module
+actually *catch* a fault. It runs a mutmut pass per mutable module (each module
 mutated against the test slice that exercises it) and writes every surviving
 mutant's diff to `/tmp/mutmut_survivors_<module>.txt`. A survivor is either a
 provably-equivalent mutation (log-message text, default args, unreachable
 fallbacks — expected and acceptable) or a real gap that needs a stronger
 test. The current suite kills every non-equivalent mutant: survivors are
-limited to equivalent ones. Run it after adding features or tests to keep
-that property, and triage survivors with `python scripts/mutmut_pass.py
-<module> <test_file>` for a single module.
+limited to equivalent ones. `models.py` contains only Pydantic declarations,
+so it is outside the mutation scope. Run the pass after adding features or
+tests to keep that property, and triage survivors with `python
+scripts/mutmut_pass.py <module> <test_file>` for a single module.
 
 The kill-property is enforced, not assumed: a GitHub Actions job
-(`mutation-kill-gate`) runs `make mutate` on every push to `main` that
-touches code/tests (docs-only pushes are excluded) and fails when any
-module's survivor count exceeds its entry in `.mutation-baseline.json` (the
-triaged, provably-equivalent survivors per module; a module at `0` fails on
-*any* survivor). Because it runs on push, the baseline bump must land in the
-*same commit* as the code change that introduced the survivors — a feature
-commit that adds a new equivalent without moving the baseline goes red
-immediately instead of being caught up to 24h later. When the gate reports a
-violation, triage the diff in `/tmp/mutmut_survivors_<module>.txt` — kill
-real gaps with stronger tests, and bump the baseline only for a
-newly-proven equivalent (e.g. a new log message). Run the same gate locally
+(`mutation-kill-gate`) runs one isolated mutation pass per baseline module on
+every push to `main` that touches code/tests (docs-only pushes are excluded)
+and fails when any module's survivor-name set differs from its entry in
+`.mutation-baseline.json`
+(the triaged, provably-equivalent survivors per module; a module at `0` fails
+on *any* survivor). Comparing names catches an equal-count swap where an
+equivalent is killed and a killable mutant starts surviving. Because it runs
+on push, the baseline update must land in the *same commit* as the code change
+that introduced the survivors — a feature commit that adds a new equivalent
+without updating the baseline goes red immediately instead of being caught up
+to 24h later. When the gate reports a violation, triage the diff in
+`/tmp/mutmut_survivors_<module>.txt` — kill real gaps with stronger tests, and
+add the survivor name to the baseline only for a newly-proven equivalent
+(e.g. a new log message). Run the same gate locally
 in one shot with `make mutate-check` (full pass + baseline check; it exits
 non-zero with a triage pointer on any untriaged survivor), or trigger the
 job on demand via `workflow_dispatch`.

@@ -1126,10 +1126,13 @@ def test_minimize_bva_query_short_query_unchanged():
 
 
 def test_minimize_bva_query_statute_only_anchor():
-    # A query with only statute anchors (no issue phrase) exhausts the quoted
-    # phrases without selecting one and degrades to an empty query rather than
-    # sending a statute fragment to the Board index.
-    assert _minimize_bva_query('"1110" veterans compensation') == ""
+    # A query with only statute anchors (no issue phrase) must not become an
+    # empty search.usa.gov query, which would return unfiltered recent cases.
+    assert _minimize_bva_query('"1110" veterans compensation') == (
+        '"1110" veterans compensation'
+    )
+    assert _minimize_bva_query('"1110"') == '"1110"'
+    assert _minimize_bva_query('site:bva.va.gov "1110"') == '"1110"'
 
 
 def test_minimize_bva_query_boilerplate_only():
@@ -1317,6 +1320,27 @@ def test_bva_provider_minimizes_query_before_request(monkeypatch):
 
     assert '"' not in captured["params"]["query"]
     assert captured["params"]["query"] == "service connection for tinnitus"
+
+
+def test_bva_provider_statute_only_query_is_not_empty(monkeypatch):
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None, **kwargs):
+        captured["params"] = params
+        return FakeResponse(BVA_HTML)
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers._get_bva_session", lambda: _FakeSession(fake_get)
+    )
+
+    BVAProvider().search('"1110"')
+
+    assert captured["params"]["query"] == '"1110"'
+
+
+def test_bva_provider_rejects_truly_empty_query():
+    with pytest.raises(SearchError, match="non-empty query"):
+        BVAProvider().search("   ")
 
 
 def test_bva_provider_raises_on_challenge_page(monkeypatch):
@@ -1950,7 +1974,7 @@ def test_bva_sitemap_year_boundary_maps_92_99_to_19xx(monkeypatch):
     assert results and results[0]["title"] == "00000001"
 
 
-def test_bva_sitemap_search_empty_issue_after_minimization(monkeypatch):
+def test_bva_sitemap_search_statute_only_query_returns_no_match(monkeypatch):
     _clear_bva_sitemap_cache(monkeypatch)
     monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
     _mock_bva_requests(
@@ -1962,9 +1986,10 @@ def test_bva_sitemap_search_empty_issue_after_minimization(monkeypatch):
         },
     )
 
-    # The minimize step reduces a statute-anchor-only query to the empty
-    # string; search then falls back to the site-stripped query (also empty)
-    # and finds no matches, surfacing the standard no-results error.
+    # The centralized minimizer keeps the site-stripped statute-only query
+    # instead of returning an empty string. This decision does not cite
+    # 1110, so the non-empty query still finds no matches and surfaces the
+    # standard no-results error.
     with pytest.raises(SearchError, match="No search results"):
         BvaSitemapProvider().search('site:bva.va.gov "1110"')
 
@@ -1991,12 +2016,11 @@ def test_bva_sitemap_search_uses_minimized_issue_for_matching(monkeypatch):
     assert results
 
 
-def test_bva_sitemap_search_minimized_empty_falls_back_to_stripped(monkeypatch):
+def test_bva_sitemap_search_statute_only_query_matches(monkeypatch):
     _clear_bva_sitemap_cache(monkeypatch)
     monkeypatch.setenv("SEARCH_PROVIDERS", "bvasitemap")
-    # "1110" minimizes to the empty string, so search falls back to the
-    # site-stripped query — which here still carries the statute text and
-    # therefore matches a decision that cites it.
+    # The centralized minimizer falls back to the site-stripped statute-only
+    # query; this decision cites 1110, so matching succeeds.
     _mock_bva_requests(
         monkeypatch,
         {
@@ -4646,7 +4670,7 @@ class TestBvaLocalIndexProvider:
         result = adapt_query_for_provider('site:va.gov tinnitus', 'bvalocal')
         assert 'site:' not in result
 
-    def test_empty_issue_raises(self, monkeypatch, tmp_path):
+    def test_stopword_only_query_raises(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4662,12 +4686,13 @@ class TestBvaLocalIndexProvider:
         monkeypatch.setattr(
             "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
         )
-        # "for" is a stopword, so after minimization we get empty tokens.
+        # "for" minimizes to a non-empty stopword-only query, whose token
+        # list is empty; no decision can match it.
         with pytest.raises(SearchError, match="No search results"):
             BvaLocalIndexProvider().search("for")
 
-    def test_empty_issue_falls_back_to_site_stripped(self, monkeypatch, tmp_path):
-        """When minimization produces nothing, fall back to site-stripped query."""
+    def test_site_prefixed_query_uses_minimized_issue(self, monkeypatch, tmp_path):
+        """The centralized minimizer strips the site: prefix and keeps the issue."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4683,7 +4708,7 @@ class TestBvaLocalIndexProvider:
         monkeypatch.setattr(
             "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
         )
-        # After minimization + strip_site_prefixes, we get "tinnitus".
+        # The centralized minimizer strips site: and keeps the issue phrase.
         results = BvaLocalIndexProvider().search("site:bva.va.gov tinnitus")
         assert len(results) == 1
 
@@ -4714,8 +4739,8 @@ class TestBvaLocalIndexProvider:
         _, manifest = _bva_local_build(str(tmp_path), leaf, 0)
         assert manifest[0]["title"] == "decision"
 
-    def test_minimize_returns_empty_falls_back_to_strip(self, monkeypatch, tmp_path):
-        """When _minimize_bva_query returns empty but strip_site_prefixes doesn't."""
+    def test_statute_only_query_uses_centralized_fallback(self, monkeypatch, tmp_path):
+        """A statute-only query keeps the site-stripped original from the central fallback."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
         monkeypatch.setattr(
@@ -4731,9 +4756,8 @@ class TestBvaLocalIndexProvider:
         monkeypatch.setattr(
             "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
         )
-        # "1110" is a statute phrase (skipped by minimize), leading text is
-        # empty → minimize returns "", but strip_site_prefixes returns the
-        # full query which tokenizes to ['1110', 'tinnitus'].
+        # "1110" is a statute phrase, so the central fallback returns the
+        # site-stripped original; its tokens ['1110', 'tinnitus'] match.
         results = BvaLocalIndexProvider().search('"1110" tinnitus')
         assert len(results) == 1
 

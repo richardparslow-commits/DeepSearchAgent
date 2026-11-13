@@ -1,5 +1,8 @@
 -r requirements.txt
-pytest>=8.0.0
+# mutmut 3.7's stats collection crashes on pytest 9.2; pytest 9 support first
+# lands in mutmut 3.8.1. Keep this below 9 until mutmut is deliberately
+# upgraded and .mutation-baseline.json is re-triaged.
+pytest>=8.0.0,<9
 pytest-cov>=5.0.0
 ruff>=0.6.0
 # Pinned exactly -- see the note in pyproject.toml. A mutmut release changes

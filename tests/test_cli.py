@@ -10,6 +10,7 @@ import pytest
 from va_legal_agent.__main__ import (
     _configure_logging,
     _mask_proxy_url,
+    _mask_secret,
     _redacted_settings,
     _resolve_log_format,
     _run_id,
@@ -815,48 +816,54 @@ def test_auto_run_executes_proceed_issues(capsys, monkeypatch, tmp_path):
     assert sorted(ran) == ["alpha", "beta"]
 
 
-def test_auto_run_defers_and_waits_for_reset(capsys, monkeypatch, tmp_path):
-    """Deferred issues are re-planned after the daily window reset."""
+def test_auto_run_deferred_backlog_fails_without_waiting(
+    capsys, monkeypatch, tmp_path
+):
+    """A cap-deferred backlog cannot improve by waiting; fail immediately."""
     issues_file = tmp_path / "issues.txt"
     issues_file.write_text("alpha\n", encoding="utf-8")
     monkeypatch.setattr(
         "sys.argv",
-        ["va-legal-agent", "--auto-run", "--issues-file", str(issues_file)],
+        [
+            "va-legal-agent",
+            "--auto-run",
+            "--max-batch-requests",
+            "1",
+            "--issues-file",
+            str(issues_file),
+        ],
     )
     monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
-    ran = []
     calls = []
 
     def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
         calls.append(list(issues))
-        if len(calls) == 1:
-            return ([
-                {"issue": "alpha", "verdict": "deferred", "courtlistener_requests": 0, "priority": None}
-            ], {"issues": 1})
-        return ([
-            {"issue": "alpha", "verdict": "proceed", "courtlistener_requests": 0, "priority": None}
-        ], {"issues": 1})
+        return (
+            [
+                {
+                    "issue": "alpha",
+                    "verdict": "deferred",
+                    "courtlistener_requests": 2,
+                    "priority": None,
+                }
+            ],
+            {"issues": 1},
+        )
 
-    def fake_analyze(issue, **kwargs):
-        ran.append(issue)
-        return _sample_analysis()
-
-    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fake_analyze)
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
     monkeypatch.setattr(
-        "va_legal_agent.__main__.fetch_courtlistener_usage",
-        lambda: {"current_usage": []},
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda secs, reason: pytest.fail("a deferred backlog must not sleep"),
     )
-    monkeypatch.setattr("va_legal_agent.__main__.courtlistener_daily_budget", lambda usage: {"reset_at": "2030-01-01T00:00:00+00:00"})
-    monkeypatch.setattr("va_legal_agent.__main__._seconds_until_utc", lambda iso: 60.0)
-    monkeypatch.setattr("va_legal_agent.__main__._sleep_with_log", lambda secs, reason: None)
 
-    main()
+    with pytest.raises(SystemExit) as exc:
+        main()
 
+    assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "Auto-run complete" in out
-    assert ran == ["alpha"]  # only after the reset
-    assert len(calls) == 2
+    assert "Auto-run incomplete" in out
+    assert "1 deferred" in out
+    assert len(calls) == 1
 
 
 def test_auto_run_abort_keeps_pending_and_waits(capsys, monkeypatch, tmp_path):
@@ -947,10 +954,12 @@ def test_auto_run_analyze_failure_records_error(capsys, monkeypatch, tmp_path):
         _auto_run_fake_batch([("alpha", "proceed"), ("beta", "proceed")]),
     )
 
-    main()
+    with pytest.raises(SystemExit) as exc:
+        main()
 
+    assert exc.value.code == 1
     out = capsys.readouterr().out
-    assert "Auto-run complete" in out
+    assert "Auto-run incomplete" in out
     assert "1 failed" in out
     assert sorted(ran) == ["alpha", "beta"]
 
@@ -1124,6 +1133,234 @@ def test_auto_run_empty_pending_returns_without_batch(monkeypatch):
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", bad_batch)
     assert _auto_run([], claim_type="Compensation", max_results=10, max_wall_seconds=None) == []
     assert called == []
+
+
+def test_auto_run_iteration_guard_bounds_planning(monkeypatch):
+    """A batch that keeps making slow progress cannot plan forever."""
+    from va_legal_agent.__main__ import _auto_run
+
+    calls = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        rows = [
+            {
+                "issue": issues[0],
+                "verdict": "proceed",
+                "courtlistener_requests": 1,
+                "priority": None,
+            }
+        ]
+        rows.extend(
+            {
+                "issue": issue,
+                "verdict": "deferred",
+                "courtlistener_requests": 1,
+                "priority": None,
+            }
+            for issue in issues[1:]
+        )
+        return rows, {"issues": len(issues)}
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _sample_analysis(),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: {"current_usage": []},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget",
+        lambda usage: {"reset_at": None},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log", lambda seconds, reason: None
+    )
+
+    results = _auto_run(
+        ["a", "b", "c"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_iterations=2,
+    )
+
+    assert len(calls) == 2
+    assert results == [
+        {"issue": "a", "verdict": "run"},
+        {"issue": "b", "verdict": "run"},
+        {"issue": "c", "verdict": "deferred"},
+    ]
+
+
+def test_auto_run_wait_is_capped(monkeypatch):
+    """A far-future reset cannot put an unattended run to sleep for days."""
+    from va_legal_agent.__main__ import _auto_run
+
+    calls = []
+    sleeps: list[float] = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        verdict = "abort" if len(calls) == 1 else "proceed"
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": verdict,
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _sample_analysis(),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: {"current_usage": []},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget",
+        lambda usage: {"reset_at": "2030-01-01T00:00:00+00:00"},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._seconds_until_utc", lambda iso: 10**9
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda seconds, reason: sleeps.append(seconds),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_wait_seconds=120.0,
+    )
+
+    assert sleeps == [120.0]
+    assert results == [{"issue": "a", "verdict": "run"}]
+
+
+def test_auto_run_repeated_quota_stall_terminates(monkeypatch):
+    """A second unchanged abort pass stops instead of waiting forever."""
+    from va_legal_agent.__main__ import _auto_run
+
+    calls = []
+    sleeps: list[float] = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": "abort",
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: {"current_usage": []},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget",
+        lambda usage: {"reset_at": None},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda seconds, reason: sleeps.append(seconds),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_iterations=10,
+    )
+
+    assert len(calls) == 2
+    assert len(sleeps) == 1
+    assert results == [{"issue": "a", "verdict": "abort"}]
+
+
+def test_auto_run_usage_failure_stops_with_pending(monkeypatch):
+    """A usage lookup failure exits the loop instead of escaping it."""
+    from va_legal_agent.__main__ import _auto_run
+    from va_legal_agent.search import SearchError
+
+    calls = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": "abort",
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    def fail_usage():
+        raise SearchError("usage endpoint unavailable")
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr("va_legal_agent.__main__.fetch_courtlistener_usage", fail_usage)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda seconds, reason: pytest.fail("a failed usage lookup must not sleep"),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_iterations=10,
+    )
+
+    assert len(calls) == 1
+    assert results == [{"issue": "a", "verdict": "abort"}]
+
+
+def test_auto_run_keeps_issue_omitted_by_planner(monkeypatch):
+    """A missing planner row is reported, not silently dropped."""
+    from va_legal_agent.__main__ import _auto_run
+
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.batch_dry_run",
+        lambda issues, **kwargs: ([], {"issues": 0}),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+    )
+
+    assert results == [{"issue": "a", "verdict": "deferred"}]
 
 
 def test_auto_run_no_issues_is_usage_error(capsys, monkeypatch):
@@ -1583,11 +1820,11 @@ def test_batch_dry_run_max_batch_requests_packs_in_priority_order(capsys, monkey
     assert rows[1]["verdict"] == "deferred"
 
 
-def test_batch_dry_run_max_requests_zero_none_defer(capsys, monkeypatch, tmp_path):
-    """A tiny cap defers everything; a zero cap defers everything too."""
-    import csv as _csv
-    import io as _io
-
+@pytest.mark.parametrize("value", ["0", "-1", "abc"])
+def test_max_batch_requests_must_be_positive(
+    capsys, monkeypatch, tmp_path, value
+):
+    """A non-positive request cap is rejected instead of deferring forever."""
     issues_file = tmp_path / "issues.txt"
     issues_file.write_text("a\n", encoding="utf-8")
     monkeypatch.setattr(
@@ -1595,23 +1832,27 @@ def test_batch_dry_run_max_requests_zero_none_defer(capsys, monkeypatch, tmp_pat
         [
             "va-legal-agent",
             "--batch-dry-run",
-            "--output-format",
-            "csv",
             "--max-batch-requests",
-            "0",
+            value,
             "--issues-file",
             str(issues_file),
         ],
     )
     monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
-    monkeypatch.setattr(
-        "va_legal_agent.__main__.fetch_courtlistener_usage", lambda: _usage_payload()
-    )
 
-    main()
+    with pytest.raises(SystemExit) as exc:
+        main()
 
-    rows = list(_csv.DictReader(_io.StringIO(capsys.readouterr().out)))
-    assert rows[0]["verdict"] == "deferred"
+    assert exc.value.code != 0
+    assert "must be a positive integer" in capsys.readouterr().err
+
+
+def test_batch_dry_run_rejects_non_positive_cap():
+    """The function boundary rejects a non-positive cap as well."""
+    from va_legal_agent.__main__ import batch_dry_run
+
+    with pytest.raises(ValueError, match="positive integer"):
+        batch_dry_run(["a"], max_batch_requests=0)
 
 
 def test_batch_dry_run_summary_reports_deferred(capsys, monkeypatch, tmp_path):
@@ -2107,15 +2348,46 @@ def test_show_config_redacts_courtlistener_api_key(capsys, monkeypatch):
     assert json.loads(output)["courtlistener_api_key"] == "cl-s...6789"
 
 
-def test_redacted_settings_masks_short_api_key(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "short")
+@pytest.mark.parametrize(
+    "secret", ["short", "abcdefgh", "abcd1234e", "1234567890123456"]
+)
+def test_redacted_settings_masks_short_api_key(monkeypatch, secret):
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
 
     assert _redacted_settings()["openai_api_key"] == "***"
+
+
+def test_mask_secret_reveals_only_long_values():
+    assert _mask_secret("12345678901234567") == "1234...4567"
 
 
 def test_mask_proxy_url_masks_embedded_credentials():
     masked = _mask_proxy_url("http://user:pass@residential-proxy.example:8080")
     assert masked == "http://***@residential-proxy.example:8080"
+    assert "pass" not in masked
+
+
+def test_mask_proxy_url_masks_scheme_less_credentials():
+    masked = _mask_proxy_url("richardproxy:supersecret@proxy.example:8080")
+
+    assert masked == "***@proxy.example:8080"
+    assert "richardproxy" not in masked
+    assert "supersecret" not in masked
+
+
+def test_mask_proxy_url_handles_malformed_port():
+    masked = _mask_proxy_url("http://user:pass@proxy.example:notaport")
+
+    assert masked == "http://***@proxy.example"
+    assert "user" not in masked
+    assert "pass" not in masked
+
+
+def test_mask_proxy_url_handles_scheme_less_malformed_port():
+    masked = _mask_proxy_url("user:pass@proxy.example:notaport")
+
+    assert masked == "***@proxy.example"
+    assert "user" not in masked
     assert "pass" not in masked
 
 
@@ -2150,7 +2422,9 @@ def test_mask_proxy_url_rebrackets_ipv6_host():
 
 def test_show_config_redacts_proxy_credentials(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
-    monkeypatch.setenv("SEARCH_HTTP_PROXY", "http://richardproxy:supersecret@proxy.example:8080")
+    monkeypatch.setenv(
+        "SEARCH_HTTP_PROXY", "http://richardproxy:supersecret@proxy.example:8080"
+    )
 
     main()
 
@@ -2158,6 +2432,35 @@ def test_show_config_redacts_proxy_credentials(capsys, monkeypatch):
     assert "supersecret" not in output
     assert "richardproxy" not in output
     assert json.loads(output)["search_http_proxy"] == "http://***@proxy.example:8080"
+
+
+def test_show_config_redacts_scheme_less_proxy_credentials(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv(
+        "SEARCH_HTTP_PROXY", "richardproxy:supersecret@proxy.example:8080"
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "supersecret" not in output
+    assert "richardproxy" not in output
+    assert json.loads(output)["search_http_proxy"] == "***@proxy.example:8080"
+
+
+def test_show_config_handles_malformed_proxy_port(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv(
+        "SEARCH_HTTP_PROXY",
+        "http://richardproxy:supersecret@proxy.example:notaport",
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "supersecret" not in output
+    assert "richardproxy" not in output
+    assert json.loads(output)["search_http_proxy"] == "http://***@proxy.example"
 
 
 def test_missing_issue_is_reported(capsys, monkeypatch):

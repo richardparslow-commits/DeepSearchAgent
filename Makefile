@@ -10,7 +10,7 @@
 #   make lint         ruff static checks
 #   make lint-fix     auto-fix what ruff can
 #   make coverage     full suite with coverage report
-#   make mutate       mutation-testing pass (mutmut) over every module
+#   make mutate       mutation-testing pass (mutmut) over every mutable module
 #   make mutate-check full mutation pass + the kill-property baseline gate
 #   make smoke        one real query per configured provider (manual network check)
 #   make help         list all targets
@@ -50,10 +50,10 @@ test-w: ## Full suite with warnings promoted to errors
 	PYTHONWARNINGS=error $(PYTEST) -q $(ARGS)
 
 lint: ## Static checks with ruff (pyflakes + pycodestyle rules)
-	$(PYTHON) -m ruff check va_legal_agent tests scripts
+	$(PYTHON) -m ruff check va_legal_agent tests scripts webapp.py
 
 lint-fix: ## Auto-fix what ruff can
-	$(PYTHON) -m ruff check --fix va_legal_agent tests scripts
+	$(PYTHON) -m ruff check --fix va_legal_agent tests scripts webapp.py
 
 coverage: ## Full suite with a per-module coverage report (line + branch)
 	$(PYTEST) --cov=va_legal_agent --cov-branch --cov-report=term-missing $(ARGS)
@@ -71,14 +71,13 @@ MUTATE_MODULES = \
 	"planning.py tests/test_planning.py" \
 	"batch.py tests/test_batch.py tests/test_cli.py" \
 	"config.py tests/test_config.py tests/test_cli.py" \
-	"models.py tests/test_cli.py tests/test_batch.py" \
 	"topics.py tests/test_topics.py tests/test_legal_agent.py" \
 	"interpretation.py tests/test_interpretation.py tests/test_topics.py" \
 	"llm.py tests/test_llm.py" \
 	"impact.py tests/test_impact.py" \
 	"ranking.py tests/test_ranking.py"
 
-mutate: ## Mutation-testing pass (mutmut) over every module; survivors to /tmp
+mutate: ## Mutation-testing pass (mutmut) over every mutable module; survivors to /tmp
 	@set -e; for spec in $(MUTATE_MODULES); do \
 		$(PYTHON) scripts/mutmut_pass.py $$spec; \
 	done

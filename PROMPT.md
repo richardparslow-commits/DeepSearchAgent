@@ -71,7 +71,7 @@ Every runtime knob is a typed field in `Settings` (`config.py`), driven by envir
 - No `os.environ` reads outside `config.py` — use `get_settings()` everywhere
 - Provider fetch/retry pattern: `_get_json()` / `_get_text()` helpers with transient-error detection, `Retry-After` header parsing, exponential backoff with jitter, and `_throttle()` for global + per-provider pacing
 - Test structure: one file per module (`tests/test_providers.py`, `tests/test_legal_agent.py`, etc.), mock external HTTP at the `requests.get` / `requests.Session.get` level, use the `conftest.py` env-var reset fixture
-- Mutation baseline: when adding code that produces provably-equivalent survivors (log messages, default args, unreachable fallbacks), bump `.mutation-baseline.json` in the same commit — the CI gate fails on any survivor count above baseline
+- Mutation baseline: when adding code that produces provably-equivalent survivors (log messages, default args, unreachable fallbacks), update `.mutation-baseline.json` in the same commit — the CI gate fails on any survivor count above baseline or any changed survivor-identity digest
 - Commit format: conventional commits (`fix:`, `feat:`, `chore:`) with `🤖 Generated with Codebuff` + `Co-Authored-By: Codebuff <noreply@codebuff.com>` footer
 
 ## Key design choices to preserve

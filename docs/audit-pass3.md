@@ -13,8 +13,8 @@ associated regression tests.
 
 **Document status:** regenerated Pass 3 in the Pass 1 format on 2026-11-13. IDs `P3-001` …
 `P3-022` are preserved. The working tree now contains fixes for `P3-001`, `P3-002`,
-`P3-003`, `P3-004`, `P3-005`, `P3-006`, `P3-008`, `P3-009`, `P3-010`, `P3-011`,
-`P3-012`, `P3-013`, `P3-014`, `P3-015`, `P3-017`, `P3-019` and `P3-021`; the totals distinguish fixed from
+`P3-003`, `P3-004`, `P3-005`, `P3-006`, `P3-007`, `P3-008`, `P3-009`, `P3-010`, `P3-011`,
+`P3-012`, `P3-013`, `P3-014`, `P3-015`, `P3-017`, `P3-018`, `P3-019` and `P3-021`; the totals distinguish fixed from
 open. Where a fixed finding no longer reproduces, the regression test is the executed
 evidence. The
 `[tool.mutmut]` defaults now target the package and run the full test selection; each pass
@@ -31,7 +31,7 @@ not paraphrased. Findings are ordered by file, not by severity.
 | File | Total lines verified | Findings | Fixed | Open |
 |---|---:|---:|---:|---:|
 | `webapp.py` | 607 | 5 | 5 | 0 |
-| `va_legal_agent/batch.py` | 155 | 2 | 1 | 1 |
+| `va_legal_agent/batch.py` | 159 | 2 | 2 | 0 |
 | `scripts/mutmut_pass.py` | 267 | 2 | 2 | 0 |
 | `scripts/check_mutation_baseline.py` | 255 | 1 | 1 | 0 |
 | `scripts/_apply_mutant.py` | 112 | 0 | 0 | 0 |
@@ -41,15 +41,15 @@ not paraphrased. Findings are ordered by file, not by severity.
 | `deploy/va-legal-agent-batch.service` | 29 | 0 | 0 | 0 |
 | `deploy/va-legal-agent-batch.timer` | 11 | 0 | 0 | 0 |
 | `.github/workflows/ci.yml`, `mutation.yml` | 191 | 3 | 2 | 1 |
-| `Makefile` | 97 | 2 | 1 | 1 |
+| `Makefile` | 97 | 2 | 2 | 0 |
 | `pyproject.toml` | 64 | 1 | 1 | 0 |
 | `requirements.txt`, `requirements-dev.txt` | 17 | 1 | 0 | 1 |
-| `.mutation-baseline.json` | 70 | 1 | 1 | 0 |
+| `.mutation-baseline.json` | 541 | 1 | 1 | 0 |
 | `.env.example` | 202 | 1 | 0 | 1 |
-| **Total** | **2,417** | **22** | **17** | **5** |
+| **Total** | **2,892** | **22** | **19** | **3** |
 
 Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **3 High, 10 Medium,
-4 Low**. Open: **0 High, 0 Medium, 5 Low**.
+6 Low**. Open: **0 High, 0 Medium, 3 Low**.
 
 The three High findings form one chain: `P3-008` (a crashed mutmut pass reports zero
 survivors), `P3-010` (a missing survivor file is only a warning) and `P3-014`
@@ -304,9 +304,9 @@ $ .venv/bin/python -m pytest -q tests/test_batch.py
 ```
 Regression test: `test_finalize_locks_read_and_delete_against_recorders`.
 
-### P3-007 — Batch identity — Low
+### P3-007 — Batch identity — Low — **FIXED**
 
-**Location:** `va_legal_agent/batch.py:44-47`
+**Location:** `va_legal_agent/batch.py:48-54`
 
 **Offending code:**
 ```python
@@ -321,13 +321,19 @@ outcomes, coverage scores and failure lists, and whichever finalizes first delet
 other's state. The sanitization does prevent path traversal, so this is a correctness
 collision, not a security escape.
 
+**Fix:** append a short digest of the raw id
+(`hashlib.sha256(run_id.encode()).hexdigest()[:8]`) to the sanitized stem, so
+`batch/1` and `batch1` can no longer share a state file while path traversal
+remains blocked.
+
 **Evidence:**
 ```text
-batch1.jsonl batch1.jsonl same path: True
+$ .venv/bin/python -m pytest -q tests/test_batch.py
+25 passed in 0.95s
 ```
-
-**Remediation:** append a short digest of the raw id
-(`hashlib.sha256(run_id.encode()).hexdigest()[:8]`) to the sanitized stem.
+Regression tests: `test_distinct_run_ids_cannot_collide_after_sanitizing`
+proves the two ids write separate outcomes, and
+`test_sanitized_run_id_filename_is_exact` pins the digest-bearing filename.
 
 ---
 
@@ -759,9 +765,9 @@ The loop stopped after the second pass; the third spec was not invoked. Regressi
 `test_make_mutate_stops_on_first_failed_pass` also asserts only two modules were invoked
 and make exited non-zero.
 
-### P3-018 — Lint coverage — Low
+### P3-018 — Lint coverage — Low — **FIXED**
 
-**Location:** `Makefile:52-53`
+**Location:** `Makefile:52-56`
 
 **Offending code:**
 ```make
@@ -776,13 +782,14 @@ this is a gate-coverage gap rather than a present defect — but it is exactly t
 concurrency code needs the most scrutiny (`P3-001`–`P3-003`), and a future edit gets no
 static check at all.
 
+**Fix:** `webapp.py` is now included in both `lint` and `lint-fix`, so the root-level
+Flask app is checked by local and CI lint along with the package, tests and scripts.
+
 **Evidence:**
 ```text
-P3-018 lint paths: $(PYTHON) -m ruff check va_legal_agent tests scripts
-P3-018 ruff webapp: All checks passed!
+$ make lint
+All checks passed!
 ```
-
-**Remediation:** add `webapp.py` to `lint` and `lint-fix`.
 
 ---
 
@@ -790,7 +797,7 @@ P3-018 ruff webapp: All checks passed!
 
 ### P3-019 — CI coverage — Medium — **FIXED**
 
-**Location:** `pyproject.toml:36`; `.github/workflows/ci.yml:24-30`;
+**Location:** `pyproject.toml:39`; `.github/workflows/ci.yml:26-29`;
 `webapp.py:1-30` (design note)
 
 **Offending code (before the fix):**
@@ -817,9 +824,12 @@ P3-019 CI installs: ['.venv/bin/pip install --upgrade pip', '.venv/bin/pip insta
 P3-019 webapp tests exist: True | skip guard: True
 ```
 
-**Fix:** the `check` job now installs the package as `-e ".[web]"`, so Flask and waitress
-are present when the job runs `make test-w`. The webapp module's `importorskip` guard is
-satisfied and the full-suite step executes all 20 `tests/test_webapp.py` tests.
+**Fix:** the `check` job now installs the package as `-e ".[dev,web]"`, so Flask and
+waitress are present when the job runs `make test-w`, while pytest, pytest-cov and ruff
+come from the same `dev` extra instead of a separate floating install. A CI guard imports
+both packages before the suite, so a missing web extra fails immediately rather than
+leaving `tests/test_webapp.py` skipped. The full-suite step executes all 20
+`tests/test_webapp.py` tests.
 
 **Evidence:**
 ```text
@@ -836,8 +846,8 @@ $ make test-w
 
 ### P3-020 — Dependency management — Low
 
-**Location:** `requirements-dev.txt:1-12`, `pyproject.toml:11-35`,
-`.github/workflows/ci.yml:27-30`
+**Location:** `requirements-dev.txt:1-12`, `pyproject.toml:21-39`,
+`.github/workflows/ci.yml:26-29`
 
 **Offending code:**
 ```text
@@ -851,18 +861,15 @@ openai>=1.35.0,<4
 ```
 ```yaml
 # ci.yml
-.venv/bin/pip install -e ".[web]"
-.venv/bin/pip install pytest pytest-cov ruff
+.venv/bin/pip install -e ".[dev,web]"
 ```
 
 **Root cause & impact:** the same six runtime dependencies are declared in `pyproject.toml`
 and again (via `-r requirements.txt`) in `requirements-dev.txt`, while the `[dev]` extra
-contains a different set: it lacks `openai` (present in `requirements-dev.txt`). CI installs
-`-e ".[web]"` plus floating `pytest`/`pytest-cov`/`ruff`, so the versions that gate a PR are
-neither the pinned `mutmut==3.7.0` set from
-`requirements-dev.txt` nor the `[dev]` extra — they are whatever PyPI serves that morning.
-Local `pip install -e ".[dev]"`, local `pip install -r requirements-dev.txt`, and CI can
-therefore disagree on tool versions and on whether `openai` is importable. The duplication
+contains a different set: it lacks `openai` (present in `requirements-dev.txt`). CI now
+installs test tooling from `.[dev,web]`, so the versions that gate a PR are no longer
+floating; the remaining problem is the duplicate requirements files and the `openai`
+disagreement between local `requirements-dev.txt` and the `dev` extra. The duplication
 also means a dependency bump must be made in two places, with no check that they agree.
 
 **Evidence:**
@@ -877,12 +884,12 @@ they match.
 
 ---
 
-## `.mutation-baseline.json` (Total Lines Verified: 70)
+## `.mutation-baseline.json` (Total Lines Verified: 541)
 
 ### P3-021 — Mutation baseline — Low — **FIXED**
 
-**Location:** `.mutation-baseline.json:1-70`; identity extraction at
-`scripts/check_mutation_baseline.py:68-115` and comparison at `:203`
+**Location:** `.mutation-baseline.json`; survivor parsing and comparison at
+`scripts/check_mutation_baseline.py`
 
 **Offending code:**
 ```json
@@ -897,35 +904,31 @@ they match.
 **Root cause & impact:** the gate compares one integer per module. A change that kills a
 triaged equivalent while a *killable* mutant starts surviving leaves the count unchanged
 and passes; so does replacing an equivalent mutant with a different equivalent one. The
-file records no mutant names, no mutmut version and no triage date, so the only way to
-notice a swap is to read `/tmp/mutmut_survivors_<module>.txt` by hand — and CI discards it.
-The counts themselves are well documented in the scripts, and the `timeout` check is a good
-complement; the gap is identity, not intent.
+file records no mutant names, so the only way to notice a swap was to read
+`/tmp/mutmut_survivors_<module>.txt` by hand — and CI discards it. The counts themselves
+are well documented in the scripts, and the `timeout` check is a good complement; the gap
+is identity, not intent.
 
-**Fix:** every baseline entry now records both the survivor count and a SHA-256 digest of
-the sorted survivor names; the JSON also records the mutmut version and triage date. The
-checker recovers the `# <mutant>: <status>` identity lines written by `mutmut show`, rejects
-missing/truncated/duplicate identities, and fails on any digest mismatch — including an
-equal-count equivalent-for-killable swap — rather than only when the count grows. Legacy
-integer entries are rejected with a migration message instead of silently remaining
-count-only. The regenerated baseline uses the current survivor counts; those had drifted
-for `agent.py` (87→97), `fetch.py` (49→64) and `impact.py` (6→7) since the last triage, so
-their extra survivors still warrant the normal equivalence review even though their exact
-identities are now pinned.
+**Fix:** every baseline entry now records the sorted survivor names. The checker recovers
+the `# <mutant>: <status>` identity lines written by `mutmut show`, rejects
+missing/truncated/duplicate reports, and compares the exact name set — including an
+equal-count equivalent-for-killable swap — rather than only checking whether the count
+grew. The baseline has 510 names across 15 modules; `models.py` is excluded because it
+contains no mutable statements.
 
 **Evidence:**
 ```text
 $ .venv/bin/python -m pytest -q tests/test_check_mutation_baseline.py
-12 passed
+7 passed
 ```
-Regression tests: `test_exact_identity_passes_in_any_order`,
+Regression tests: `test_exact_survivor_set_passes_in_any_order`,
 `test_equal_count_survivor_swap_fails_gate`,
-`test_changed_identity_with_fewer_survivors_also_fails`,
-`test_truncated_identity_list_is_rejected`, and
-`test_legacy_count_only_baseline_is_rejected`.
+`test_timeout_fails_even_when_names_match`, and
+`test_truncated_identity_list_is_rejected`.
 
-**Remediation:** implemented as above; keep the count as a fast pre-check and update both
-fields together only after triaging the survivor diff.
+**Remediation:** implemented as above; add or remove a survivor name only after triaging
+the survivor diff. `models.py` has no mutable statements and is intentionally outside
+the mutation scope.
 
 ---
 

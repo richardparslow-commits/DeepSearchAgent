@@ -184,6 +184,8 @@ def _load_jobs() -> None:
             job = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if not isinstance(job, dict):
+            continue
         corrected = job.get("status") == "running"
         if corrected:
             job["status"] = "error"

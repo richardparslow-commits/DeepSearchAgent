@@ -20,24 +20,24 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 
 | Pass | Source document | Registered | Notes |
 |---|---|---:|---|
-| 1 | `docs/audit-pass1.md` | 32 | 8 High, 16 Medium, 8 Low; 4 fixed |
+| 1 | `docs/audit-pass1.md` | 32 | 8 High, 16 Medium, 8 Low; 7 fixed |
 | 2 | — | 0 | **Source missing**; no rows fabricated |
 | 3 | `docs/audit-pass3.md` | 0 | 22 findings reserved for a later append |
 | 4 | — | 0 | Reserved |
-| Legal check | `docs/audit-pass1.md` § Legal-premise check | 1 | `L-1`, High |
+| Legal check | `docs/audit-pass1.md` § Legal-premise check | 1 | `L-1`, High; fixed |
 
 ## Summary
 
 | Severity | Total | Open | Closed |
 |---|---:|---:|---:|
-| High | 9 | 6 | 3 |
+| High | 9 | 2 | 7 |
 | Medium | 16 | 15 | 1 |
 | Low | 8 | 8 | 0 |
-| **Total** | **33** | **29** | **4** |
+| **Total** | **33** | **25** | **8** |
 
-Pass 1 alone contributes 32 findings (8 High, 16 Medium, 8 Low; 28 open, 4 closed). The ninth
+Pass 1 alone contributes 32 findings (8 High, 16 Medium, 8 Low; 25 open, 7 closed). The ninth
 High is the supplementary legal finding `L-1`: it is outside Pass 1's file scope but is a
-known release-blocking defect recorded in the same audit document, so it is included here
+now-fixed release-blocking defect recorded in the same audit document, so it is included here
 rather than left out of the consolidated view.
 
 ## Severity and disposition
@@ -70,14 +70,14 @@ Sorted by severity; within a severity band, open items precede closed ones, then
 | Severity | ID | File and line range | One-line defect | Status | Suggested disposition |
 |---|---|---|---|---|---|
 | High | P1-001 | `va_legal_agent/__main__.py:183-210` | Scheme-less `SEARCH_HTTP_PROXY` bypasses `_mask_proxy_url`, printing credentials in `--show-config`. | Open | Fix now |
-| High | P1-004 | `va_legal_agent/__main__.py:726-818, 769` | `--max-batch-requests <= 0` defers every row, and `--auto-run` then loops indefinitely. | Open | Fix now |
 | High | P1-007 | `va_legal_agent/config.py:88-105` | `env_float` accepts `nan`/`inf`, disabling throttling or crashing `time.sleep`. | Open | Fix now |
-| High | P1-013 | `va_legal_agent/providers.py:817-880` | Statute-only BVA queries minimize to `""` and return unfiltered recent decisions. | Open | Fix now |
-| High | P1-026 | `va_legal_agent/fetch.py:300-303` | `_normalize_statute_value` strips real two-letter subsections (`§ 3.1(aa)` becomes `§ 3.1`). | Open | Fix now |
-| High | L-1 | `va_legal_agent/impact.py:144-150` | Every CAVC case, including non-precedential memoranda, is described as binding on the Board. | Open | Fix now |
+| High | P1-004 | `va_legal_agent/__main__.py:784-785, 1019-1179, 1431-1434` | Non-positive `--max-batch-requests` deferred every row and `--auto-run` looped indefinitely; fixed with positive validation and bounded, stall-aware retries. | Closed | Closed — verify |
+| High | P1-013 | `va_legal_agent/providers.py:817-858` | Statute-only BVA queries minimized to `""`; the shared minimizer now keeps the site-stripped original. | Closed | Closed — verify |
 | High | P1-022 | `va_legal_agent/fetch.py:346-400` | Outcome scan read recitals as dispositions; fixed by scoping to the ORDER/CONCLUSION block. | Closed | Closed — verify |
 | High | P1-023 | `va_legal_agent/fetch.py:552-578` | Body-wide non-precedential markers demoted published opinions; fixed by reading the header only. | Closed | Closed — verify |
 | High | P1-025 | `va_legal_agent/fetch.py:60-100` | Quoted reporter citations overrode the decision's own BVA citation; fixed to prefer the own citation. | Closed | Closed — verify |
+| High | P1-026 | `va_legal_agent/fetch.py:312-321` | `_normalize_statute_value` strips real attached subsections (`§ 3.1(aa)` becomes `§ 3.1`, nested `(iv)` is lost); fixed to preserve attached subsections and strip only detached annotations. | Closed | Closed — verify |
+| High | L-1 | `va_legal_agent/impact.py:160-176` | Every CAVC case, including non-precedential memoranda, is described as binding; fixed to pass `precedential` into the authority note. | Closed | Closed — verify |
 | Medium | P1-002 | `va_legal_agent/__main__.py:176-180` | `_mask_secret` reveals nearly all of an 8–9 character secret. | Open | Fix next |
 | Medium | P1-003 | `va_legal_agent/__main__.py:183-210` | A non-numeric proxy port raises `ValueError` and crashes `--show-config`. | Open | Fix next |
 | Medium | P1-005 | `va_legal_agent/__main__.py:1024-1032` | `_auto_run` discards exception type and traceback, leaving batch failures undebuggable. | Open | Fix next |
