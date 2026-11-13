@@ -3,7 +3,7 @@
 #
 #   sudo deploy/install.sh                     # install to /opt/va-legal-agent + systemd timer
 #   sudo deploy/install.sh --cron              # install and print a cron line instead
-#   deploy/install.sh --target "$HOME/vla"     # install to a user-owned dir (no root)
+#   deploy/install.sh --target "$HOME/vla"     # user-owned dir (no root; cron mode)
 #
 # Env defaults: TARGET, INSTALL_USER, CRON_MIN, CRON_HOUR; --target overrides TARGET.
 #
@@ -12,31 +12,33 @@
 #   2. Creates a venv there and pip-installs the package (network required).
 #   3. Creates .env from .env.example if missing (chmod 600) and an empty issues.txt.
 #   4. Creates a dedicated system user (system targets only).
-#   5. Installs the systemd unit + timer (or prints a cron line with --cron).
+#   5. Installs the systemd unit + timer for system targets, or prints a
+#      matching cron line for --cron/user-owned targets.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${TARGET:-/opt/va-legal-agent}"
 USER_NAME="${INSTALL_USER:-vaagent}"
-MODE_SYSTEMD=1
+MODE="systemd"
 
 usage() {
     cat <<'EOF'
 Usage: deploy/install.sh [--cron] [--target DIR]
 
   --cron        print a cron line instead of installing systemd units
-  --target DIR  install to DIR (default: TARGET env or /opt/va-legal-agent)
+  --target DIR  install to DIR (default: TARGET env or /opt/va-legal-agent);
+                user-owned targets use cron mode
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cron)
-            MODE_SYSTEMD=0
+            MODE="cron"
             shift
             ;;
         --target)
-            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == --* ]]; then
+            if [[ $# -lt 2 || -z "${2:-}" || "${2:-}" == -* ]]; then
                 echo "error: --target requires a directory" >&2
                 usage >&2
                 exit 2
@@ -46,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --target=*)
             TARGET="${1#*=}"
-            if [[ -z "$TARGET" ]]; then
+            if [[ -z "$TARGET" || "$TARGET" == -* ]]; then
                 echo "error: --target requires a directory" >&2
                 usage >&2
                 exit 2
@@ -75,6 +77,14 @@ if [[ "$IS_ROOT_TARGET" -eq 1 && "$(id -u)" -ne 0 ]]; then
     echo "error: $TARGET needs root. Re-run with sudo, or use --target for a user dir:" >&2
     echo "  $0 --target \"\$HOME/va-legal-agent\"" >&2
     exit 1
+fi
+
+# System-wide units are only available for system targets. A user-owned target
+# cannot install into /etc/systemd, so use the cron output instead of failing at
+# the final step.
+if [[ "$IS_ROOT_TARGET" -ne 1 && "$MODE" == "systemd" ]]; then
+    echo "==> User-owned target; using cron mode (systemd units require a system target)." >&2
+    MODE="cron"
 fi
 
 echo "==> Installing DeepSearchAgent to $TARGET"
@@ -123,11 +133,7 @@ else
 fi
 
 # 5. systemd units or cron line.
-if [[ "$MODE_SYSTEMD" -eq 1 ]]; then
-    if [[ "$IS_ROOT_TARGET" -ne 1 ]]; then
-        echo "error: --target without a system dir cannot install systemd units; use --cron instead." >&2
-        exit 1
-    fi
+if [[ "$MODE" == "systemd" ]]; then
     echo "==> Installing systemd units"
     sed "s|__TARGET__|$TARGET|g; s|__USER__|$USER_NAME|g" \
         "$ROOT/deploy/va-legal-agent-batch.service" > "/etc/systemd/system/va-legal-agent-batch.service"
@@ -141,11 +147,20 @@ if [[ "$MODE_SYSTEMD" -eq 1 ]]; then
 else
     CRON_MIN="${CRON_MIN:-30}"
     CRON_HOUR="${CRON_HOUR:-4}"
-    echo "==> Cron setup. Add this line to root's crontab (sudo crontab -e):"
-    echo
-    echo "  ${CRON_MIN} ${CRON_HOUR} * * * flock -n /var/lock/va-legal-agent-batch.lock runuser -u ${USER_NAME} -- ${TARGET}/deploy/run_batch.sh"
-    echo
-    echo "    flock prevents overlapping runs; runuser drops to the service user."
+    if [[ "$IS_ROOT_TARGET" -eq 1 ]]; then
+        echo "==> Cron setup. Add this line to root's crontab (sudo crontab -e):"
+        echo
+        echo "  ${CRON_MIN} ${CRON_HOUR} * * * flock -n /var/lock/va-legal-agent-batch.lock runuser -u ${USER_NAME} -- ${TARGET}/deploy/run_batch.sh"
+        echo
+        echo "    flock prevents overlapping runs; runuser drops to the service user."
+    else
+        CRON_LOCK="${TARGET}/.va-legal-agent-batch.lock"
+        echo "==> Cron setup. Add this line to your crontab (crontab -e):"
+        echo
+        echo "  ${CRON_MIN} ${CRON_HOUR} * * * flock -n ${CRON_LOCK} ${TARGET}/deploy/run_batch.sh"
+        echo
+        echo "    flock prevents overlapping runs; the lock lives in the user-owned target."
+    fi
     echo "    Test immediately with:  ${TARGET}/deploy/run_batch.sh"
 fi
 

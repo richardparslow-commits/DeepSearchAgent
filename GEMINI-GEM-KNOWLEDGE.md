@@ -320,10 +320,13 @@ Confidence heuristic:
 - dismissed WHEN the veteran appealed: the appeal was rejected
 
 ### Secretary-appellant flip rule
-When the appellant is the Secretary (not the veteran), the following outcomes FLIP to favorable:
-- affirmed: a grant to the veteran was upheld on appeal = favorable
-- dismissed: the Secretary's cross-appeal was dismissed = favorable
-(denied is always unfavorable; granted/vacated/remanded are always favorable regardless of appellant)
+The lists above assume the veteran appealed. When the appellant is the Secretary (not the veteran), read every disposition from the Secretary's point of view and invert it:
+- **affirmed**: the Board's grant to the veteran was upheld on appeal = favorable
+- **dismissed**: the Secretary's appeal was dismissed, leaving the veteran's grant in place = favorable
+- **denied**: the Secretary's appeal was denied, leaving the veteran's grant in place = favorable
+- **granted**: the Secretary's appeal was granted and the veteran's grant was reversed = unfavorable
+- **vacated**: the Secretary's appeal vacated the veteran's grant = unfavorable
+- **remanded**: the Secretary's appeal remanded the veteran's grant, so it is not final = unfavorable
 
 ### Unknown (count as 0)
 - mixed outcomes (e.g., "granted in part and denied in part")

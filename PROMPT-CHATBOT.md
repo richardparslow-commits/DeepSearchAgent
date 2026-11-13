@@ -8,7 +8,7 @@ You are helping with **DeepSearchAgent**, a Python CLI and library that research
 
 ## What the app does (pipeline, in order)
 
-1. **Plan** — `planning.py` decomposes a claim issue into a `ResearchPlan`: 4 broad court-site queries plus statute-anchored queries. Deterministic, no network.
+1. **Plan** — `planning.py` decomposes a claim issue into a `ResearchPlan`: 8 broad court-site queries plus statute-anchored queries. Deterministic, no network.
 2. **Search** — `providers.py` fans out 8+ queries across up to 5 backends (DuckDuckGo, CourtListener REST API, BVA via search.usa.gov, BVA sitemap, BVA local index). Each has its own query adaptation, retry/backoff, pacing, and result parsing.
 3. **Refine** — `agent.py` observes uncovered claim elements, generates gap queries, re-searches. Loops until coverage is complete or `SEARCH_MAX_REFINEMENT_ROUNDS` hits. Opt-in citation traversal.
 4. **Enrich** — `fetch.py` pulls citation, date, holding, docket, judge, statutes, outcome from source pages or opinion text.
@@ -17,29 +17,29 @@ You are helping with **DeepSearchAgent**, a Python CLI and library that research
 7. **Rank** — `ranking.py`: authority-tier dominant, then composite score (relevance 60%, recency 25%, completeness 15%), with per-court representation floor.
 8. **Output** — `__main__.py` renders JSON/text/CSV to stdout. Logs + events to stderr.
 
-## Module map (~7,500 lines of package code, ~20,000 lines of tests)
+## Module map (~8,000 lines of package code, ~20,000 lines of tests)
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `__main__.py` | 1,476 | CLI: args, output rendering, batch/auto-run orchestration |
-| `agent.py` | 1,009 | Core pipeline: `analyze_cases_for_claim`, research loop, citation traversal |
+| `__main__.py` | 1,483 | CLI: args, output rendering, batch/auto-run orchestration |
+| `agent.py` | 1,024 | Core pipeline: `analyze_cases_for_claim`, research loop, citation traversal |
 | `providers.py` | 1,759 | Five search backends, query adaptation, telemetry, budget guards |
-| `fetch.py` | 672 | Case detail extraction from HTML/PDF/TXT |
-| `interpretation.py` | 553 | Structured guidance, coverage scoring, contradiction detection |
+| `fetch.py` | 832 | Case detail extraction from HTML/PDF/TXT |
+| `interpretation.py` | 546 | Structured guidance, coverage scoring, contradiction detection |
 | `config.py` | 350 | Typed `Settings` dataclass — every knob from env |
 | `search.py` | 277 | Base DuckDuckGo provider, retry/backoff/pacing |
 | `deep_read.py` | 225 | Chunked map-reduce full-text ingestion |
-| `planning.py` | 210 | Deterministic issue decomposition and gap-refinement |
+| `planning.py` | 211 | Deterministic issue decomposition and gap-refinement |
 | `llm.py` | 233 | OpenAI-compatible client for narrative + reasoning |
 | `ranking.py` | 167 | Authority-tier + composite-score ranking |
-| `topics.py` | 181 | Topic vocabulary, statute hints, court constants |
-| `impact.py` | 162 | Per-case impact analysis |
+| `topics.py` | 182 | Topic vocabulary, statute hints, court constants |
+| `impact.py` | 204 | Per-case impact analysis |
 | `models.py` | 161 | Pydantic models: `LegalAnalysis`, `CaseRecord`, etc. |
 | `queries.py` | 105 | Query variant derivation, provider-specific adaptation |
 | `reliability.py` | 63 | Source classification |
 | `batch.py` | 131 | Batch state tracking |
 | `__init__.py` | 7 | `load_dotenv()` |
-| `webapp.py` | 529 | Flask + Waitress web interface (project root, outside the package) |
+| `webapp.py` | 603 | Flask + Waitress web interface (project root, outside the package) |
 
 ## Configuration surface
 

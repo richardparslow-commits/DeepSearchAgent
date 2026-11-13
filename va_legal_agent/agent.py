@@ -424,18 +424,12 @@ def _raise_if_no_results(
 
 
 def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
-    """Dedupe *cases* by (title, url), (citation, decision_date), and—as
-    a fallback when citation is missing—by URL alone.
+    """Dedupe *cases* by (title, url), URL, and (citation, decision_date).
 
     The same decision often appears at multiple URLs (CourtListener, CAVC,
-    law-blog mirrors) with slightly different titles.  The citation + date
-    pair is the stable identity of an opinion; the secondary key catches the
-    same case across mirrors.
-
-    The reverse problem also occurs: when citation is unavailable, two
-    provider passes can return the same URL with different parsed titles
-    (``"Smith"`` vs ``"Smith v. Wilkie"``).  The URL-only fallback catches
-    these same-page duplicates without needing a citation.
+    law-blog mirrors) with slightly different titles. The citation + date
+    pair is the stable identity of an opinion; the URL key catches the same
+    page when parsed titles differ or one copy lacks citation metadata.
     """
     deduped: list[CaseRecord] = []
     seen: set[tuple[str, str]] = set()
@@ -444,20 +438,20 @@ def _dedupe(cases: list[CaseRecord]) -> list[CaseRecord]:
         key = (case.title, case.url)
         if key in seen:
             continue
-        # Citation + date is the canonical identity of an opinion.  When
-        # both fields are populated, also reject any later case that
-        # shares the same citation and date (same opinion at a different
-        # mirror URL).
+        # The URL is always a same-page identity, regardless of whether the
+        # later copy happens to have citation metadata. Applying this only to
+        # citation-less copies lets an enriched later copy bypass the URL
+        # check and duplicate an earlier, unenriched record.
+        if case.url and case.url in seen_urls:
+            continue
+        # Citation + date is the canonical identity of an opinion. When both
+        # fields are populated, also reject any later case that shares the
+        # same citation and date (same opinion at a different mirror URL).
         if case.citation and case.decision_date:
             citation_key = (case.citation, case.decision_date)
             if citation_key in seen:
                 continue
             seen.add(citation_key)
-        # Citation fallback: when citation isn't available to establish
-        # the opinion's canonical identity, dedupe by URL alone so that
-        # the same page with different parsed titles doesn't appear twice.
-        elif case.url and case.url in seen_urls:
-            continue
         if case.url:
             seen_urls.add(case.url)
         seen.add(key)

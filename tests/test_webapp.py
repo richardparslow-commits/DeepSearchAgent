@@ -1,11 +1,13 @@
 """Focused tests for the web app's env validation and permit cleanup."""
 
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -78,3 +80,172 @@ def test_save_job_failure_releases_permit(
     assert webapp._JOBS == {}
     assert sem.acquire(blocking=False) is True
     sem.release()
+
+
+@pytest.fixture
+def isolated_client(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """Give each test a clean job map and its own WEBAPP_STATE_DIR."""
+    monkeypatch.setenv("WEBAPP_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(webapp, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(webapp, "_JOBS", {})
+    return webapp.app.test_client()
+
+
+def test_status_serializes_snapshot(isolated_client, monkeypatch) -> None:
+    """A status poll must not serialize the live dict the worker mutates."""
+    webapp._JOBS["snapshot"] = {
+        "job_id": "snapshot",
+        "issue": "tinnitus",
+        "status": "running",
+        "started_at": "2026-01-01T00:00:00+00:00",
+    }
+    original_jsonify = webapp.jsonify
+
+    def mutate_payload(payload: dict[str, object]):
+        payload["late_mutation"] = True
+        return original_jsonify(payload)
+
+    monkeypatch.setattr(webapp, "jsonify", mutate_payload)
+
+    response = isolated_client.get("/api/status/snapshot")
+
+    assert response.status_code == 200
+    assert response.get_json()["job_id"] == "snapshot"
+    assert "late_mutation" not in webapp._JOBS["snapshot"]
+
+
+def test_prune_keeps_running_jobs(
+    isolated_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pruning over the cap must not evict a job whose thread is still running."""
+    jobs: dict[str, dict[str, object]] = {
+        "running-oldest": {
+            "job_id": "running-oldest",
+            "issue": "tinnitus",
+            "status": "running",
+            "started_at": "2026-01-01T00:00:00+00:00",
+        }
+    }
+    for index in range(webapp._MAX_JOBS):
+        job_id = f"done-{index}"
+        jobs[job_id] = {
+            "job_id": job_id,
+            "issue": "tinnitus",
+            "status": "done",
+            "started_at": f"2026-01-02T00:00:{index:02d}+00:00",
+        }
+    monkeypatch.setattr(webapp, "_JOBS", jobs)
+
+    webapp._prune()
+
+    assert len(webapp._JOBS) == webapp._MAX_JOBS
+    response = isolated_client.get("/api/status/running-oldest")
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "running"
+
+
+def test_load_jobs_persists_restart_correction(
+    isolated_client, tmp_path: Path
+) -> None:
+    """A restarted running job must be corrected on disk, not just in memory."""
+    persisted = tmp_path / "restart.json"
+    persisted.write_text(
+        json.dumps(
+            {
+                "job_id": "restart",
+                "issue": "tinnitus",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    webapp._load_jobs()
+
+    response = isolated_client.get("/api/status/restart")
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["status"] == "error"
+    assert body["error"] == "interrupted by server restart"
+    on_disk = json.loads(persisted.read_text(encoding="utf-8"))
+    assert on_disk["status"] == "error"
+    assert on_disk["error"] == "interrupted by server restart"
+    assert on_disk["finished_at"]
+
+
+def test_foreign_origin_is_rejected(isolated_client) -> None:
+    """A cross-site page must not be able to start a quota-spending run."""
+    headers = {"Origin": "https://evil.example"}
+    responses = [
+        isolated_client.post("/api/analyze", json={"issue": "tinnitus"}, headers=headers),
+        isolated_client.post("/analyze", data={"issue": "tinnitus"}, headers=headers),
+    ]
+
+    for response in responses:
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "cross-origin request rejected"
+    assert webapp._JOBS == {}
+
+
+def test_rebound_host_is_rejected(isolated_client) -> None:
+    """Matching Origin and Host must not bypass the loopback Host check."""
+    headers = {
+        "Host": "rebound.example:8080",
+        "Origin": "http://rebound.example:8080",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+    response = isolated_client.post(
+        "/api/analyze", json={"issue": "tinnitus"}, headers=headers
+    )
+
+    assert response.status_code == 400
+    assert webapp._JOBS == {}
+
+
+@pytest.mark.parametrize("host", ["localhost:8080", "127.0.0.1:8080"])
+def test_loopback_hosts_are_accepted(isolated_client, host: str) -> None:
+    """The Host allowlist still accepts normal loopback URLs."""
+    response = isolated_client.get("/", headers={"Host": host})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/analyze", {"data": {"issue": "tinnitus"}}),
+        ("/api/analyze", {"json": {"issue": "tinnitus"}}),
+    ],
+)
+def test_same_origin_submissions_are_accepted(
+    isolated_client, monkeypatch: pytest.MonkeyPatch, path: str, payload: dict
+) -> None:
+    """Valid same-origin form/API submissions must pass the Host guard."""
+    # Keep the accepted request from starting a real analysis.
+    sem = Mock()
+    sem.acquire.return_value = True
+    monkeypatch.setattr(webapp, "_SEM", sem)
+    monkeypatch.setattr(webapp.threading, "Thread", Mock())
+    headers = {
+        "Origin": "http://localhost",
+        "Sec-Fetch-Site": "same-origin",
+    }
+
+    response = isolated_client.post(path, headers=headers, **payload)
+
+    assert response.status_code == 200
+    assert response.get_json()["run_id"]
+
+
+def test_issue_length_is_capped(isolated_client) -> None:
+    response = isolated_client.post(
+        "/api/analyze", json={"issue": "x" * (webapp._MAX_ISSUE_LENGTH + 1)}
+    )
+
+    assert response.status_code == 400
+    assert "at most 2000 characters" in response.get_json()["error"]
+    assert webapp._JOBS == {}

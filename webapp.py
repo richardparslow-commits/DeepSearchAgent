@@ -8,6 +8,9 @@ polling the status until the analysis is ready and rendering it as text
 Production hardening:
 - Served by **waitress** (pure-Python WSGI) instead of the Flask dev server
   when available; falls back to the dev server with a warning.
+- **Strict loopback Host validation**: Flask's ``TRUSTED_HOSTS`` accepts only
+  ``localhost`` and ``127.0.0.1``, blocking DNS-rebinding pages even when their
+  ``Origin`` matches their Host.
 - **Job persistence**: every job is written atomically to
   ``WEBAPP_STATE_DIR`` (default ``.webapp/`` next to this file), so completed
   runs survive restarts. A job left in ``running`` at startup is marked
@@ -43,8 +46,15 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import (
+    Flask,
+    has_request_context,
+    jsonify,
+    render_template_string,
+    request,
+)
 
 from va_legal_agent.__main__ import render_analysis
 from va_legal_agent.agent import analyze_cases_for_claim
@@ -54,6 +64,7 @@ _APP_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
 _MAX_JOBS = 50
 _RUNS_LIMIT = 20
+_MAX_ISSUE_LENGTH = 2000
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -83,6 +94,7 @@ _LOCK = threading.Lock()
 _SEM = threading.BoundedSemaphore(_MAX_CONCURRENT)
 
 app = Flask(__name__)
+app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
 
 
 def _now_iso() -> str:
@@ -92,6 +104,31 @@ def _now_iso() -> str:
 
 def _job_path(job_id: str) -> Path:
     return STATE_DIR / f"{job_id}.json"
+
+
+def _same_origin_request() -> bool:
+    """Return whether a POST came from this app's own origin.
+
+    Browsers send ``Origin`` on cross-origin POSTs (and on same-origin POSTs);
+    ``Sec-Fetch-Site`` is the fallback for clients that omit it. Requests with
+    neither header are non-browser callers and are allowed. Flask's
+    ``TRUSTED_HOSTS`` guard runs first, so ``host_url`` cannot be attacker-controlled.
+    """
+    if not has_request_context():
+        return True
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        try:
+            candidate = urlsplit(origin)
+            expected = urlsplit(request.host_url)
+        except ValueError:
+            return False
+        return (
+            candidate.scheme.lower() == expected.scheme.lower()
+            and candidate.netloc.lower() == expected.netloc.lower()
+        )
+    fetch_site = request.headers.get("Sec-Fetch-Site", "same-origin")
+    return fetch_site.lower() in {"same-origin", "none"}
 
 
 def _save_job(job: dict[str, object]) -> None:
@@ -115,9 +152,18 @@ def _save_job(job: dict[str, object]) -> None:
 
 
 def _prune() -> None:
-    """Drop the oldest jobs once the cap is hit (memory and disk)."""
+    """Drop the oldest completed jobs once the cap is hit (memory and disk)."""
     while len(_JOBS) > _MAX_JOBS:
-        oldest = min(_JOBS, key=lambda jid: _JOBS[jid].get("started_at") or "")
+        candidates = [
+            jid for jid, job in _JOBS.items() if job.get("status") != "running"
+        ]
+        if not candidates:
+            # Running jobs own a thread and must finish before they can be
+            # evicted; the cap is re-applied when each one saves its result.
+            break
+        oldest = min(
+            candidates, key=lambda jid: _JOBS[jid].get("started_at") or ""
+        )
         _JOBS.pop(oldest, None)
         try:
             _job_path(oldest).unlink()
@@ -138,12 +184,15 @@ def _load_jobs() -> None:
             job = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if job.get("status") == "running":
+        corrected = job.get("status") == "running"
+        if corrected:
             job["status"] = "error"
             job["error"] = "interrupted by server restart"
             job["finished_at"] = _now_iso()
         if job.get("job_id"):
             _JOBS[job["job_id"]] = job
+            if corrected:
+                _save_job(job)
     _prune()
 
 
@@ -219,9 +268,15 @@ def _start_job(
     acquired here and released by the job thread, so the cap is exact even
     across both endpoints.
     """
+    if not _same_origin_request():
+        return {"error": "cross-origin request rejected"}, 403
     issue = (issue or "").strip()
     if not issue:
         return {"error": "issue is required"}, 400
+    if len(issue) > _MAX_ISSUE_LENGTH:
+        return {
+            "error": f"issue must be at most {_MAX_ISSUE_LENGTH} characters"
+        }, 400
 
     max_results = _int_or_none(max_results_raw)
     if max_results is None:
@@ -293,6 +348,8 @@ def api_analyze():
 def status(job_id: str):
     with _LOCK:
         job = _JOBS.get(job_id)
+        if job is not None:
+            job = dict(job)
     if job is None:
         return jsonify({"error": "unknown run"}), 404
     return jsonify(job)

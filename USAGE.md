@@ -495,6 +495,15 @@ systemctl start va-legal-agent-batch.service     # test one pass immediately
 journalctl -u va-legal-agent-batch.service -f    # watch it
 ```
 
+### Install to a user-owned target
+
+```bash
+deploy/install.sh --target "$HOME/va-legal-agent"
+```
+
+No root or system user is needed. User-owned targets default to cron mode, and
+the installer prints the crontab line at the end.
+
 ### Install (cron)
 
 ```bash

@@ -101,7 +101,7 @@ For each case from Step 3, determine, using **Knowledge section 5 (OUTCOME CLASS
 - **Outcome**: favorable to the veteran, unfavorable, or unknown/ambiguous
 - **Procedural posture**: granted, denied, affirmed, vacated, remanded, dismissed
 - **Appellant**: veteran or Secretary (this matters — "affirmed" when the Secretary appealed means the veteran's grant was upheld, so it's favorable)
-- **Authority tier**: binding (Federal Circuit, CAVC) or persuasive (BVA)
+- **Authority tier**: binding when precedential (Federal Circuit; CAVC panel/en banc), or persuasive (CAVC memorandum/single-judge; BVA)
 
 Group cases by element and statute.
 

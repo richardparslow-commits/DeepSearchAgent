@@ -18,7 +18,7 @@ from .fetch import extract_statutes
 from .impact import detect_outcome
 from .llm import interpret_cases, reason_cases
 from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding, StatuteOutcomeRow
-from .topics import PRINCIPLE_PATTERNS, TOPICS
+from .topics import COURT_SUPREME, PRINCIPLE_PATTERNS, TOPICS
 
 @dataclass(frozen=True)
 class ElementSpec:
@@ -340,7 +340,7 @@ def uncovered_element_names(issue: str, cases: list[CaseRecord]) -> tuple[str, .
 # ── Statute × Court × Outcome matrix ────────────────────────────────────────
 
 _COURT_ORDER = ["Board of Veterans' Appeals", "Court of Appeals for Veterans Claims",
-                "U.S. Court of Appeals for the Federal Circuit", "Supreme Court of the United States"]
+                "U.S. Court of Appeals for the Federal Circuit", COURT_SUPREME]
 
 
 def _court_sort_key(court: str) -> int:

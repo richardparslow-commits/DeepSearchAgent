@@ -25,7 +25,7 @@ def test_detect_issue_topics_maps_intent_to_elements():
 def test_relevant_statutes_follow_detected_topics():
     assert relevant_statutes(("service connection",)) == ("1110", "1131", "3.303")
     assert relevant_statutes(("rating",)) == ("4.1",)
-    assert relevant_statutes(("duty to assist",)) == ("5103", "3.159")
+    assert relevant_statutes(("duty to assist",)) == ("5103", "5103A", "3.159")
     assert relevant_statutes(()) == ()
 
 

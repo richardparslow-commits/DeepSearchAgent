@@ -12,9 +12,10 @@ tests. Findings whose fixes are in the tree are marked **FIXED** below.
 `ruff 0.17.5`, GNU bash and make on Linux.
 
 **Document status:** regenerated Pass 3 in the Pass 1 format on 2026-11-13. IDs `P3-001` …
-`P3-022` are preserved. The working tree now contains fixes for `P3-005`, `P3-009`,
-`P3-010`, `P3-011`, `P3-012`, `P3-014` and `P3-017`; the totals distinguish fixed from
-open. Where a fixed finding no longer reproduces, the regression test is the executed
+`P3-022` are preserved. The working tree now contains fixes for `P3-001`, `P3-002`,
+`P3-004`, `P3-005`, `P3-008`, `P3-009`, `P3-010`, `P3-011`, `P3-012`, `P3-014` and
+`P3-017`; the totals distinguish fixed from open. Where a fixed finding no longer
+reproduces, the regression test is the executed
 evidence. The committed `pyproject.toml` still carries the pass-scoped `[tool.mutmut]`
 selection called out in `P3-009`; the script now restores the file, but that residue is
 separate from the rewrite defect.
@@ -29,9 +30,9 @@ not paraphrased. Findings are ordered by file, not by severity.
 
 | File | Total lines verified | Findings | Fixed | Open |
 |---|---:|---:|---:|---:|
-| `webapp.py` | 529 | 5 | 1 | 4 |
+| `webapp.py` | 529 | 5 | 4 | 1 |
 | `va_legal_agent/batch.py` | 131 | 2 | 0 | 2 |
-| `scripts/mutmut_pass.py` | 225 | 2 | 1 | 1 |
+| `scripts/mutmut_pass.py` | 225 | 2 | 2 | 0 |
 | `scripts/check_mutation_baseline.py` | 115 | 1 | 1 | 0 |
 | `scripts/_apply_mutant.py` | 112 | 0 | 0 | 0 |
 | `scripts/smoke_search.py` | 62 | 0 | 0 | 0 |
@@ -45,15 +46,14 @@ not paraphrased. Findings are ordered by file, not by severity.
 | `requirements.txt`, `requirements-dev.txt` | 18 | 1 | 0 | 1 |
 | `.mutation-baseline.json` | 18 | 1 | 0 | 1 |
 | `.env.example` | 202 | 1 | 0 | 1 |
-| **Total** | **1,932** | **22** | **7** | **15** |
+| **Total** | **1,932** | **22** | **11** | **11** |
 
-Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **2 High, 3 Medium,
-2 Low**. Open: **1 High, 7 Medium, 7 Low**.
+Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **3 High, 5 Medium,
+3 Low**. Open: **0 High, 5 Medium, 6 Low**.
 
 The three High findings form one chain: `P3-008` (a crashed mutmut pass reports zero
 survivors), `P3-010` (a missing survivor file is only a warning) and `P3-014`
-(`providers`/`queries` passes are explicitly allowed to fail). `P3-010` and `P3-014` are
-fixed; `P3-008` remains the open link.
+(`providers`/`queries` passes are explicitly allowed to fail). All three are fixed.
 
 ---
 
@@ -63,11 +63,11 @@ The app binds `127.0.0.1` by default (`webapp.py:528-529`), which is the right d
 a tool that spends provider quota and LLM credits. The findings below concern state shared
 between request threads and job threads, and what happens to it across restarts.
 
-### P3-001 — Concurrent state — Medium
+### P3-001 — Concurrent state — Medium — **FIXED**
 
 **Location:** `webapp.py:274-279` (`status`), concurrent mutation at `webapp.py:164-172`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
 @app.get("/api/status/<job_id>")
 def status(job_id: str):
@@ -86,20 +86,23 @@ has no `try`/`catch` around `res.json()`, so the error is an unhandled rejection
 stops for that run — the user sees “Running…” forever. The window is small but polls arrive
 every 2 s per open tab, and the update is the largest write of the run.
 
-**Evidence:** with `jsonify` replaced by an identity function to capture the object Flask
-would serialize:
+**Fix:** copy the job while holding `_LOCK` before leaving the lock, so `jsonify` receives a
+detached snapshot. Worker updates can no longer change the dict during serialization.
+
+**Evidence:**
 ```text
-same object as _JOBS entry: True
+$ .venv/bin/python -m pytest -q tests/test_webapp.py
+10 passed in 2.67s
 ```
+Regression test: `test_status_serializes_snapshot` mutates the payload inside a
+monkeypatched `jsonify`; the mutation never reaches `_JOBS["snapshot"]`, and the test-client
+response still returns the job.
 
-**Remediation:** snapshot inside the lock: `job = dict(_JOBS.get(job_id) or {})` (or copy
-under `_LOCK` and return the copy).
-
-### P3-002 — Job retention — Medium
+### P3-002 — Job retention — Medium — **FIXED**
 
 **Location:** `webapp.py:98-107` (`_prune`), `webapp.py:145-183` (`_run_job`)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
 def _prune() -> None:
     """Drop the oldest jobs once the cap is hit (memory and disk)."""
@@ -126,14 +129,18 @@ leaves no record at all. The permit is released in `finally`, so the cap stays c
 user's poll returns 404 (“unknown run”) with no error message. `_MAX_CONCURRENT` defaults
 to 2, so a long `max_wall_seconds` run plus a burst of submissions is the realistic trigger.
 
-**Evidence:** create 51 running jobs and call `_prune()`:
-```text
-jobs after prune: 50 oldest survived: False
-```
+**Fix:** each prune pass considers only jobs whose status is not `running`; if no completed
+candidate exists, it stops. Running jobs are pruned only after they save a terminal status
+and re-enter `_prune()`.
 
-**Remediation:** skip running jobs when choosing the oldest entry; prune only completed
-jobs, or refuse to prune while every candidate is running. Add a regression test with
-`_MAX_JOBS + 1` running jobs.
+**Evidence:**
+```text
+$ .venv/bin/python -m pytest -q tests/test_webapp.py
+10 passed in 2.67s
+```
+Regression test: `test_prune_keeps_running_jobs` creates 51 jobs with the oldest running
+and 50 done; after `_prune()` the running job still returns 200 from
+`/api/status/running-oldest`, and the map is back at the cap.
 
 ### P3-003 — Security — Medium
 
@@ -167,11 +174,11 @@ status: 200 body: {'run_id': 'probe'}
 `Host` allowlist; require an optional per-startup token for POSTs; keep the server bound to
 loopback. Add test-client coverage for missing and foreign origins.
 
-### P3-004 — Persistence — Low
+### P3-004 — Persistence — Low — **FIXED**
 
 **Location:** `webapp.py:124-139` (`_load_jobs`)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
         if job.get("status") == "running":
             job["status"] = "error"
@@ -186,14 +193,17 @@ dict is only inserted into `_JOBS`; the JSON file still says `running`. A later 
 repeats the correction, and any reader of `.webapp/<id>.json` sees a live status for a job
 that can never finish.
 
+**Fix:** after inserting the corrected job into `_JOBS`, call `_save_job(job)` so the
+atomic JSON file is rewritten with the terminal error state.
+
 **Evidence:**
 ```text
-in-memory status: error
-on-disk status: running
+$ .venv/bin/python -m pytest -q tests/test_webapp.py
+10 passed in 2.67s
 ```
-
-**Remediation:** call `_save_job(job)` after the correction (or write the corrected file
-atomically) and add a restart test that reads the file back.
+Regression test: `test_load_jobs_persists_restart_correction` writes a `running` job,
+calls `_load_jobs()`, and asserts both that `/api/status/restart` returns `error` and that
+the on-disk JSON now contains the corrected status, message and `finished_at`.
 
 ### P3-005 — Configuration — Low — **FIXED**
 
@@ -295,12 +305,12 @@ batch1.jsonl batch1.jsonl same path: True
 
 ## `scripts/mutmut_pass.py` (Total Lines Verified: 225)
 
-### P3-008 — Mutation gate — High
+### P3-008 — Mutation gate — High — **FIXED**
 
 **Location:** `scripts/mutmut_pass.py:126-147` (pre-fix subprocess calls; current lines
 `143`/`148`)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
     subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--cov=" + dotted, *tests],
@@ -329,19 +339,21 @@ guard is skipped precisely because it also requires a non-empty list. The script
 `### <module>: 0 survivors`, which `check_mutation_baseline.py` accepts as a perfect score.
 A module can therefore be entirely unmeasured and still satisfy the 100%-kill gate.
 
-**Evidence:**
-```text
-$ grep -n 'returncode\|"mutmut", "run"\|"mutmut", "results"' scripts/mutmut_pass.py
-58:        if applied.returncode != 0:
-73:        return "killed" if proc.returncode != 0 else "survived"
-143:            [sys.executable, "-m", "mutmut", "run", "--max-children", "1"],
-148:            [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
-```
-No check follows lines 143 or 148.
+**Fix:** `_require_success()` checks the exit code of the coverage run, `mutmut run` and
+`mutmut results`. A non-zero code prints the failing command, its exit code and captured
+stderr, then exits 1 before any survivor file is written. An empty `mutmut results` output
+remains valid when every mutant was killed; the existing all-“not checked” guard still
+catches a pass that produced result lines but executed none of them.
 
-**Remediation:** capture each result and exit non-zero with the captured stderr when
-`pytest --cov`, `mutmut run` or `mutmut results` fails; treat an empty `results` as fatal
-regardless of `result_lines`, not only when it contains “not checked”.
+**Evidence:** the failure-path regression is parameterised over all three commands:
+```text
+$ .venv/bin/python -m pytest -q tests/test_mutmut_pass.py \
+    tests/test_check_mutation_baseline.py tests/test_mutation_gate_integrity.py
+11 passed in 0.34s
+```
+Regression test: `test_main_fails_when_required_command_fails` covers the coverage run,
+`mutmut run` and `mutmut results`; each case asserts exit 1, the captured stderr, and
+restoration of `pyproject.toml`.
 
 ### P3-009 — Mutation configuration — Medium — **FIXED**
 

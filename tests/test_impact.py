@@ -26,6 +26,7 @@ def _case(
     outcome="",
     statutes=None,
     appellant_role="",
+    precedential=True,
 ):
     return CaseRecord(
         title=title,
@@ -38,6 +39,7 @@ def _case(
         outcome=outcome,
         statutes=statutes or [],
         appellant_role=appellant_role,
+        precedential=precedential,
     )
 
 
@@ -164,6 +166,21 @@ def test_statute_note_mapping():
     assert statute_note_for([]) == ""
 
 
+def test_statute_note_distinguishes_notice_from_duty_to_assist():
+    notice = statute_note_for(["38 U.S.C. § 5103"])
+    duty = statute_note_for(["38 U.S.C. § 5103A"])
+
+    assert notice == (
+        "The analysis engages the notice requirements of 38 U.S.C. § 5103, "
+        "which can anchor briefing."
+    )
+    assert duty == (
+        "The analysis engages the duty to assist under 38 U.S.C. § 5103A, "
+        "which can anchor briefing."
+    )
+    assert notice != duty
+
+
 def test_statute_note_single_hint_is_exact():
     assert statute_note_for(["38 U.S.C. § 5107(b)"]) == (
         "The analysis engages the benefit-of-the-doubt rule under 38 U.S.C. § 5107(b), "
@@ -207,6 +224,20 @@ def test_authority_note_binding_vs_board_vs_unknown():
     assert authority_note_for("Veterans law research result") == (
         "The issuing body is unidentified, so treat this ruling as persuasive only."
     )
+
+
+def test_authority_note_nonprecedential_cavc_is_persuasive():
+    assert authority_note_for(CAVC, precedential=False) == (
+        "As a non-precedential appellate decision, this ruling is persuasive only "
+        "and is not binding on the Board or VA adjudicators."
+    )
+
+
+def test_analyze_case_impact_nonprecedential_cavc_uses_persuasive_note():
+    profile = analyze_case_impact(_case(court=CAVC, precedential=False))
+
+    assert profile.authority_note == authority_note_for(CAVC, precedential=False)
+    assert "persuasive only" in profile.nuance
 
 
 def test_nuance_layers_posture_statute_and_authority_notes():

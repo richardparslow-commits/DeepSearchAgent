@@ -75,6 +75,19 @@ def _reverify_segfault(name: str, tests: list[str], target: str) -> str:
         Path(target).write_bytes(original)
 
 
+def _require_success(proc: subprocess.CompletedProcess[str], label: str) -> None:
+    """Abort the pass when a required subprocess fails."""
+    if proc.returncode == 0:
+        return
+    print(
+        f"FATAL: {label} failed with exit code {proc.returncode}",
+        file=sys.stderr,
+    )
+    if proc.stderr:
+        print(proc.stderr, file=sys.stderr)
+    sys.exit(1)
+
+
 @contextmanager
 def _scoped_pyproject(target: str, tests: list[str]) -> Iterator[None]:
     """Point [tool.mutmut] at one module for the pass, then restore the file."""
@@ -135,18 +148,23 @@ def main() -> None:
         (Path("mutants") / "mutmut-stats.json").unlink(missing_ok=True)
 
         subprocess.run(["rm", "-f", ".coverage"])
-        subprocess.run(
+        coverage = subprocess.run(
             [sys.executable, "-m", "pytest", "-q", "--cov=" + dotted, *tests],
             capture_output=True,
+            text=True,
         )
-        subprocess.run(
+        _require_success(coverage, "pytest coverage run")
+        run = subprocess.run(
             [sys.executable, "-m", "mutmut", "run", "--max-children", "1"],
             capture_output=True,
+            text=True,
         )
+        _require_success(run, "mutmut run")
 
         result = subprocess.run(
             [sys.executable, "-m", "mutmut", "results"], capture_output=True, text=True
         )
+        _require_success(result, "mutmut results")
         result_lines = [ln for ln in result.stdout.splitlines() if ":" in ln]
         checked = [
             ln for ln in result_lines if ln.rsplit(":", 1)[1].strip() != "not checked"

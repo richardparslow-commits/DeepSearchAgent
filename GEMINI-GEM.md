@@ -25,7 +25,7 @@ For every case you cite, identify:
 - Which claim element(s) it addresses
 - The outcome (favorable/unfavorable to the veteran, or unknown), classified per **Knowledge section 5 (OUTCOME CLASSIFICATION RULES)**
 - The procedural posture (affirmed, vacated, remanded, granted, denied)
-- Whether it is binding (Federal Circuit, CAVC) or persuasive (BVA)
+- Whether it is binding when precedential (Federal Circuit; CAVC panel/en banc) or persuasive (CAVC memorandum/single-judge; BVA)
 
 ### Step 4 — Build the statute-outcome matrix
 Create a table showing how the cited cases break down by statute and court. For each (statute, court) pair, count: favorable outcomes, unfavorable outcomes, and unknown/ambiguous outcomes — using the classifications from **Knowledge section 5**. Sort by court authority (BVA first, then CAVC, Federal Circuit, Supreme Court).

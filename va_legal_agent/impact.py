@@ -9,6 +9,8 @@ public decisions, not legal advice.
 
 from __future__ import annotations
 
+import re
+
 from .fetch import extract_outcome, extract_statutes
 from .models import CaseRecord, ImpactProfile
 from .topics import (
@@ -130,9 +132,23 @@ def detect_statutes(case: CaseRecord) -> list[str]:
     return list(case.statutes) or extract_statutes(_impact_text(case))
 
 
+def _statute_hint_matches(fragment: str, statute: str) -> bool:
+    """Match a statute fragment as a section token, not a substring.
+
+    A plain substring check makes ``5103`` match inside ``5103A``; section
+    boundaries keep the notice and duty-to-assist provisions distinct.
+    """
+    pattern = rf"(?<![0-9A-Za-z.]){re.escape(fragment)}(?![0-9A-Za-z.])"
+    return re.search(pattern, statute) is not None
+
+
 def statute_note_for(statutes: list[str]) -> str:
     """Build the statutory-anchor note for the given statutes."""
-    hints = [hint for key, hint in STATUTE_HINTS if any(key in statute for statute in statutes)]
+    hints = [
+        hint
+        for key, hint in STATUTE_HINTS
+        if any(_statute_hint_matches(key, statute) for statute in statutes)
+    ]
     if hints:
         joined = hints[0] + (f" and {hints[1]}" if len(hints) > 1 else "")
         return f"The analysis engages {joined}, which can anchor briefing."
@@ -141,9 +157,19 @@ def statute_note_for(statutes: list[str]) -> str:
     return ""
 
 
-def authority_note_for(court: str) -> str:
-    """Describe the weight of authority for the issuing body."""
+def authority_note_for(court: str, precedential: bool = True) -> str:
+    """Describe the weight of authority for the issuing body.
+
+    ``precedential=False`` demotes an otherwise binding appellate court to
+    persuasive authority. BVA decisions remain non-binding regardless of the
+    flag.
+    """
     if court in BINDING_COURTS:
+        if not precedential:
+            return (
+                "As a non-precedential appellate decision, this ruling is persuasive only "
+                "and is not binding on the Board or VA adjudicators."
+            )
         return "As appellate precedent, this ruling is binding on the Board and VA adjudicators."
     if court == BOARD_COURT:
         return "As a Board-level decision, this ruling is persuasive but not binding precedent."
@@ -157,7 +183,7 @@ def analyze_case_impact(case: CaseRecord) -> ImpactProfile:
     statutes = detect_statutes(case)
     outcome_note = outcome_note_for(outcome, case.appellant_role)
     statute_note = statute_note_for(statutes)
-    authority_note = authority_note_for(case.court)
+    authority_note = authority_note_for(case.court, case.precedential)
 
     parts = [f"This ruling is relevant to {', '.join(tags[:3])} in VA compensation claims."]
     if outcome_note:

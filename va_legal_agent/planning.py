@@ -31,6 +31,7 @@ _TOPIC_STATUTES: dict[str, tuple[str, ...]] = {
     "1110": ("service connection",),
     "1131": ("service connection",),
     "5103": ("duty to assist",),
+    "5103A": ("duty to assist",),
     "3.303": ("service connection",),
     "3.159": ("duty to assist",),
     "4.1": ("rating",),

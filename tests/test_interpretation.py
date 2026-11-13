@@ -1,6 +1,7 @@
 """Tests for the interpretive analysis layer (va_legal_agent.interpretation)."""
 
 from va_legal_agent.interpretation import (
+    _COURT_ORDER,
     _build_element_library,
     _outcome_direction,
     build_interpretive_analysis,
@@ -12,7 +13,7 @@ from va_legal_agent.interpretation import (
 )
 from va_legal_agent.llm import ReasoningResult
 from va_legal_agent.models import CaseRecord, Contradiction
-from va_legal_agent.topics import TOPICS
+from va_legal_agent.topics import COURT_SUPREME, TOPICS
 
 
 def _case(
@@ -954,6 +955,10 @@ def test_weighted_coverage_element_carries_weight_in_model():
 
 
 # ── Statute × Court × Outcome matrix ─────────────────────────────────────────
+
+
+def test_court_order_uses_canonical_supreme_court_constant():
+    assert _COURT_ORDER[-1] == COURT_SUPREME
 
 
 def test_statute_outcome_matrix_empty_cases():

@@ -3190,6 +3190,21 @@ def test_dedupe_no_citations():
     assert len(result) == 2
 
 
+def test_dedupe_same_url_with_citation_after_unenriched_copy_is_deduped():
+    """A citation-bearing copy must not bypass the URL check and duplicate
+    an earlier unenriched record for the same page."""
+    cases = [
+        CaseRecord(title="Smith", court="CAVC", url="https://a.com/smith",
+                   authority_weight=2, relevance_score=10),
+        CaseRecord(title="Smith v. Wilkie", court="CAVC", url="https://a.com/smith",
+                   citation="30 Vet.App. 1", decision_date="2018-01-15",
+                   authority_weight=2, relevance_score=7),
+    ]
+    result = _dedupe(cases)
+    assert len(result) == 1
+    assert result[0].url == "https://a.com/smith"
+
+
 def test_dedupe_citation_fallback_same_url_different_title_no_citation():
     """Same URL with different titles and no citation — deduped by URL
     fallback (the reverse-mirror problem)."""

@@ -4,9 +4,9 @@ You are working on **DeepSearchAgent**, a Python CLI and library that researches
 
 ## What the app does (pipeline, in order)
 
-1. **Plan** — `planning.py` decomposes a claim issue into a `ResearchPlan`: 4 broad court-site queries (CAVC, Federal Circuit, Supreme Court, BVA) plus statute-anchored queries for detected claim elements. No network, no LLM — entirely deterministic.
+1. **Plan** — `planning.py` decomposes a claim issue into a `ResearchPlan`: 8 broad court-site queries (CAVC, Federal Circuit, Supreme Court, BVA) plus statute-anchored queries for detected claim elements. No network, no LLM — entirely deterministic.
 
-2. **Search** — `providers.py` fans out 8+ queries across up to 5 pluggable backends (DuckDuckGo, CourtListener v4 REST API, BVA via search.usa.gov, BVA via va.gov sitemap, BVA via local on-disk index). Each backend has its own query adaptation, retry/backoff, pacing, and result parsing. Results are merged, deduplicated by URL, and capped.
+2. **Search** — `providers.py` fans out 8+ queries across up to 5 pluggable backends (DuckDuckGo, CourtListener v4 REST API, BVA via search.usa.gov, BVA via va.gov sitemap, BVA via local on-disk index). Each backend has its own query adaptation, retry/backoff, pacing, and result parsing. Results are merged, deduplicated by title/URL and citation/date (with a same-URL fallback), and capped.
 
 3. **Refine** — `agent.py` observes which claim elements are uncovered, generates gap-refinement queries via `refine_plan()`, and re-searches. Loops until coverage is complete or `SEARCH_MAX_REFINEMENT_ROUNDS` is hit. Opt-in `CITATION_TRAVERSAL` follows CourtListener citation trails.
 
@@ -20,29 +20,29 @@ You are working on **DeepSearchAgent**, a Python CLI and library that researches
 
 8. **Output** — `__main__.py` renders JSON, text, or CSV. Analysis goes to stdout; logs and terminal events (`analysis_complete`/`analysis_failed`) go to stderr.
 
-## Module map (~7,500 lines of package code, ~20,000 lines of tests)
+## Module map (~8,000 lines of package code, ~20,000 lines of tests)
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `__main__.py` | 1,476 | CLI entry point: arg parsing, output rendering, batch/auto-run orchestration |
-| `agent.py` | 1,009 | Core pipeline: `analyze_cases_for_claim`, `fetch_cases_for_issue`, research loop, citation traversal |
+| `__main__.py` | 1,483 | CLI entry point: arg parsing, output rendering, batch/auto-run orchestration |
+| `agent.py` | 1,024 | Core pipeline: `analyze_cases_for_claim`, `fetch_cases_for_issue`, research loop, citation traversal |
 | `providers.py` | 1,759 | Search providers: DuckDuckGo, CourtListener, BVA (search.usa.gov), BVA sitemap, BVA local index; query adaptation/minimization; telemetry rollup; budget guards |
-| `fetch.py` | 672 | Case detail extraction from HTML/PDF/TXT: citation, date, holding, docket, judge, statutes, outcome |
-| `interpretation.py` | 553 | Structured guidance: element library, principle scanning, coverage scoring, contradiction detection, narrative building |
+| `fetch.py` | 832 | Case detail extraction from HTML/PDF/TXT: citation, date, holding, docket, judge, statutes, outcome |
+| `interpretation.py` | 546 | Structured guidance: element library, principle scanning, coverage scoring, contradiction detection, narrative building |
 | `config.py` | 350 | Typed `Settings` dataclass: every runtime knob read from env, with parsing helpers |
 | `search.py` | 277 | Base DuckDuckGo provider, retry/backoff/pacing utilities, HTTP proxy support |
 | `deep_read.py` | 225 | Chunked map-reduce full-text ingestion |
-| `planning.py` | 210 | Deterministic issue decomposition, query plan generation, gap-refinement |
+| `planning.py` | 211 | Deterministic issue decomposition, query plan generation, gap-refinement |
 | `llm.py` | 233 | OpenAI-compatible client: narrative interpretation + reconciling reasoning pass |
 | `ranking.py` | 167 | Authority-tier + composite-score ranking with per-court representation floor |
-| `topics.py` | 181 | Topic vocabulary, statute hints, court constants, principle patterns |
-| `impact.py` | 162 | Per-case impact analysis: issue tags, procedural posture, statutory anchors, authority weight |
+| `topics.py` | 182 | Topic vocabulary, statute hints, court constants, principle patterns |
+| `impact.py` | 204 | Per-case impact analysis: issue tags, procedural posture, statutory anchors, authority weight |
 | `models.py` | 161 | Pydantic models: `LegalAnalysis`, `CaseRecord`, `ClaimElement`, `Contradiction`, `PrincipleFinding`, `StatuteOutcomeRow` |
 | `queries.py` | 105 | Query variant derivation, provider-specific adaptation |
 | `reliability.py` | 63 | Source classification (official/secondary/unknown) |
 | `batch.py` | 131 | Batch state tracking for `--batch-size` / `--auto-run` |
 | `__init__.py` | 7 | `load_dotenv()` |
-| `webapp.py` | 529 | Flask + Waitress web interface (outside the package, in project root) |
+| `webapp.py` | 603 | Flask + Waitress web interface (outside the package, in project root) |
 
 ## Configuration surface
 
@@ -59,7 +59,7 @@ Every runtime knob is a typed field in `Settings` (`config.py`), driven by envir
 ## Quality gates (strict — every change must pass all)
 
 - **Lint**: `ruff` (rules E, F, W; E501 ignored). `make lint`
-- **Tests**: 1,148+ tests, ~11s runtime. `make test` / `make test-w` (warnings as errors)
+- **Tests**: 1,211 tests, ~12s runtime. `make test` / `make test-w` (warnings as errors)
 - **Coverage**: 100% line + branch, enforced by `--cov-fail-under=100`. `make coverage`
 - **Mutation kill-gate**: mutmut pass per module against its test slice; survivors triaged into `.mutation-baseline.json`. `make mutate-check`
 
