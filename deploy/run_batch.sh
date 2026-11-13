@@ -8,7 +8,8 @@
 # Behaviour:
 #   MODE=auto (default)  -> --auto-run: executes what fits the current quota
 #                           windows, waits for the CourtListener daily reset,
-#                           and repeats until every issue has been run.
+#                           and repeats under a bounded retry limit; an
+#                           incomplete batch exits non-zero.
 #   MODE=plan            -> --batch-dry-run only: writes the plan + retry file,
 #                           no searches executed (safe to run anywhere, any time).
 #
@@ -24,6 +25,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# systemd sets WorkingDirectory, but cron/runuser does not.  Run from ROOT so
+# .env and relative index paths resolve identically under both launch paths.
+cd "$ROOT"
 PY="${PY:-$ROOT/.venv/bin/python}"
 ISSUES_FILE="${ISSUES_FILE:-$ROOT/issues.txt}"
 LOG_DIR="${LOG_DIR:-$ROOT/logs}"

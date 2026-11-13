@@ -5,20 +5,20 @@
 `.mutation-baseline.json`, `.env.example`.
 
 **Audited commit:** `5b85310` (Merge pull request #2). The working tree contains the Pass 1
-`fetch.py` fixes, the remediation for seven Pass 3 findings, and the associated regression
-tests. Findings whose fixes are in the tree are marked **FIXED** below.
+`fetch.py` fixes, the remediation for the Pass 3 findings marked **FIXED** below, and the
+associated regression tests.
 
 **Environment:** Python 3.12.3, project `.venv`, Flask 3.1.3, `pytest 9.2.0`,
 `ruff 0.17.5`, GNU bash and make on Linux.
 
 **Document status:** regenerated Pass 3 in the Pass 1 format on 2026-11-13. IDs `P3-001` …
 `P3-022` are preserved. The working tree now contains fixes for `P3-001`, `P3-002`,
-`P3-004`, `P3-005`, `P3-008`, `P3-009`, `P3-010`, `P3-011`, `P3-012`, `P3-014` and
-`P3-017`; the totals distinguish fixed from open. Where a fixed finding no longer
-reproduces, the regression test is the executed
-evidence. The committed `pyproject.toml` still carries the pass-scoped `[tool.mutmut]`
-selection called out in `P3-009`; the script now restores the file, but that residue is
-separate from the rewrite defect.
+`P3-003`, `P3-004`, `P3-005`, `P3-006`, `P3-008`, `P3-009`, `P3-010`, `P3-011`,
+`P3-012`, `P3-013`, `P3-014`, `P3-015`, `P3-017`, `P3-019` and `P3-021`; the totals distinguish fixed from
+open. Where a fixed finding no longer reproduces, the regression test is the executed
+evidence. The
+`[tool.mutmut]` defaults now target the package and run the full test selection; each pass
+scopes that config temporarily and restores it.
 
 **Method:** each finding has an executed probe. Behavioural probes import the real modules
 with temporary `WEBAPP_STATE_DIR` / `BATCH_STATE_DIR`; shell probes run the real script or
@@ -30,26 +30,26 @@ not paraphrased. Findings are ordered by file, not by severity.
 
 | File | Total lines verified | Findings | Fixed | Open |
 |---|---:|---:|---:|---:|
-| `webapp.py` | 529 | 5 | 4 | 1 |
-| `va_legal_agent/batch.py` | 131 | 2 | 0 | 2 |
-| `scripts/mutmut_pass.py` | 225 | 2 | 2 | 0 |
-| `scripts/check_mutation_baseline.py` | 115 | 1 | 1 | 0 |
+| `webapp.py` | 607 | 5 | 5 | 0 |
+| `va_legal_agent/batch.py` | 155 | 2 | 1 | 1 |
+| `scripts/mutmut_pass.py` | 267 | 2 | 2 | 0 |
+| `scripts/check_mutation_baseline.py` | 255 | 1 | 1 | 0 |
 | `scripts/_apply_mutant.py` | 112 | 0 | 0 | 0 |
 | `scripts/smoke_search.py` | 62 | 0 | 0 | 0 |
-| `deploy/install.sh` | 114 | 2 | 2 | 0 |
-| `deploy/run_batch.sh` | 87 | 1 | 0 | 1 |
+| `deploy/install.sh` | 178 | 2 | 2 | 0 |
+| `deploy/run_batch.sh` | 100 | 1 | 1 | 0 |
 | `deploy/va-legal-agent-batch.service` | 29 | 0 | 0 | 0 |
 | `deploy/va-legal-agent-batch.timer` | 11 | 0 | 0 | 0 |
-| `.github/workflows/ci.yml`, `mutation.yml` | 118 | 3 | 1 | 2 |
+| `.github/workflows/ci.yml`, `mutation.yml` | 191 | 3 | 2 | 1 |
 | `Makefile` | 97 | 2 | 1 | 1 |
-| `pyproject.toml` | 64 | 1 | 0 | 1 |
-| `requirements.txt`, `requirements-dev.txt` | 18 | 1 | 0 | 1 |
-| `.mutation-baseline.json` | 18 | 1 | 0 | 1 |
+| `pyproject.toml` | 64 | 1 | 1 | 0 |
+| `requirements.txt`, `requirements-dev.txt` | 17 | 1 | 0 | 1 |
+| `.mutation-baseline.json` | 70 | 1 | 1 | 0 |
 | `.env.example` | 202 | 1 | 0 | 1 |
-| **Total** | **1,932** | **22** | **11** | **11** |
+| **Total** | **2,417** | **22** | **17** | **5** |
 
-Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **3 High, 5 Medium,
-3 Low**. Open: **0 High, 5 Medium, 6 Low**.
+Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **3 High, 10 Medium,
+4 Low**. Open: **0 High, 0 Medium, 5 Low**.
 
 The three High findings form one chain: `P3-008` (a crashed mutmut pass reports zero
 survivors), `P3-010` (a missing survivor file is only a warning) and `P3-014`
@@ -57,7 +57,7 @@ survivors), `P3-010` (a missing survivor file is only a warning) and `P3-014`
 
 ---
 
-## `webapp.py` (Total Lines Verified: 529)
+## `webapp.py` (Total Lines Verified: 607)
 
 The app binds `127.0.0.1` by default (`webapp.py:528-529`), which is the right default for
 a tool that spends provider quota and LLM credits. The findings below concern state shared
@@ -92,7 +92,7 @@ detached snapshot. Worker updates can no longer change the dict during serializa
 **Evidence:**
 ```text
 $ .venv/bin/python -m pytest -q tests/test_webapp.py
-10 passed in 2.67s
+20 passed
 ```
 Regression test: `test_status_serializes_snapshot` mutates the payload inside a
 monkeypatched `jsonify`; the mutation never reaches `_JOBS["snapshot"]`, and the test-client
@@ -136,13 +136,13 @@ and re-enter `_prune()`.
 **Evidence:**
 ```text
 $ .venv/bin/python -m pytest -q tests/test_webapp.py
-10 passed in 2.67s
+20 passed
 ```
 Regression test: `test_prune_keeps_running_jobs` creates 51 jobs with the oldest running
 and 50 done; after `_prune()` the running job still returns 200 from
 `/api/status/running-oldest`, and the map is back at the cap.
 
-### P3-003 — Security — Medium
+### P3-003 — Security — Medium — **FIXED**
 
 **Location:** `webapp.py:288-301` (`analyze`, `api_analyze`)
 
@@ -164,15 +164,30 @@ browser can still submit a cross-site form to `127.0.0.1:8080/analyze` (CSRF), a
 rebinding can defeat the loopback assumption for a malicious site. Either path spends
 provider quota and LLM credits and can start analyses without the operator's intent.
 
-**Evidence:** Flask exposes no request hooks and accepts a POST with no Origin header:
+**Fix:** Flask's `TRUSTED_HOSTS` allowlist accepts only `localhost` and `127.0.0.1`, so a
+rebound Host is rejected before routing. `_same_origin_request()` additionally rejects a
+mismatched `Origin` on both POST endpoints; when Origin is absent it falls back to
+`Sec-Fetch-Site`, rejecting `cross-site` while allowing non-browser callers with no fetch
+metadata. The server remains bound to loopback; no per-startup token was added.
+
+**Evidence (before the fix):** Flask exposed no request hooks and accepted a POST with no
+Origin header:
 ```text
 before_request hooks: defaultdict(<class 'list'>, {})
 status: 200 body: {'run_id': 'probe'}
 ```
 
-**Remediation:** reject cross-site requests using `Origin` / `Sec-Fetch-Site` plus a strict
-`Host` allowlist; require an optional per-startup token for POSTs; keep the server bound to
-loopback. Add test-client coverage for missing and foreign origins.
+**Verification:**
+```text
+$ .venv/bin/python -m pytest -q tests/test_webapp.py
+20 passed
+```
+Regression tests: `test_foreign_origin_is_rejected`, `test_rebound_host_is_rejected`,
+`test_missing_origin_without_fetch_metadata_is_allowed`,
+`test_missing_origin_with_cross_site_fetch_metadata_is_rejected`,
+`test_loopback_hosts_are_accepted`, and `test_same_origin_submissions_are_accepted` cover
+foreign origins, matching rebound Host/Origin pairs, missing-Origin fallback behavior,
+valid loopback hosts, and legitimate form/API submissions.
 
 ### P3-004 — Persistence — Low — **FIXED**
 
@@ -194,16 +209,19 @@ repeats the correction, and any reader of `.webapp/<id>.json` sees a live status
 that can never finish.
 
 **Fix:** after inserting the corrected job into `_JOBS`, call `_save_job(job)` so the
-atomic JSON file is rewritten with the terminal error state.
+atomic JSON file is rewritten with the terminal error state. Non-object JSON state files
+are skipped so one malformed file cannot abort startup.
 
 **Evidence:**
 ```text
 $ .venv/bin/python -m pytest -q tests/test_webapp.py
-10 passed in 2.67s
+20 passed
 ```
-Regression test: `test_load_jobs_persists_restart_correction` writes a `running` job,
+Regression tests: `test_load_jobs_persists_restart_correction` writes a `running` job,
 calls `_load_jobs()`, and asserts both that `/api/status/restart` returns `error` and that
-the on-disk JSON now contains the corrected status, message and `finished_at`.
+the on-disk JSON now contains the corrected status, message and `finished_at`;
+`test_load_jobs_skips_non_object_state` verifies a malformed non-object state file is
+ignored instead of aborting startup.
 
 ### P3-005 — Configuration — Low — **FIXED**
 
@@ -236,17 +254,17 @@ error: PORT must be between 1 and 65535, got 70000
 exit 1
 ```
 Regression tests: `tests/test_webapp.py::test_invalid_max_concurrent_fails_at_import`,
-`::test_env_int_rejects_out_of_range_port`, and the fixed-regression run below (`20 passed`).
+`::test_env_int_rejects_out_of_range_port`, and the fixed-regression run below (`42 passed`).
 
 ---
 
-## `va_legal_agent/batch.py` (Total Lines Verified: 131)
+## `va_legal_agent/batch.py` (Total Lines Verified: 155)
 
-### P3-006 — Batch accounting — Medium
+### P3-006 — Batch accounting — Medium — **FIXED**
 
-**Location:** `va_legal_agent/batch.py:124-130` (`finalize`)
+**Location:** `va_legal_agent/batch.py:143-155` (`finalize`); `_exclusive_lock()` at `:52-66`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
     def finalize(self) -> dict[str, object]:
         """Aggregate the batch summary and delete the state file."""
@@ -264,17 +282,27 @@ outcome counted nowhere: the summary already excluded it and the file that held 
 The class is explicitly designed for concurrent writers (`record` appends from any CLI
 invocation sharing a `RUN_ID`), so the window is reachable whenever the last outstanding
 process finalizes while a straggler finishes — the exact case batch accounting exists for.
-There is no locking (`flock`) around read-and-delete anywhere in the class.
+There was no locking (`flock`) around read-and-delete anywhere in the class.
 
-**Evidence:** simulated interleaving with a late `record` between `summary()` and
-`unlink()`:
+**Evidence (before the fix):** simulated interleaving with a late `record` between
+`summary()` and `unlink()`:
 ```text
 summary total: 1 | file exists: False | outcomes recoverable: []
 ```
 
-**Remediation:** take an exclusive lock on `<run_id>.lock` for the read-and-delete, and have
-`record` take the same lock; or rename the file to a tombstone before summarizing and delete
-only after a successful summary, so late writers fail loudly instead of silently.
+**Fix:** `_exclusive_lock()` takes an exclusive `flock` on the run's `.lock` file, and both
+`record()` and `finalize()` hold it. `finalize()` keeps the lock across `summary()` and
+`unlink()`, so a recorder either appends before the summary is read or waits until the
+old state file has been removed. The lock file is intentionally persistent: unlinking it
+while a waiter has it open would let a third process lock a different inode.
+
+**Evidence:** the regression test pauses `finalize()` immediately after `summary()`, starts
+a late `record()`, and verifies it blocks until the unlink finishes:
+```text
+$ .venv/bin/python -m pytest -q tests/test_batch.py
+24 passed
+```
+Regression test: `test_finalize_locks_read_and_delete_against_recorders`.
 
 ### P3-007 — Batch identity — Low
 
@@ -303,7 +331,7 @@ batch1.jsonl batch1.jsonl same path: True
 
 ---
 
-## `scripts/mutmut_pass.py` (Total Lines Verified: 225)
+## `scripts/mutmut_pass.py` (Total Lines Verified: 267)
 
 ### P3-008 — Mutation gate — High — **FIXED**
 
@@ -342,7 +370,8 @@ A module can therefore be entirely unmeasured and still satisfy the 100%-kill ga
 **Fix:** `_require_success()` checks the exit code of the coverage run, `mutmut run` and
 `mutmut results`. A non-zero code prints the failing step, its exit code and captured
 stderr, then exits 1 before any survivor file is written. The pass now asks for
-`mutmut results --all`, so killed mutants are included in the output. An empty result
+`mutmut results --all=true` (mutmut 3.7 exposes `--all` as a boolean option), so killed
+mutants are included in the output. An empty result
 means mutmut generated or checked nothing and exits 1; a result containing only
 “not checked” is rejected by the existing vacuous-pass guard. An all-killed pass lists
 its killed mutants and correctly reports zero survivors.
@@ -351,7 +380,7 @@ its killed mutants and correctly reports zero survivors.
 ```text
 $ .venv/bin/python -m pytest -q tests/test_mutmut_pass.py \
     tests/test_check_mutation_baseline.py tests/test_mutation_gate_integrity.py
-13 passed in 0.45s
+27 passed in 0.45s
 ```
 Regression tests: `test_main_fails_when_required_command_fails` covers the coverage run,
 `mutmut run` and `mutmut results`; each case asserts exit 1, the captured stderr, and
@@ -379,13 +408,16 @@ restoration of `pyproject.toml`. `test_main_accepts_all_killed_pass` and
 
 **Root cause & impact:** every pass overwrote the checked-in `[tool.mutmut]` section with
 that module and test slice, and there was no restore path — not on success, not on failure,
-not on `Ctrl-C`. After `make mutate`, `git status` was dirty and the committed config no
-longer described what was reviewed; an interrupted pass left a half-applied selection.
-The tracked file still contains a pass-scoped selection (`agent.py` plus two test files),
-which is a separate residue from the rewrite defect.
+not on `Ctrl-C`. After `make mutate`, `git status` was dirty and a pass left the committed
+config scoped to one module and test slice; an interrupted pass could leave a half-applied
+selection. The tracked file also contained that pass residue (`agent.py` plus two test
+files), separate from the rewrite defect.
 
 **Fix:** `_scoped_pyproject()` keeps the original text, writes the scoped selection, and
-restores the original in `finally`; `main()` runs the entire pass under it.
+restores the original in `finally`; `main()` runs the entire pass under it. The checked-in
+default is now project-wide: `source_paths = ["va_legal_agent"]` and an empty
+`pytest_add_cli_args_test_selection` (all tests), so each pass's temporary scope is
+restored to a meaningful default.
 
 **Evidence:** the regression tests force both a successful pass and a `SystemExit` failure,
 then assert the file is byte-for-byte restored:
@@ -399,7 +431,7 @@ Regression tests: `test_scoped_pyproject_restores_after_exception`,
 
 ---
 
-## `scripts/check_mutation_baseline.py` (Total Lines Verified: 115)
+## `scripts/check_mutation_baseline.py` (Total Lines Verified: 255)
 
 ### P3-010 — Mutation gate — High — **FIXED**
 
@@ -451,7 +483,7 @@ last provider wastes at most `SEARCH_DELAY_SECONDS` in a manual-only tool.
 
 ---
 
-## `deploy/install.sh` (Total Lines Verified: 114)
+## `deploy/install.sh` (Total Lines Verified: 178)
 
 ### P3-011 — Deployment — Medium — **FIXED**
 
@@ -519,13 +551,13 @@ Regression test: `test_copy_step_excludes_secrets_and_runtime_state`.
 
 ---
 
-## `deploy/run_batch.sh` (Total Lines Verified: 87)
+## `deploy/run_batch.sh` (Total Lines Verified: 100)
 
-### P3-013 — Deployment — Medium
+### P3-013 — Deployment — Medium — **FIXED**
 
-**Location:** `deploy/run_batch.sh:5-6` (claim), `:75` (invocation); contrast
+**Location:** `deploy/run_batch.sh:27-30` (`ROOT` and `cd`), `:88` (invocation); contrast
 `deploy/va-legal-agent-batch.service:12` (`WorkingDirectory=__TARGET__`) and
-`deploy/install.sh:98` (cron line)
+`deploy/install.sh:152-161` (cron setup)
 
 **Offending code:**
 ```bash
@@ -545,15 +577,18 @@ for — or tries to build — the corpus under `/root`, which the unprivileged s
 cannot write, instead of reusing `$TARGET/.bva_index`. The header's “Runs from the project
 root” is therefore true only for the systemd path.
 
-**Evidence:** invoke the real script from a temporary working directory with a fake
-interpreter that records its cwd:
+**Evidence:** invoking the real script from a temporary working directory now makes the
+child resolve from `ROOT` instead of inheriting cron's cwd:
 ```text
-child cwd: /tmp/tmp.ZBJW965pcT
+$ .venv/bin/python -m pytest -q tests/test_run_batch.py
+6 passed
 ```
-The child inherited the caller's directory, not `ROOT`.
+Regression test: `test_cron_like_caller_runs_from_project_root` starts the script from a
+temporary cron-like cwd and asserts the fake interpreter sees the project root.
 
-**Remediation:** add `cd "$ROOT"` immediately after `ROOT` is resolved, so both launch paths
-share one working directory. Add a cron-like cwd regression test.
+**Remediation:** implemented by `cd "$ROOT"` immediately after `ROOT` is resolved, so
+systemd and cron share one working directory and relative settings resolve against the
+checkout.
 
 ---
 
@@ -571,7 +606,7 @@ substitute for the documented manual run.
 
 ---
 
-## `.github/workflows/ci.yml`, `.github/workflows/mutation.yml` (Total Lines Verified: 118)
+## `.github/workflows/ci.yml`, `.github/workflows/mutation.yml` (Total Lines Verified: 191)
 
 ### P3-014 — CI mutation gate — High — **FIXED**
 
@@ -595,21 +630,23 @@ project; the gate could therefore be green while the module with the most triage
 equivalents was never measured. `queries.py` rode along.
 
 **Fix:** delete both `|| echo` guards and add `set -euo pipefail`. A non-zero providers or
-queries pass now fails the step; the next pass and the baseline step do not run.
+queries pass now fails its matrix leg; the other legs still run, and the gate job runs after
+the failure and rejects the missing survivor report.
 
 **Evidence:** the regression test asserts both commands are present, fail-fast is enabled,
 and no `||`/`WARNING` swallowing remains:
 ```text
 $ .venv/bin/python -m pytest -q tests/test_mutation_gate_integrity.py
-2 passed
+6 passed
 ```
-Regression test: `test_workflow_does_not_swallow_heavy_pass_failures`.
+Regression test: `test_workflow_does_not_swallow_mutation_failures`.
 
-### P3-015 — CI mutation gate — Medium
+### P3-015 — CI mutation gate — Medium — **FIXED**
 
-**Location:** `.github/workflows/mutation.yml:59-76`
+**Location:** `.github/workflows/mutation.yml:37-152` (matrix legs `:41-94`; gate
+`:129-152`); pre-fix `:59-76`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```yaml
       - name: Run the mutation pass (remaining modules)
         run: |
@@ -622,22 +659,31 @@ Regression test: `test_workflow_does_not_swallow_heavy_pass_failures`.
 
 **Root cause & impact:** each pass deletes its cached stats, regenerates coverage and runs
 mutmut over a module, so the step's cost scales with the sum of 14 modules, not the slowest
-one. When the 15-minute limit is hit, GitHub kills the step and every module after the
-current one has no survivor file — which `P3-010` now rightly fails, but only if the gate
-step runs. `set -e` makes the step fail, so the job is red; the dangerous ordering is the
-reverse: modules earlier in the list complete, later ones never start, and a run that does
-reach the gate after a partial timeout still passes. The 45-minute job cap and the absence
-of pip caching in both workflows tighten the margin.
+one. When the 15-minute limit was hit, GitHub killed the step and every module after the
+current one had no survivor file — which `P3-010` now rightly fails, but only if the gate
+step ran. `set -e` made the job red; the dangerous ordering was the reverse: modules earlier
+in the list completed, later ones never started, and a run that did reach the gate after a
+partial timeout could still pass. The 45-minute job cap and the absence of pip caching in
+both workflows tightened the margin.
 
-**Evidence:** parse the workflow and baseline:
+**Fix:** the combined step is replaced by a `fail-fast: false` matrix with one leg per
+baseline module. Each leg runs exactly one `mutmut_pass.py` command with its own
+`timeout-minutes: ${{ matrix.timeout }}`, so a timeout kills only that module's leg. Every
+leg uploads `/tmp/mutmut_survivors_<module>.txt` with `if: always()`. The separate `gate` job
+needs the whole matrix (`if: ${{ !cancelled() }}`), downloads every `survivors-*` artifact,
+and runs `check_mutation_baseline.py`; a missing artifact for a timed-out or failed module
+is a hard gate violation rather than an unmentioned gap.
+
+**Evidence:** the focused workflow tests parse the real matrix and gate:
 ```text
-remaining mutation commands: 14 step timeout: 15 job timeout: 45
-remaining modules: 14 baseline sum: 296
+$ .venv/bin/python -m pytest -q tests/test_mutation_gate_integrity.py
+6 passed
 ```
+Regression tests: `test_every_baseline_module_has_its_own_matrix_leg`,
+`test_gate_runs_after_a_failed_or_timed_out_leg`, and
+`test_each_leg_uploads_its_report_and_has_a_separate_timeout`.
 
-**Remediation:** run each module as its own job/matrix leg (with the gate depending on all
-of them), or raise the step limit to measured wall time and add `actions/cache` for pip and
-the coverage data.
+**Remediation:** implemented with the per-module matrix and artifact-based gate above.
 
 ### P3-016 — CI security — Low
 
@@ -741,12 +787,12 @@ P3-018 ruff webapp: All checks passed!
 
 ## `pyproject.toml` (Total Lines Verified: 64)
 
-### P3-019 — CI coverage — Medium
+### P3-019 — CI coverage — Medium — **FIXED**
 
-**Location:** `pyproject.toml:20-36`; `.github/workflows/ci.yml:20-39`;
+**Location:** `pyproject.toml:36`; `.github/workflows/ci.yml:24-30`;
 `webapp.py:1-30` (design note)
 
-**Offending code:**
+**Offending code (before the fix):**
 ```toml
 [project.optional-dependencies]
 dev = [...]
@@ -758,25 +804,34 @@ web = ["flask>=3.0", "waitress>=3.0"]
 package's 100%-coverage and mutation gates are unaffected” — a defensible choice for the
 gates, but the consequence is that a threaded HTTP server that spends money had no test
 module, no coverage target, no mutation target and no lint target (`P3-018`). The `web`
-extra is still not installed by either workflow, so CI never even imports the app. A local
-`tests/test_webapp.py` now exists (added with the `P3-005` fix), but it starts with
-`pytest.importorskip("flask")`, so it skips in CI under the current install command.
+extra was still not installed by the test workflow, so CI never even imported the app. A
+local `tests/test_webapp.py` exists (added with the `P3-005` fix), but it starts with
+`pytest.importorskip("flask")`, so it skipped in CI under the old install command.
 `requirements-dev.txt` does not include Flask either, so a developer following
 `pip install -e ".[dev]"` cannot run the app tests without discovering the separate extra.
 
-**Evidence:**
+**Evidence (before the fix):**
 ```text
 P3-019 CI installs: ['.venv/bin/pip install --upgrade pip', '.venv/bin/pip install -e .', '.venv/bin/pip install pytest pytest-cov ruff']
 P3-019 webapp tests exist: True | skip guard: True
 ```
 
-**Remediation:** install `-e ".[dev,llm,web]"` (or the equivalent) in the test job so the
-webapp tests run instead of skipping; add a small CI job for `webapp.py`. Keeping webapp out
-of the package coverage percentage is fine; keeping it out of every check is not.
+**Fix:** the `check` job now installs the package as `-e ".[web]"`, so Flask and waitress
+are present when the job runs `make test-w`. The webapp module's `importorskip` guard is
+satisfied and the full-suite step executes all 20 `tests/test_webapp.py` tests.
+
+**Evidence:**
+```text
+$ .venv/bin/python -m pytest -q tests/test_webapp.py -rs
+20 passed
+
+$ make test-w
+1224 passed
+```
 
 ---
 
-## `requirements.txt`, `requirements-dev.txt` (Total Lines Verified: 18)
+## `requirements.txt`, `requirements-dev.txt` (Total Lines Verified: 17)
 
 ### P3-020 — Dependency management — Low
 
@@ -795,15 +850,15 @@ openai>=1.35.0,<4
 ```
 ```yaml
 # ci.yml
-.venv/bin/pip install -e .
+.venv/bin/pip install -e ".[web]"
 .venv/bin/pip install pytest pytest-cov ruff
 ```
 
 **Root cause & impact:** the same six runtime dependencies are declared in `pyproject.toml`
 and again (via `-r requirements.txt`) in `requirements-dev.txt`, while the `[dev]` extra
-contains a different set: it lacks `openai` (present in `requirements-dev.txt`) and lacks
-Flask/waitress (the `web` extra). CI installs `-e .` plus floating `pytest`/`pytest-cov`/
-`ruff`, so the versions that gate a PR are neither the pinned `mutmut==3.7.0` set from
+contains a different set: it lacks `openai` (present in `requirements-dev.txt`). CI installs
+`-e ".[web]"` plus floating `pytest`/`pytest-cov`/`ruff`, so the versions that gate a PR are
+neither the pinned `mutmut==3.7.0` set from
 `requirements-dev.txt` nor the `[dev]` extra — they are whatever PyPI serves that morning.
 Local `pip install -e ".[dev]"`, local `pip install -r requirements-dev.txt`, and CI can
 therefore disagree on tool versions and on whether `openai` is importable. The duplication
@@ -821,12 +876,12 @@ they match.
 
 ---
 
-## `.mutation-baseline.json` (Total Lines Verified: 18)
+## `.mutation-baseline.json` (Total Lines Verified: 70)
 
-### P3-021 — Mutation baseline — Low
+### P3-021 — Mutation baseline — Low — **FIXED**
 
-**Location:** `.mutation-baseline.json:1-18`; comparison at
-`scripts/check_mutation_baseline.py:79`
+**Location:** `.mutation-baseline.json:1-70`; identity extraction at
+`scripts/check_mutation_baseline.py:68-115` and comparison at `:203`
 
 **Offending code:**
 ```json
@@ -846,15 +901,30 @@ notice a swap is to read `/tmp/mutmut_survivors_<module>.txt` by hand — and CI
 The counts themselves are well documented in the scripts, and the `timeout` check is a good
 complement; the gap is identity, not intent.
 
+**Fix:** every baseline entry now records both the survivor count and a SHA-256 digest of
+the sorted survivor names; the JSON also records the mutmut version and triage date. The
+checker recovers the `# <mutant>: <status>` identity lines written by `mutmut show`, rejects
+missing/truncated/duplicate identities, and fails on any digest mismatch — including an
+equal-count equivalent-for-killable swap — rather than only when the count grows. Legacy
+integer entries are rejected with a migration message instead of silently remaining
+count-only. The regenerated baseline uses the current survivor counts; those had drifted
+for `agent.py` (87→97), `fetch.py` (49→64) and `impact.py` (6→7) since the last triage, so
+their extra survivors still warrant the normal equivalence review even though their exact
+identities are now pinned.
+
 **Evidence:**
 ```text
-P3-021 baseline value types: ['int'] | keys: 16
-P3-021 checker comparison: ['if actual > expected:']
+$ .venv/bin/python -m pytest -q tests/test_check_mutation_baseline.py
+12 passed
 ```
+Regression tests: `test_exact_identity_passes_in_any_order`,
+`test_equal_count_survivor_swap_fails_gate`,
+`test_changed_identity_with_fewer_survivors_also_fails`,
+`test_truncated_identity_list_is_rejected`, and
+`test_legacy_count_only_baseline_is_rejected`.
 
-**Remediation:** store the sorted survivor names per module (or a digest of that list) and
-fail when the set differs, not just when it grows; keep the count as a fast pre-check if
-desired. Record the mutmut version and triage date alongside it.
+**Remediation:** implemented as above; keep the count as a fast pre-check and update both
+fields together only after triaging the survivor diff.
 
 ---
 
@@ -899,7 +969,6 @@ probes. Temporary state directories were used so the repository was not modified
 ```python
 # Behavioural probes (outputs quoted per finding)
 import webapp
-from va_legal_agent.batch import BatchTracker
 
 # P3-001: capture the object Flask would serialize
 webapp._JOBS["probe"] = {"job_id": "probe", "status": "running"}
@@ -918,13 +987,7 @@ for i in range(webapp._MAX_JOBS + 1):
 webapp._prune()
 assert "j000" not in webapp._JOBS
 
-# P3-006: a late writer between summary() and unlink()
-tracker = BatchTracker("race")
-tracker.record({"event": "analysis_complete", "issue": "a"})
-original = tracker.summary
-tracker.summary = lambda: (lambda s: (tracker.record({"event": "analysis_complete", "issue": "b"}), s)[1])(original())
-summary = tracker.finalize()
-assert summary["total"] == 1 and not tracker.path.exists()
+# P3-006: fixed; see test_finalize_locks_read_and_delete_against_recorders.
 ```
 
 ```bash
@@ -956,12 +1019,12 @@ tar --exclude='.env' --exclude='.webapp' --exclude='issues.txt' \
 .venv/bin/python -m pytest -q \
   tests/test_webapp.py tests/test_mutmut_pass.py tests/test_check_mutation_baseline.py \
   tests/test_install_sh.py tests/test_mutation_gate_integrity.py
-# 20 passed
+# 56 passed
 ```
 
 Static probes used `yaml.safe_load()` on `mutation.yml`, `json.loads()` on
 `.mutation-baseline.json`, `ruff check webapp.py`, and `grep` over the workflows and
 `Makefile`; their outputs are quoted in the individual findings.
 
-Full-suite state at the time of writing: **1,194 passed**, **100% line+branch coverage**;
+Full-suite state at the time of writing: **1,239 passed**, **100% line+branch coverage**;
 `ruff check va_legal_agent tests deploy` clean.
