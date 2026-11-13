@@ -827,7 +827,7 @@ $ .venv/bin/python -m pytest -q tests/test_webapp.py -rs
 20 passed
 
 $ make test-w
-1224 passed
+1266 passed
 ```
 
 ---

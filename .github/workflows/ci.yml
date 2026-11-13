@@ -26,7 +26,7 @@ jobs:
       - name: Install dependencies
         run: |
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install -e .
+          .venv/bin/pip install -e ".[web]"
           .venv/bin/pip install pytest pytest-cov ruff
 
       - name: Lint (ruff)
