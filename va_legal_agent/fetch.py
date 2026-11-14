@@ -43,7 +43,15 @@ _MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "S
 _DATE_PATTERN = re.compile(
     r"\b(" + "|".join(_MONTHS + _MONTH_ABBR) + r")\.?\s+(\d{1,2}),?\s+(\d{4})\b"
 )
-_DATE_HINT = re.compile(r"\b(?:decided|filed|issued|handed down)\b", re.IGNORECASE)
+# Prefer the clearest decision-date label.  Court pages often show a filing
+# date before the decision date, so "filed" must not win just because it is
+# encountered first.
+_DATE_HINT_PRIORITIES = (
+    re.compile(r"\bdecided\b", re.IGNORECASE),
+    re.compile(r"\bissued\b", re.IGNORECASE),
+    re.compile(r"\bfiled\b", re.IGNORECASE),
+    re.compile(r"\bhanded\s+down\b", re.IGNORECASE),
+)
 
 
 # Reporter/docket citation patterns, compiled once at import and reused by
@@ -131,17 +139,31 @@ def _match_to_iso(match: "re.Match[str]") -> str:
 
 
 def extract_decision_date(text: str) -> str:
-    """Return an ISO decision date, preferring dates near 'Decided'/'Filed'/'Issued'."""
-    for match in _DATE_PATTERN.finditer(text):
-        context = text[max(0, match.start() - 40):match.start()]
-        if _DATE_HINT.search(context):
-            iso = _match_to_iso(match)
-            if iso:
-                return iso
+    """Return an ISO decision date, preferring the clearest date label.
+
+    A court page can show both a filing date and a later decision date.  Dates
+    near ``decided`` rank above ``issued``, ``filed``, and ``handed down`` so
+    the filing date is never stored as the decision date merely because it
+    appears first.  When no date has a recognized hint, the first parseable
+    date is used as a last resort.
+    """
+    hinted: list[tuple[int, int, str]] = []
+    unhinted: list[tuple[int, str]] = []
     for match in _DATE_PATTERN.finditer(text):
         iso = _match_to_iso(match)
-        if iso:
-            return iso
+        if not iso:
+            continue
+        context = text[max(0, match.start() - 40):match.start()]
+        for rank, hint in enumerate(_DATE_HINT_PRIORITIES):
+            if hint.search(context):
+                hinted.append((rank, match.start(), iso))
+                break
+        else:
+            unhinted.append((match.start(), iso))
+    if hinted:
+        return min(hinted)[2]
+    if unhinted:
+        return unhinted[0][1]
     return ""
 
 
@@ -197,8 +219,8 @@ _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 # Legal-standard-of-review patterns scanned by extract_legal_standard.
 # Veterans-law opinions routinely name the standard in a specific phrase
 # ("we review ... for clear error", "de novo review", "abuse of discretion",
-# etc.), and the first match is returned because later occurrences are
-# usually restatements, not independent standards.  For harmless-error
+# etc.).  The earliest match in the document wins because later occurrences
+# are usually restatements or subordinate-issue references.  For harmless-error
 # variants (no reversible error), both the "harmless" and "reversible"
 # forms are captured, but only "harmless error" is returned — the
 # next-segment post-processing replaces "no reversible error" and
@@ -212,6 +234,13 @@ _STANDARD_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     # "de novo review" / "review ... de novo"
     (re.compile(r"\bde\s+novo\s+review\b", re.IGNORECASE), "de novo"),
     (re.compile(r"\breview(?:ed|s)?\s+de\s+novo\b", re.IGNORECASE), "de novo"),
+    # "We review legal questions de novo" inserts the subject between the verb
+    # and the standard; the narrower patterns above miss that common phrasing.
+    (re.compile(
+        r"\breview(?:ed|s)?\s+(?:the\s+)?(?:legal|statutory|constitutional)\s+"
+        r"(?:questions?|issues?|conclusions?)\s+de\s+novo\b",
+        re.IGNORECASE,
+    ), "de novo"),
     # "abuse of discretion"
     (re.compile(r"\babuse\s+of\s+discretion\b", re.IGNORECASE), "abuse of discretion"),
     # "arbitrary and capricious" / "arbitrary, capricious"
@@ -251,15 +280,22 @@ def extract_legal_standard(text: str) -> str:
     Veterans-law opinions routinely name the standard in a boilerplate
     paragraph near the beginning of the analysis: "We review the Board's
     factual findings for clear error and its legal conclusions de novo."
-    The first match is returned because later occurrences are usually
-    restatements of the same standard, not independent standards.
+    The earliest match in document order wins; tuple order only breaks a tie
+    at the same offset.  Tuple order alone is wrong here because a later
+    ``clear error`` reference can describe a subordinate factual issue while
+    the court's opening statement establishes de novo review.
     """
     if not text or not text.strip():
         return ""
-    for pattern, label in _STANDARD_REVIEW_PATTERNS:
-        if pattern.search(text):
-            return label
-    return ""
+    earliest: tuple[int, int, str] | None = None
+    for order, (pattern, label) in enumerate(_STANDARD_REVIEW_PATTERNS):
+        match = pattern.search(text)
+        if not match:
+            continue
+        candidate = (match.start(), order, label)
+        if earliest is None or candidate[:2] < earliest[:2]:
+            earliest = candidate
+    return earliest[2] if earliest else ""
 
 
 
@@ -802,7 +838,10 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     url_path = url.lower().split("?")[0]
     looks_pdf = "pdf" in content_type.lower() or url_path.endswith(".pdf")
     if looks_pdf:
-        return extract_case_details(_extract_pdf_text(content))
+        # Enrichment needs the whole opinion: a holding or disposition can sit
+        # beyond the old four-page default.  The byte cap still bounds the
+        # download itself, and deep-read already uses the same all-pages mode.
+        return extract_case_details(_extract_pdf_text(content, max_pages=0))
 
     encoding = getattr(response, "encoding", None) or "utf-8"
     text = content.decode(encoding, errors="replace")

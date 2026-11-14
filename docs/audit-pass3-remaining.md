@@ -14,8 +14,8 @@ completed operational set.
 **Audit date:** 2026-11-14.
 
 **Document status:** Pass 1 re-audit plus targeted remediation of P1-005,
-P1-006, P1-007, P1-009, P1-011, P1-014, P1-015, P1-016, P1-019, and
-P1-020 in this tree. The other findings are
+P1-006, P1-007, P1-009, P1-011, P1-014, P1-015, P1-016, P1-019, P1-020,
+P1-027, P1-028, P1-030, and P1-031 in this tree. The other findings are
 unchanged and remain for a later pass. Finding IDs are preserved from
 `docs/audit-pass1.md`; no new IDs are introduced.
 
@@ -37,18 +37,18 @@ authority is cited rather than a code-style preference.
 | `va_legal_agent/llm.py` | 2 | 1 | 0 | 1 |
 | `va_legal_agent/providers.py` | 6 | 4 | 0 | 2 |
 | `va_legal_agent/search.py` | 3 | 2 | 0 | 1 |
-| `va_legal_agent/fetch.py` | 9 | 6 | 0 | 3 |
-| `va_legal_agent/deep_read.py` | 2 | 0 | 0 | 2 |
-| **Total** | **32** | **21** | **0** | **11** |
+| `va_legal_agent/fetch.py` | 9 | 9 | 0 | 0 |
+| `va_legal_agent/deep_read.py` | 2 | 1 | 0 | 1 |
+| **Total** | **32** | **25** | **0** | **7** |
 
-The 11 still-actionable findings (all open) comprise **0 High, 4 Medium, and
+The 7 still-actionable findings (all open) comprise **0 High, 0 Medium, and
 7 Low**. The High item from the previous pass, P1-007, is fixed.
 
 Current verification state of the tree:
 
 ```text
 $ .venv/bin/python -m pytest -q
-1327 passed in 11.14s
+1332 passed in 10.86s
 PYTEST_EXIT=0
 
 $ .venv/bin/python -m ruff check va_legal_agent/__main__.py \
@@ -89,7 +89,11 @@ run on 2026-11-14; the existing regressions named below remain in the suite.
 | P1-024 | Plural section citations are expanded by `_section_values` at `fetch.py:330-338`; pinned by `test_extract_statutes_matches_plural_section_citations` (`tests/test_fetch.py:2060`). |
 | P1-025 | A decision's own citation is preferred over a quoted case; pinned by `test_extract_citation_prefers_own_citation_over_quoted_case` (`tests/test_fetch.py:2136`). |
 | P1-026 | Subsection normalization remains in `_normalize_statute_value` at `fetch.py:313-321`; covered by the fetch statutory-citation tests. |
+| P1-027 | `extract_legal_standard` now selects the earliest match across all review patterns, with tuple order only breaking ties, and recognizes the common `review legal questions de novo` phrasing (`fetch.py:237-243, 277-298`). Pinned by `test_extract_legal_standard_uses_earliest_document_match`. |
+| P1-028 | Decision-date hints are ranked `decided` > `issued` > `filed` > `handed down`, so a filing date shown first no longer displaces the later decision date (`fetch.py:49-54, 141-167`). Pinned by `test_extract_decision_date_prefers_decided_over_filing_date`. |
 | P1-029 | `_merge_statute_families` now reserves C.F.R. slots at `fetch.py:341-355`. Probe with mixed statutory families: `extract_statutes("38 U.S.C. §§ 1110, 1131, 5103, 5103A, 7104, 7252; 38 C.F.R. §§ 3.303, 3.304")` → `['38 U.S.C. § 1110', '38 U.S.C. § 1131', '38 U.S.C. § 5103', '38 U.S.C. § 5103A', '38 C.F.R. § 3.303', '38 C.F.R. § 3.304']`; pinned by `test_extract_statutes_keeps_cfr_sections_under_the_cap` (`tests/test_fetch.py:2040`). |
+| P1-030 | Enrichment now reads every PDF page via `_extract_pdf_text(content, max_pages=0)` instead of stopping at four pages (`fetch.py:840-844`). Pinned by `test_fetch_case_details_pdf_reads_all_pages`. |
+| P1-031 | Fact-section extraction treats the chunk boundary as a terminator (`deep_read.py:50-55`), while the header still consumes only its own line so an empty facts section remains empty. Pinned by `test_extract_chunk_facts_body_at_end_of_chunk`. |
 
 ---
 
@@ -286,164 +290,6 @@ telemetry test.
 
 ---
 
-### P1-027 — Legal accuracy — Medium — **OPEN**
-
-**Location:** `va_legal_agent/fetch.py:240-254` (`extract_legal_standard`).
-
-**Current code:**
-
-```python
-    for pattern, label in _STANDARD_REVIEW_PATTERNS:
-        if pattern.search(text):
-            return label
-    return ""
-```
-
-**Executed evidence:**
-
-```python
->>> extract_legal_standard(
-...     "We review legal questions de novo. "
-...     "The Board factual findings require clear error."
-... )
-'clear error'
-```
-
-**Impact:** patterns are tried in tuple order, not document order, and the
-clear-error group is first. A decision that opens with de novo review but later
-mentions a clear-error argument is recorded as reviewed for **clear error** —
-the more deferential standard — even though the court stated de novo. That
-inverts the strength of the precedent, which is exactly what `legal_standard`
-is used to compare across cases. The distinction matters under
-38 U.S.C. § 7261(a)(1) and (a)(4): legal questions are decided de novo, while
-factual findings are reviewed for substantial evidence.
-
-**Remediation:** scan for the earliest match position across all patterns
-(`min` over `match.start()`), using tuple order only to break ties at the same
-offset, and add a test with both standards in document order.
-
----
-
-### P1-028 — Legal accuracy — Medium — **OPEN**
-
-**Location:** `va_legal_agent/fetch.py:125-137` (`extract_decision_date`);
-`_DATE_HINT` at `fetch.py:37`.
-
-**Current code:**
-
-```python
-    for match in _DATE_PATTERN.finditer(text):
-        context = text[max(0, match.start() - 40):match.start()]
-        if _DATE_HINT.search(context):
-            iso = _match_to_iso(match)
-            if iso:
-                return iso
-```
-
-**Executed evidence:**
-
-```python
->>> extract_decision_date(
-...     "Filed: January 2, 2024\nDecided: January 3, 2023"
-... )
-'2024-01-02'
-```
-
-**Impact:** `_DATE_HINT` treats `filed` as a decision-date hint with equal
-weight to `decided`. Court pages routinely show both; because the first hinted
-date wins, the **filing** date is stored as the decision date. Recency ranking,
-the “decided <date>” line in the LLM prompt, and the report all then misdate
-the authority by more than a year.
-
-**Remediation:** rank hints (`decided` > `issued` > `filed` > `handed down`):
-first scan for `decided|issued`, then fall back to any hinted date, then to the
-first parseable date. Add a test with both dates present in the filing-first
-order.
-
----
-
-### P1-030 — Legal accuracy — Medium — **OPEN**
-
-**Location:** `va_legal_agent/fetch.py:669-675` (`_extract_pdf_text`) and
-`fetch.py:790-794` (`fetch_case_details`).
-
-**Current code:**
-
-```python
-def _extract_pdf_text(content: bytes, max_pages: int = 4) -> str:
-    """Extract text from a PDF, reading up to *max_pages* pages (0 = all)."""
-```
-
-```python
-    if looks_pdf:
-        return extract_case_details(_extract_pdf_text(content))
-```
-
-**Executed evidence:**
-
-```python
-# pypdf.PdfReader patched to a fake 6-page document
->>> _extract_pdf_text(b"x")
-'page1 page2 page3 page4'
->>> _extract_pdf_text(b"x", max_pages=0)
-'page1 page2 page3 page4 page5 page6'
-```
-
-**Impact:** the enrichment path calls `_extract_pdf_text` with its default of
-four pages, while `fetch_full_text` deliberately reads all pages
-(`max_pages=0`). A CAVC PDF whose holding or disposition appears on page 5+ is
-enriched with empty `holding`, `outcome`, and `statutes` — the case looks like
-a header-only document, and those fields feed ranking and the report as if the
-decision said nothing.
-
-**Remediation:** pass an explicit page budget from settings (for example
-`MAX_FETCH_PDF_PAGES`, default higher than 4) or `max_pages=0` for enrichment,
-and record truncation on the case (e.g. `detail_truncated=True`) so a partial
-read is never presented as complete. Add a fake-PDF regression covering page 5.
-
----
-
-### P1-031 — Extraction — Medium — **OPEN**
-
-**Location:** `va_legal_agent/deep_read.py:49-54` (`_FACT_HEADER_RE`) and
-`deep_read.py:57-69` (`_extract_chunk_facts`).
-
-**Current code:**
-
-```python
-_FACT_HEADER_RE = re.compile(
-    ...
-    r"(.*?)(?:\n\n|\n(?=(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+|(?:FINDINGS|CONCLUSIONS|ANALYSIS|DISCUSSION|ARGUMENT|REASONS|DETERMINATION|DECISION|ORDER)))",
-    re.IGNORECASE | re.DOTALL,
-)
-```
-
-**Executed evidence:**
-
-```python
->>> _extract_chunk_facts(
-...     "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus."
-... )
-''
->>> _extract_chunk_facts(
-...     "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus.\n\n"
-... )
-'The veteran served in Vietnam and was diagnosed with tinnitus.'
-```
-
-**Impact:** the body group is terminated only by a blank line or a following
-section header. When the facts section is the last block in a chunk and the
-text was normalized so it ends without a blank line (common when a chunk
-boundary falls inside a section), the regex cannot match at all and the facts —
-the veteran's circumstances, the most useful part of a deep-read digest — are
-silently dropped.
-
-**Remediation:** make the terminator optional — add `|$` to the non-capturing
-group — so end-of-chunk ends the body. Add tests for the end-of-string case and
-for a chunk boundary immediately after the facts sentence.
-
----
-
 ### P1-032 — Output quality — Low — **OPEN**
 
 **Location:** `va_legal_agent/deep_read.py:31`, `116-133`
@@ -502,11 +348,13 @@ emit it in the final summary. Add a test mixing one empty and one real digest.
    unknown status is neither binding nor penalized; check any new consumer for
    truthiness that would collapse `None` into `False`.
 
-4. **The U.S.C./C.F.R. fix is the model for the rest of the legal-accuracy
-   items.** P1-029 now reserves slots per family instead of letting one family
-   consume the cap. P1-027, P1-028, P1-030, and P1-031 are analogous
-   “first/truncated signal wins” defects; each needs a test that puts the
-   disfavored but correct signal later in the input.
+4. **Legal-accuracy extraction now distinguishes the right signal from the
+   first one.** P1-029 reserves slots per statutory family instead of letting
+   one family consume the cap; P1-027 uses document order for the review
+   standard, P1-028 ranks decision-date hints, P1-030 reads every PDF page for
+   enrichment, and P1-031 terminates facts at a chunk boundary. Future
+   extractors should test the disfavored signal when it appears later or at the
+   edge of the input.
 
 ## Verification appendix
 
@@ -532,18 +380,15 @@ PY
 ```
 
 The full suite, Ruff, and `git diff --check` results are recorded in the
-“Totals” section above. The ten remediations changed `__main__.py`, `config.py`,
-`models.py`, `providers.py`, `search.py`, `fetch.py`, `agent.py`, `ranking.py`,
-`interpretation.py`, `impact.py`, and `llm.py`, plus their focused tests; no
-other finding was remediated in this pass.
+“Totals” section above. The fourteen remediations changed `__main__.py`,
+`config.py`, `models.py`, `providers.py`, `search.py`, `fetch.py`, `deep_read.py`,
+`agent.py`, `ranking.py`, `interpretation.py`, `impact.py`, and `llm.py`, plus
+their focused tests; no other finding was remediated in this pass.
 
 ## Bottom line
 
-Pass 3's operational findings remain complete. The remaining core layer is not
-clean: **21 of 32 Pass 1 findings are fixed, 0 are partially mitigated, and 11
-remain open.** No High item remains. The highest-impact remaining legal item is
-P1-027 (out-of-order legal-standard extraction); no Medium security finding
-remains. The next remediation pass should start with the shared input boundaries
-(P1-008, P1-010, P1-012, P1-017), then the legal-accuracy ordering/truncation
-defects (P1-027, P1-028, P1-030, P1-031), and finally the search/output
-semantics items P1-021 and P1-032.
+Pass 3's operational findings remain complete. The remaining core layer has no
+High or Medium findings: **25 of 32 Pass 1 findings are fixed, 0 are partially
+mitigated, and 7 remain open, all Low.** The next remediation pass should start
+with the shared input boundaries (P1-008, P1-010, P1-012, P1-017), then the
+search/output semantics items P1-021 and P1-032.

@@ -61,6 +61,13 @@ def test_extract_decision_date_prefers_hinted_date():
     assert extract_decision_date(text) == "2020-11-05"
 
 
+def test_extract_decision_date_prefers_decided_over_filing_date():
+    # Court pages frequently show the filing date first; the decision date is
+    # the authority's date and must win despite document order.
+    text = "Filed: January 2, 2024\nDecided: January 3, 2023"
+    assert extract_decision_date(text) == "2023-01-03"
+
+
 def test_extract_decision_date_sept_and_invalid_day():
     # "Sept" is normalized to "Sep" before parsing.
     assert extract_decision_date("Decided: Sept 5, 2020.") == "2020-09-05"
@@ -383,6 +390,15 @@ def test_extract_legal_standard_returns_first_match_only():
     assert extract_legal_standard(text) == "clear error"
 
 
+def test_extract_legal_standard_uses_earliest_document_match():
+    # The later clear-error reference must not beat the opening de novo review.
+    text = (
+        "We review legal questions de novo. "
+        "The Board factual findings require clear error."
+    )
+    assert extract_legal_standard(text) == "de novo"
+
+
 # ── extract_precedential_status ─────────────────────────────────────────────
 
 
@@ -688,6 +704,29 @@ def test_fetch_case_details_extracts_rich_fields(monkeypatch):
     )
     assert details["statutes"] == ["38 U.S.C. § 7104(d)(1)", "38 C.F.R. § 3.303"]
     assert details["outcome"] == "vacated and remanded"
+
+
+def test_fetch_case_details_pdf_reads_all_pages(monkeypatch):
+    # Enrichment used to stop at page four, losing a holding on page five.
+    pages = [
+        _FakePdfPage("Page one"),
+        _FakePdfPage("Page two"),
+        _FakePdfPage("Page three"),
+        _FakePdfPage("Page four"),
+        _FakePdfPage("We hold that the Board erred in its nexus analysis."),
+        _FakePdfPage("ORDER"),
+    ]
+    monkeypatch.setattr("pypdf.PdfReader", lambda stream: _FakePdfReader(pages))
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None: FakePageResponse(
+            content=b"pdf-bytes", headers={"Content-Type": "application/pdf"}
+        ),
+    )
+
+    details = fetch_case_details("https://uscourts.cavc.gov/long.pdf")
+
+    assert "We hold that the Board erred in its nexus analysis." in details["holding"]
 
 
 def test_fetch_case_details_from_pdf(monkeypatch):

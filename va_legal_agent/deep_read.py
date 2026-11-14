@@ -49,8 +49,8 @@ _FACT_HEADERS = (
 # one of the known section headers, consumed as its own line.
 _FACT_HEADER_RE = re.compile(
     r"(?:(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+)?"
-    r"(" + "|".join(re.escape(h) for h in _FACT_HEADERS) + r")\s*\n"
-    r"(.*?)(?:\n\n|\n(?=(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+|(?:FINDINGS|CONCLUSIONS|ANALYSIS|DISCUSSION|ARGUMENT|REASONS|DETERMINATION|DECISION|ORDER)))",
+    r"(" + "|".join(re.escape(h) for h in _FACT_HEADERS) + r")[ \t]*\r?\n"
+    r"(.*?)(?:\n\n|\n(?=(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.[A-Z]?|\d+\.(?:\d+\.)?)\s+|(?:FINDINGS|CONCLUSIONS|ANALYSIS|DISCUSSION|ARGUMENT|REASONS|DETERMINATION|DECISION|ORDER))|$)",
     re.IGNORECASE | re.DOTALL,
 )
 

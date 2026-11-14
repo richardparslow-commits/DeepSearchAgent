@@ -1,5 +1,7 @@
 """Tests for deep-read mode (va_legal_agent.deep_read)."""
 
+import pytest
+
 from va_legal_agent.deep_read import (
     _EMPTY_DIGEST,
     _build_reduce_prompt,
@@ -205,6 +207,21 @@ def test_extract_chunk_facts_header_but_empty_body():
         "The Board erred in relying on an inadequate examination."
     )
     assert _extract_chunk_facts(text) == ""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus.",
+        "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus.\n",
+    ],
+)
+def test_extract_chunk_facts_body_at_end_of_chunk(text):
+    """A facts block that reaches the chunk boundary has no blank-line terminator."""
+    result = _extract_chunk_facts(text)
+
+    assert "served in Vietnam" in result
+    assert "diagnosed with tinnitus" in result
 
 
 def test_extract_chunk_facts_capped_at_300_chars():
