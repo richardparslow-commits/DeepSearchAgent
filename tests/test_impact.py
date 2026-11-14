@@ -116,6 +116,12 @@ def test_outcome_note_mapping():
     )
 
 
+def test_outcome_note_deduplicates_repeated_signal():
+    # Repeated signals map to the same note; keep one copy of the prose.
+    note = outcome_note_for("vacated and vacated", appellant_role="veteran")
+    assert note.count("The decision below was vacated") == 1
+
+
 def test_outcome_note_secretary_override_affirmed():
     # When the Secretary cross-appealed, "affirmed" flips to favorable.
     note = outcome_note_for("affirmed", appellant_role="secretary")

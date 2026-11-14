@@ -144,6 +144,14 @@ def test_is_challenge_ignores_anomaly_word_in_results_text():
     )
 
 
+def test_is_challenge_detects_anomaly_in_final_url_path():
+    from va_legal_agent.search import _is_challenge
+
+    page = FakeResponse("<html>normal results</html>")
+    page.url = "https://duckduckgo.com/anomaly/challenge"
+    assert _is_challenge(page)
+
+
 def test_is_transient_error_handles_response_none():
     from va_legal_agent.search import _is_transient_error
 

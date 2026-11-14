@@ -274,6 +274,27 @@ def test_detect_contradictions_skips_first_case_without_statutes():
     assert detect_contradictions(cases) == []
 
 
+def test_detect_contradictions_skips_first_case_without_elements():
+    # A shared statute is necessary but not sufficient: a case that does not
+    # affirmatively address any claim element cannot anchor a conflict.
+    cases = [
+        _case(
+            "Smith v. Wilkie",
+            snippet="purely procedural posture",
+            outcome="granted",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+        _case(
+            "Jones v. McDonough",
+            snippet="service connection requires a nexus",
+            outcome="denied",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
 def test_detect_contradictions_dedupes_duplicate_titles():
     # Three distinct case records share the title "Smith v. Wilkie"; the same
     # title pair recurs across index pairs, so the detector reports each pair

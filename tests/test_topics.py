@@ -9,7 +9,13 @@ import pytest
 
 from va_legal_agent.impact import ISSUE_TAG_PATTERNS
 from va_legal_agent.interpretation import ELEMENT_LIBRARY
-from va_legal_agent.topics import ISSUE_TAG_ORDER, TOPICS, TOPICS_BY_NAME, authority_weight_for
+from va_legal_agent.topics import (
+    ISSUE_TAG_ORDER,
+    TOPICS,
+    TOPICS_BY_NAME,
+    authority_weight_for,
+    phrase_matches,
+)
 
 
 def test_authority_weight_defaults_to_zero_for_unknown_court():
@@ -17,6 +23,13 @@ def test_authority_weight_defaults_to_zero_for_unknown_court():
     # and must weigh nothing rather than crashing or defaulting to a nonzero.
     assert authority_weight_for("Some Unfamiliar Court") == 0
     assert authority_weight_for("") == 0
+
+
+def test_phrase_matches_returns_false_for_empty_text_or_phrase():
+    assert phrase_matches("", "rating") is False
+    assert phrase_matches("rating", "") is False
+    # A non-empty whole-token match still succeeds.
+    assert phrase_matches("service-connected knee", "service-connected") is True
 
 
 def test_element_library_reports_missing_topic_guidance(monkeypatch):
