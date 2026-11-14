@@ -100,6 +100,13 @@ def test_extract_decision_date_prefers_decided_over_filing_date():
     assert extract_decision_date(text) == "2023-01-03"
 
 
+def test_extract_decision_date_prefers_issued_over_filing_date():
+    # The full hint hierarchy applies: issued outranks filed even when filed
+    # appears first on the page.
+    text = "Filed: January 2, 2024\nIssued: January 3, 2024"
+    assert extract_decision_date(text) == "2024-01-03"
+
+
 def test_extract_decision_date_sept_and_invalid_day():
     # "Sept" is normalized to "Sep" before parsing.
     assert extract_decision_date("Decided: Sept 5, 2020.") == "2020-09-05"
@@ -429,6 +436,16 @@ def test_extract_legal_standard_uses_earliest_document_match():
         "The Board factual findings require clear error."
     )
     assert extract_legal_standard(text) == "de novo"
+
+
+def test_extract_legal_standard_keeps_earlier_clear_error_over_negated_de_novo():
+    # A later negated "de novo" mention must not displace the standard the
+    # court actually applied earlier in the sentence.
+    text = (
+        "We review the Board factual findings for clear error "
+        "and do not review de novo."
+    )
+    assert extract_legal_standard(text) == "clear error"
 
 
 # ── extract_precedential_status ─────────────────────────────────────────────
