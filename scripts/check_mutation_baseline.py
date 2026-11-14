@@ -122,6 +122,20 @@ def read_baseline() -> dict[str, set[str]]:
     return baseline
 
 
+def _annotation_chunks(text: str, limit: int = 3500) -> list[str]:
+    """Split an annotation message into size-limited chunks on word boundaries."""
+    chunks: list[str] = []
+    while len(text) > limit:
+        cut = text.rfind(" ", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     allow_missing = args == ["--allow-missing"]
@@ -220,13 +234,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {failure}")
             # Surface the mismatch as a check-run annotation too: workflow
             # logs require repository admin rights, but annotations are
-            # readable through the public checks API.
-            escaped = (
-                failure.replace("%", "%25")
-                .replace("\r", "%0D")
-                .replace("\n", "%0A")
-            )
-            print(f"::error title=Mutation kill-gate::{escaped}")
+            # readable through the public checks API. Check-run annotation
+            # messages are size-limited, so split long mutant lists on word
+            # boundaries instead of truncating them mid-name.
+            for chunk in _annotation_chunks(failure):
+                escaped = (
+                    chunk.replace("%", "%25")
+                    .replace("\r", "%0D")
+                    .replace("\n", "%0A")
+                )
+                print(f"::error title=Mutation kill-gate::{escaped}")
         return 1
 
     print(
