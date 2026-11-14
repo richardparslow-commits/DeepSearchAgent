@@ -218,6 +218,15 @@ def main(argv: list[str] | None = None) -> int:
         print("\nMutation kill-gate FAILED:")
         for failure in failures:
             print(f"  - {failure}")
+            # Surface the mismatch as a check-run annotation too: workflow
+            # logs require repository admin rights, but annotations are
+            # readable through the public checks API.
+            escaped = (
+                failure.replace("%", "%25")
+                .replace("\r", "%0D")
+                .replace("\n", "%0A")
+            )
+            print(f"::error title=Mutation kill-gate::{escaped}")
         return 1
 
     print(
