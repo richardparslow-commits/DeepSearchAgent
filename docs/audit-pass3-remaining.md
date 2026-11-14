@@ -48,7 +48,7 @@ Current verification state of the tree:
 
 ```text
 $ .venv/bin/python -m pytest -q
-1332 passed in 10.86s
+1332 passed in 11.05s
 PYTEST_EXIT=0
 
 $ .venv/bin/python -m ruff check va_legal_agent/__main__.py \
@@ -89,10 +89,10 @@ run on 2026-11-14; the existing regressions named below remain in the suite.
 | P1-024 | Plural section citations are expanded by `_section_values` at `fetch.py:330-338`; pinned by `test_extract_statutes_matches_plural_section_citations` (`tests/test_fetch.py:2060`). |
 | P1-025 | A decision's own citation is preferred over a quoted case; pinned by `test_extract_citation_prefers_own_citation_over_quoted_case` (`tests/test_fetch.py:2136`). |
 | P1-026 | Subsection normalization remains in `_normalize_statute_value` at `fetch.py:313-321`; covered by the fetch statutory-citation tests. |
-| P1-027 | `extract_legal_standard` now selects the earliest match across all review patterns, with tuple order only breaking ties, and recognizes the common `review legal questions de novo` phrasing (`fetch.py:237-243, 277-298`). Pinned by `test_extract_legal_standard_uses_earliest_document_match`. |
-| P1-028 | Decision-date hints are ranked `decided` > `issued` > `filed` > `handed down`, so a filing date shown first no longer displaces the later decision date (`fetch.py:49-54, 141-167`). Pinned by `test_extract_decision_date_prefers_decided_over_filing_date`. |
+| P1-027 | `extract_legal_standard` now selects the earliest match across all review patterns, with tuple order only breaking ties; a single `de novo` pattern covers `de novo review`, `review ... de novo`, and intervening subjects (`fetch.py:228-230, 264-285`). Pinned by `test_extract_legal_standard_uses_earliest_document_match`. |
+| P1-028 | Decision-date hints are ranked `decided` > `issued` > `filed` > `handed down`, so a filing date shown first no longer displaces the later decision date (`fetch.py:49-54, 141-161`). Pinned by `test_extract_decision_date_prefers_decided_over_filing_date`. |
 | P1-029 | `_merge_statute_families` now reserves C.F.R. slots at `fetch.py:341-355`. Probe with mixed statutory families: `extract_statutes("38 U.S.C. §§ 1110, 1131, 5103, 5103A, 7104, 7252; 38 C.F.R. §§ 3.303, 3.304")` → `['38 U.S.C. § 1110', '38 U.S.C. § 1131', '38 U.S.C. § 5103', '38 U.S.C. § 5103A', '38 C.F.R. § 3.303', '38 C.F.R. § 3.304']`; pinned by `test_extract_statutes_keeps_cfr_sections_under_the_cap` (`tests/test_fetch.py:2040`). |
-| P1-030 | Enrichment now reads every PDF page via `_extract_pdf_text(content, max_pages=0)` instead of stopping at four pages (`fetch.py:840-844`). Pinned by `test_fetch_case_details_pdf_reads_all_pages`. |
+| P1-030 | Enrichment now reads every PDF page via `_extract_pdf_text(content, max_pages=0)` instead of stopping at four pages (`fetch.py:831`). Pinned by `test_fetch_case_details_pdf_reads_all_pages`. |
 | P1-031 | Fact-section extraction treats the chunk boundary as a terminator (`deep_read.py:50-55`), while the header still consumes only its own line so an empty facts section remains empty. Pinned by `test_extract_chunk_facts_body_at_end_of_chunk`. |
 
 ---

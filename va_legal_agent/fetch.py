@@ -147,24 +147,18 @@ def extract_decision_date(text: str) -> str:
     appears first.  When no date has a recognized hint, the first parseable
     date is used as a last resort.
     """
-    hinted: list[tuple[int, int, str]] = []
-    unhinted: list[tuple[int, str]] = []
+    ranked: list[tuple[int, int, str]] = []
     for match in _DATE_PATTERN.finditer(text):
         iso = _match_to_iso(match)
         if not iso:
             continue
         context = text[max(0, match.start() - 40):match.start()]
-        for rank, hint in enumerate(_DATE_HINT_PRIORITIES):
-            if hint.search(context):
-                hinted.append((rank, match.start(), iso))
-                break
-        else:
-            unhinted.append((match.start(), iso))
-    if hinted:
-        return min(hinted)[2]
-    if unhinted:
-        return unhinted[0][1]
-    return ""
+        rank = next(
+            (i for i, hint in enumerate(_DATE_HINT_PRIORITIES) if hint.search(context)),
+            len(_DATE_HINT_PRIORITIES),
+        )
+        ranked.append((rank, match.start(), iso))
+    return min(ranked)[2] if ranked else ""
 
 
 _DOCKET_PATTERNS = (
@@ -231,16 +225,9 @@ _STANDARD_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:for|under)\s+(?:the\s+)?clear(?:ly)?\s+erroneous\b", re.IGNORECASE), "clear error"),
     (re.compile(r"\bclear(?:ly)?\s+erroneous\s+standard\b", re.IGNORECASE), "clear error"),
     (re.compile(r"\bclear(?:ly)?\s+error\b", re.IGNORECASE), "clear error"),
-    # "de novo review" / "review ... de novo"
-    (re.compile(r"\bde\s+novo\s+review\b", re.IGNORECASE), "de novo"),
-    (re.compile(r"\breview(?:ed|s)?\s+de\s+novo\b", re.IGNORECASE), "de novo"),
-    # "We review legal questions de novo" inserts the subject between the verb
-    # and the standard; the narrower patterns above miss that common phrasing.
-    (re.compile(
-        r"\breview(?:ed|s)?\s+(?:the\s+)?(?:legal|statutory|constitutional)\s+"
-        r"(?:questions?|issues?|conclusions?)\s+de\s+novo\b",
-        re.IGNORECASE,
-    ), "de novo"),
+    # "de novo" covers "de novo review", "review ... de novo", and an
+    # intervening subject ("review legal questions de novo").
+    (re.compile(r"\bde\s+novo\b", re.IGNORECASE), "de novo"),
     # "abuse of discretion"
     (re.compile(r"\babuse\s+of\s+discretion\b", re.IGNORECASE), "abuse of discretion"),
     # "arbitrary and capricious" / "arbitrary, capricious"
