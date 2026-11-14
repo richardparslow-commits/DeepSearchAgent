@@ -2153,3 +2153,17 @@ def test_extract_citation_prefers_own_citation_over_quoted_case():
         "The Board relied on Jones v. Shinseki, 25 Vet.App. 45.\n"
     )
     assert extract_citation(cavc) == "30 Vet.App. 123"
+
+@pytest.mark.parametrize("fetcher", [fetch_full_text, fetch_case_details])
+def test_fetch_rejects_non_http_url_before_network(fetcher, monkeypatch):
+    """Defence in depth: no non-HTTP scheme reaches the HTTP client."""
+    called = []
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda *args, **kwargs: called.append(1),
+    )
+
+    with pytest.raises(FetchError, match="non-HTTP"):
+        fetcher("javascript:alert(1)")
+
+    assert called == []

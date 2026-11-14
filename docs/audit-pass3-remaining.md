@@ -1,11 +1,11 @@
 # DeepSearchAgent — Audit Pass 3: Remaining Core Layer
 
-**Scope:** the Pass 1 files that still contain open findings:
+**Scope:** the Pass 1 files covered by this remaining-core audit:
 `va_legal_agent/__main__.py`, `config.py`, `models.py`, `llm.py`,
 `providers.py`, `search.py`, `fetch.py`, and `deep_read.py`.
 
-**Audited tree:** `3d36464` (`fix: complete Pass 3 audit remediation`) plus the
-uncommitted Pass 2/Pass 3 work in this working tree. The operational scope of
+**Audited tree:** `4d89774` (`fix: finish audit remediation and reconcile audit docs`)
+plus the current P1 remediation changes in this working tree. The operational scope of
 `docs/audit-pass3.md` (`webapp.py`, `batch.py`, scripts, deploy, workflows,
 Makefile, packaging/config) is already complete; this document extends Pass 3
 to the remaining core-layer findings rather than renumbering or reopening the
@@ -13,16 +13,17 @@ completed operational set.
 
 **Audit date:** 2026-11-14.
 
-**Document status:** Pass 1 re-audit plus targeted remediation of P1-007,
-P1-009, and P1-011 in this tree. The other findings are unchanged and remain
-for a later pass. Finding IDs are preserved from `docs/audit-pass1.md`; no new
-IDs are introduced.
+**Document status:** Pass 1 re-audit plus targeted remediation of P1-005,
+P1-006, P1-007, P1-009, P1-011, P1-014, P1-015, P1-016, P1-019, and
+P1-020 in this tree. The other findings are
+unchanged and remain for a later pass. Finding IDs are preserved from
+`docs/audit-pass1.md`; no new IDs are introduced.
 
 **Method:** every open finding below was re-executed against the current tree
 with `.venv/bin/python`, and current line numbers were read from the file. The
 quoted outputs are observed output, not paraphrases. Findings that changed
-since Pass 1 are marked **PARTIAL** and distinguish the part that is fixed from
-the part that remains. Where a finding turns on a legal premise, the primary
+since Pass 1 are recorded as **FIXED** in the evidence table; no partial
+findings remain in this pass. Where a finding turns on a legal premise, the primary
 authority is cited rather than a code-style preference.
 
 ## Totals
@@ -30,24 +31,24 @@ authority is cited rather than a code-style preference.
 | File | Pass 1 findings | Fixed in current tree | Partial | Open |
 |---|---:|---:|---:|---:|
 | `va_legal_agent/__init__.py` | 0 | 0 | 0 | 0 |
-| `va_legal_agent/__main__.py` | 6 | 4 | 2 | 0 |
+| `va_legal_agent/__main__.py` | 6 | 6 | 0 | 0 |
 | `va_legal_agent/config.py` | 2 | 1 | 0 | 1 |
 | `va_legal_agent/models.py` | 2 | 1 | 0 | 1 |
-| `va_legal_agent/llm.py` | 2 | 2 | 0 | 0 |
-| `va_legal_agent/providers.py` | 6 | 1 | 0 | 5 |
-| `va_legal_agent/search.py` | 3 | 0 | 0 | 3 |
+| `va_legal_agent/llm.py` | 2 | 1 | 0 | 1 |
+| `va_legal_agent/providers.py` | 6 | 4 | 0 | 2 |
+| `va_legal_agent/search.py` | 3 | 2 | 0 | 1 |
 | `va_legal_agent/fetch.py` | 9 | 6 | 0 | 3 |
 | `va_legal_agent/deep_read.py` | 2 | 0 | 0 | 2 |
-| **Total** | **32** | **14** | **2** | **16** |
+| **Total** | **32** | **21** | **0** | **11** |
 
-The 18 still-actionable findings (16 open + 2 partial) comprise **0 High,
-11 Medium, and 7 Low**. The High item from the previous pass, P1-007, is fixed.
+The 11 still-actionable findings (all open) comprise **0 High, 4 Medium, and
+7 Low**. The High item from the previous pass, P1-007, is fixed.
 
 Current verification state of the tree:
 
 ```text
 $ .venv/bin/python -m pytest -q
-1316 passed in 10.98s
+1327 passed in 11.14s
 PYTEST_EXIT=0
 
 $ .venv/bin/python -m ruff check va_legal_agent/__main__.py \
@@ -72,10 +73,17 @@ run on 2026-11-14; the existing regressions named below remain in the suite.
 | P1-002 | `_mask_secret` fully masks values of 16 characters or fewer at `__main__.py:187-196`; `_mask_secret("abcd1234e")` → `***`. |
 | P1-003 | A malformed proxy port no longer escapes `--show-config`: `__main__.py:230-236` omits the port after `ValueError`; probe → `http://***@proxy.example`. |
 | P1-004 | `batch_dry_run` rejects a non-positive cap at `__main__.py:784-785`; pinned by `test_max_batch_requests_must_be_positive` (`tests/test_cli.py:1824`). |
+| P1-005 | Analysis failures return a per-issue row carrying `error`, `error_type`, and the full `traceback` (`__main__.py:1126-1134`); the `analysis_failed` event carries the same fields plus `exc_info` (`:138-160`), and `_auto_run_summary` exposes an `errors` list (`:1232-1255`). Pinned by `test_auto_run_analysis_failure_retains_type_and_traceback` and `test_auto_run_analyze_failure_records_error`. |
+| P1-006 | A transient `SearchError` from `fetch_courtlistener_usage` is logged, followed by one bounded fallback wait (`min(60, wait_limit)`) and a re-plan; a second consecutive failure stops with the pending rows (`__main__.py:1181-1208`). Pending batches without CourtListener skip the quota wait (`:1171-1180`). Pinned by `test_auto_run_retries_transient_usage_failure_after_bounded_wait`, `test_auto_run_usage_failure_retries_then_stops_with_pending`, and `test_auto_run_without_courtlistener_skips_usage_lookup`. |
 | P1-007 | `env_float` rejects `nan`/`inf`/`1e309` and caps sleep/backoff/timeout settings at 3600 s (`config.py:31, 94-125`); `SEARCH_MAX_WALL_SECONDS` remains finite-only without the sleep cap. Probe: `nan`, `inf`, and `3600.1` all fall back to the default. Pinned by `test_env_float_rejects_non_finite_values`, `test_env_float_rejects_values_above_the_sleep_cap`, and `test_search_pacing_float_is_capped_at_the_config_call_site`. |
 | P1-009 | `precedential` is now tri-state (`None` = unknown) at `models.py:31-38`; empty extraction returns `None` (`fetch.py:594-616`); ranking, interpretation, summary, impact, and the reasoning prompt distinguish unknown from non-precedential. Pinned by `test_case_record_precedential_defaults_to_unknown`, `test_extract_precedential_status_unknown_for_empty_text`, `test_unknown_precedential_is_not_penalised_but_is_flagged`, `test_authority_note_unknown_precedential_is_not_binding`, `test_confidence_unknown_precedential_is_not_binding`, and `test_analysis_summary_flags_unknown_precedential`. |
 | P1-011 | Narrative, reasoning, and deep-read reduce prompts now escape and delimit untrusted case text and state the evidence-only rule in the system prompt (`llm.py:22-63, 100-177`; `deep_read.py:135-168`). Pinned by `test_build_messages_delimit_and_escape_untrusted_case_text`, `test_build_reasoning_messages_delimit_and_escape_untrusted_text`, and `test_build_reduce_prompt_delimits_and_escapes_untrusted_text`. |
 | P1-013 | `_minimize_bva_query` keeps a non-empty statute-only fallback; pinned by `test_minimize_bva_query_statute_only_anchor` (`tests/test_providers.py:1128`) and the provider-boundary tests. |
+| P1-014 | `CourtListenerProvider.search` raises `SearchError("empty query after CourtListener adaptation")` before building params or making a request when minimization empties the query (`providers.py:407-409`). Pinned by `test_courtlistener_search_rejects_empty_adapted_query`. |
+| P1-015 | `_filter_excluded_terms` compiles a whole-word regex, so `back` removes a true `Back condition` result but preserves `Background` and `Feedback` (`providers.py:1638-1642`). Pinned by `test_filter_excluded_terms_uses_whole_word_boundaries`. |
+| P1-016 | `courtlistener_minute_budget` returns `None` for a well-formed payload with no minute row and propagates `SearchError` for a missing/non-list `current_usage`; the caller checks `is None` (`providers.py:628-665`). Pinned by `test_courtlistener_minute_budget_returns_none_when_absent` and `test_courtlistener_minute_budget_raises_on_malformed_payload`. |
+| P1-019 | `_is_challenge` now keys on 202, an `/anomaly` redirect, a DuckDuckGo anomaly title, and challenge/captcha containers rather than any body substring (`search.py:39-70`). Pinned by `test_is_challenge_ignores_anomaly_word_in_results_text` and the existing 202/retry tests. |
+| P1-020 | Decoded DuckDuckGo destinations are restricted to absolute HTTP(S) URLs with a host (`search.py:180-206`), and `_require_http_url` rejects non-HTTP(S) URLs in both fetch entry points (`fetch.py:31-35, 731, 776`). Pinned by `test_extract_url_drops_non_http_redirect_destination` and `test_fetch_rejects_non_http_url_before_network`. |
 | P1-022 | Outcome extraction reads only the disposition block; pinned by `test_extract_outcome_reads_only_the_order_disposition` (`tests/test_fetch.py:1959`). |
 | P1-023 | Precedential status is read from the header; pinned by `test_extract_precedential_status_reads_the_header_not_the_body` (`tests/test_fetch.py:2001`). |
 | P1-024 | Plural section citations are expanded by `_section_values` at `fetch.py:330-338`; pinned by `test_extract_statutes_matches_plural_section_citations` (`tests/test_fetch.py:2060`). |
@@ -86,106 +94,6 @@ run on 2026-11-14; the existing regressions named below remain in the suite.
 ---
 
 ## Still actionable
-
-### P1-005 — Observability — Medium — **PARTIAL**
-
-**Location:** `va_legal_agent/__main__.py:1113-1115` (catch site) and
-`va_legal_agent/__main__.py:130-148` (`_emit_failure_event`).
-
-**Current code:**
-
-```python
-                except Exception as exc:  # noqa: BLE001 - per-issue failure is recorded
-                    _emit_failure_event(issue, exc, run_id)
-                    results[issue] = "error"
-```
-
-```python
-    _EVENTS_LOGGER.error(
-        "analysis failed for %s (run=%s): %s",
-        issue,
-        run_id,
-        error,
-        extra={
-            "event": "analysis_failed",
-            "run_id": run_id,
-            "issue": issue,
-            "error": str(error),
-        },
-    )
-```
-
-**What changed since Pass 1:** failures are no longer silent. The event logger
-now emits `analysis_failed`, so an unattended batch has a terminal signal and
-the exception message.
-
-**Executed evidence:**
-
-```python
-# analyze_cases_for_claim monkeypatched to raise RuntimeError("boom-in-analysis")
->>> _auto_run(["x"], "Compensation", 1, None)
-[{'issue': 'x', 'verdict': 'error'}]
->>> captured_record.getMessage()
-'analysis failed for x (run=): boom-in-analysis'
->>> bool(captured_record.exc_info)
-False
-```
-
-**What remains:** neither the exception type nor a traceback is recorded, and
-the per-issue result row is still only `{"issue": ..., "verdict": "error"}`.
-A systematic `KeyError`, `TypeError`, or provider-specific exception therefore
-still cannot be diagnosed from the batch summary without reproducing it.
-
-**Remediation:** use `_EVENTS_LOGGER.exception(...)` (or include
-`type(error).__name__` and `traceback.format_exc()` in `extra`) while keeping
-the existing event name and `error` field for log consumers. Add an `error`
-field to the per-issue row and summary, then pin it with a test that captures
-both a `RuntimeError` event and the summary row.
-
----
-
-### P1-006 — Batch orchestration — Medium — **PARTIAL**
-
-**Location:** `va_legal_agent/__main__.py:1151-1160` (`_auto_run`).
-
-**Current code:**
-
-```python
-        try:
-            usage = fetch_courtlistener_usage()
-            daily = courtlistener_daily_budget(usage)
-        except SearchError as exc:
-            logger.error(
-                "auto-run stopped: could not determine the next quota window: %s", exc
-            )
-            break
-```
-
-**What changed since Pass 1:** the `SearchError` no longer escapes as a
-traceback. The batch stops cleanly and logs why.
-
-**Executed evidence:**
-
-```python
-# batch_dry_run returns one abort row; fetch_courtlistener_usage raises SearchError
->>> _auto_run(["x"], "Compensation", 1, None)
-[{'issue': 'x', 'verdict': 'abort'}]
-stderr: auto-run stopped: could not determine the next quota window: usage down
-```
-
-**What remains:** the `break` still abandons every pending issue. The Pass 1
-remediation was a bounded fallback sleep followed by re-planning, not merely a
-clean exit. A transient 401, network blip, or malformed usage payload therefore
-still turns a resumable batch into an incomplete run.
-
-**Remediation:** when the usage lookup fails, record the failure and take one
-bounded fallback wait (`min(60, wait_limit)`), then re-plan. Keep the existing
-stall and iteration counters so an unavailable endpoint cannot spin forever;
-abort only after repeated consecutive lookup failures. Skip the quota wait
-entirely when CourtListener is not a configured provider or the backlog is
-cap-deferred (the latter already breaks earlier at lines 1132-1148).
-
----
 
 ### P1-008 — Configuration — Low — **OPEN**
 
@@ -275,121 +183,6 @@ with a test for whitespace-only and empty values.
 
 ---
 
-### P1-014 — Legal accuracy — Medium — **OPEN**
-
-**Location:** `va_legal_agent/providers.py:250-310`
-(`_minimize_courtlistener_query`), used with
-`va_legal_agent/providers.py:69-79` (`_courtlistener_query`).
-
-**Current code:**
-
-```python
-    words = leading.split()
-    while len(words) > 1 and words[-1].lower() in _BVA_BOILERPLATE:
-        words.pop()
-    return " ".join(words)
-```
-
-```python
-    clause = "court_id:(" + " OR ".join(_CL_COURT_NAMES) + ")"
-    return f"({query}) AND {clause}" if query else clause
-```
-
-**Executed evidence:**
-
-```python
->>> _minimize_courtlistener_query('""')
-''
->>> _courtlistener_query("")
-'court_id:(cavc OR cafc OR scotus)'
-```
-
-**Impact:** an empty quoted query, or one whose quoted fragments are all
-boilerplate, minimizes to `""`. The provider then emits only the court clause.
-CourtListener returns its default ordering for those courts — arbitrary recent
-opinions, not matches for the issue — and those cases receive full relevance
-scores. A zero-term query is presented as a successful search.
-
-**Remediation:** raise `SearchError("empty query after adaptation")` when the
-minimized query is empty, rather than issuing a court-only search, or return
-the stripped original query. Put the check at the provider boundary as well,
-and add a regression for `CourtListenerProvider.search` with `""`.
-
----
-
-### P1-015 — Search quality — Medium — **OPEN**
-
-**Location:** `va_legal_agent/providers.py:1620-1639`
-(`_filter_excluded_terms`).
-
-**Current code:**
-
-```python
-    """Remove results whose title or snippet contains any excluded term.
-
-    Matching is case-insensitive and whole-word (\b-bounded). ...
-    """
-    ...
-    pattern = re.compile("|".join(re.escape(t) for t in tokens), re.IGNORECASE)
-```
-
-**Executed evidence:**
-
-```python
->>> _filter_excluded_terms(
-...     [{"title": "Background on tinnitus", "snippet": ""}], "back"
-... )
-[]
-```
-
-**Impact:** the docstring promises whole-word matching but the pattern has no
-word boundaries. `SEARCH_EXCLUDE_TERMS=back` also removes every result
-mentioning “background”, “backlog”, or “feedback” — including relevant
-decisions whose facts section opens “Background”. Exclusion silently reduces
-recall with no way to see why.
-
-**Remediation:** compile
-`r"\b(?:" + "|".join(re.escape(t) for t in tokens) + r")\b"` so the
-implementation matches the documented contract. Add a test that “background”
-survives `back` and that a true “back condition” result is still removed.
-
----
-
-### P1-016 — Reliability — Medium — **OPEN**
-
-**Location:** `va_legal_agent/providers.py:621-631`
-(`courtlistener_minute_budget`); caller at `providers.py:683-701`.
-
-**Current code:**
-
-```python
-    try:
-        return _extract_rate_row(usage, _MINUTE_RATE_PATTERN, "per-minute")
-    except SearchError:
-        return {}  # absent minute row is non-fatal; callers check remaining
-```
-
-**Executed evidence:**
-
-```python
->>> courtlistener_minute_budget({"current_usage": []})
-{}
-```
-
-**Impact:** the extractor converts every payload problem into `{}`, including a
-completely malformed response with no `current_usage` list. The caller treats
-`{}` as “tier has no minute row — skip the guard” (`providers.py:697-699`), so a
-changed or broken API shape silently disables the deep-read pre-flight and the
-run proceeds into 429 backoffs. The comment's claim that callers “check
-remaining” is false: the empty-dict branch returns before any check.
-
-**Remediation:** distinguish “no minute row” from “malformed payload”. Return
-`None` for an absent row and raise a `SearchError` for a missing/invalid
-`current_usage`; make `check_courtlistener_minute_budget` check `is None`
-explicitly. Add tests for both shapes.
-
----
-
 ### P1-017 — Robustness — Low — **OPEN**
 
 **Location:** `va_legal_agent/providers.py:634-659` (`_extract_rate_row`).
@@ -457,80 +250,6 @@ check exists to handle.
 **Remediation:** before subtracting, if `build_time.tzinfo is None`, replace it
 with `timezone.utc`; treat `TypeError` as “stale, rebuild” as defence in depth.
 Add a test with a naive `build_time`.
-
----
-
-### P1-019 — Search reliability — Medium — **OPEN**
-
-**Location:** `va_legal_agent/search.py:39-41` (`_is_challenge`).
-
-**Current code:**
-
-```python
-    return response.status_code == 202 or "anomaly" in response.text.lower()
-```
-
-**Executed evidence:**
-
-```python
->>> _is_challenge(SimpleNamespace(
-...     status_code=200,
-...     text="there is no anomaly in this article",
-... ))
-True
-```
-
-**Impact:** the marker is matched anywhere in the whole page, including result
-titles and snippets. A valid results page for a query about anomaly detection
-is classified as a challenge, so `DuckDuckGoProvider.search` discards the
-parsed results, backs off, retries, and eventually raises. The failure is
-query-dependent and looks like throttling, making it hard to diagnose.
-
-**Remediation:** detect the challenge structurally — 202 status, a redirect to
-`/anomaly`, or the challenge form/captcha element — rather than a body
-substring. If a text marker is kept, require it in the page title or a
-challenge-specific container, and add a results-page regression containing the
-word “anomaly”.
-
----
-
-### P1-020 — Security — Medium — **OPEN**
-
-**Location:** `va_legal_agent/search.py:151-167`
-(`extract_url_from_duckduckgo`); the URL is later fetched by
-`fetch.py:713-732` (`fetch_full_text`) and `fetch.py:759-783`
-(`fetch_case_details`).
-
-**Current code:**
-
-```python
-    if is_ddg_redirect:
-        params = parse_qs(parsed.query)
-        if "uddg" in params:
-            return params["uddg"][0]
-    return link
-```
-
-**Executed evidence:**
-
-```python
->>> extract_url_from_duckduckgo(
-...     "//duckduckgo.com/l/?uddg=javascript%3Aalert%281%29"
-... )
-'javascript:alert(1)'
-```
-
-**Impact:** the decoded destination is returned with no scheme validation. A
-crafted DuckDuckGo redirect (or a scraped page whose link is manipulated) can
-yield `javascript:`, `data:`, or `file:` URLs. `_parse_results` rejects only
-`duckduckgo.com` hosts; the URL is then stored as a case URL and later passed
-to `curl_cffi.get`, creating an unvalidated-scheme fetch path driven by
-third-party content.
-
-**Remediation:** after decoding, accept only `http`/`https` with a non-empty
-netloc (`urlsplit(...).scheme in {"http", "https"}`); otherwise drop the
-result. Apply the same check in `fetch_full_text`/`fetch_case_details` as
-defence in depth, and add a regression for the `javascript:` payload.
 
 ---
 
@@ -773,9 +492,9 @@ emit it in the final summary. Add a test mixing one empty and one real digest.
 
 2. **External payloads still need defence in depth.** P1-011 now delimits
    and escapes case text in the narrative, reasoning, and deep-read reduce
-   prompts; P1-020 remains open because a decoded DuckDuckGo destination is
-   returned without a scheme check. The URL issue needs validation at the
-   producer and again before any fetch.
+   prompts; P1-020 now validates decoded DuckDuckGo destinations at the producer
+   and again before any fetch. Future network adapters should reuse the same
+   boundary rather than assuming their callers validated the URL.
 
 3. **“Unknown” is now explicit for precedential status.** P1-009 uses `None`
    for an unread body and carries that state through ranking, interpretation,
@@ -813,19 +532,18 @@ PY
 ```
 
 The full suite, Ruff, and `git diff --check` results are recorded in the
-“Totals” section above. The three remediations changed `config.py`,
-`models.py`, `fetch.py`, `agent.py`, `ranking.py`, `interpretation.py`,
-`impact.py`, and `llm.py`, plus their focused tests; no other finding was
-remediated in this pass.
+“Totals” section above. The ten remediations changed `__main__.py`, `config.py`,
+`models.py`, `providers.py`, `search.py`, `fetch.py`, `agent.py`, `ranking.py`,
+`interpretation.py`, `impact.py`, and `llm.py`, plus their focused tests; no
+other finding was remediated in this pass.
 
 ## Bottom line
 
 Pass 3's operational findings remain complete. The remaining core layer is not
-clean: **14 of 32 Pass 1 findings are fixed, 2 are partially mitigated, and 16
+clean: **21 of 32 Pass 1 findings are fixed, 0 are partially mitigated, and 11
 remain open.** No High item remains. The highest-impact remaining legal item is
-P1-027 (out-of-order legal-standard extraction); the highest-impact remaining
-security item is P1-020 (unvalidated DuckDuckGo destination schemes). The next
-remediation pass should start with the shared input boundaries (P1-008, P1-010,
-P1-012, P1-017), then the legal-accuracy ordering/truncation defects (P1-027,
-P1-028, P1-030, P1-031), and then the search robustness items (P1-014 through
-P1-021).
+P1-027 (out-of-order legal-standard extraction); no Medium security finding
+remains. The next remediation pass should start with the shared input boundaries
+(P1-008, P1-010, P1-012, P1-017), then the legal-accuracy ordering/truncation
+defects (P1-027, P1-028, P1-030, P1-031), and finally the search/output
+semantics items P1-021 and P1-032.

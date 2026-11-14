@@ -37,8 +37,37 @@ def _retry_delay(attempt: int) -> float:
 
 
 def _is_challenge(response: "requests.Response") -> bool:
-    """True when DuckDuckGo served a rate-limit/anomaly challenge page."""
-    return response.status_code == 202 or "anomaly" in response.text.lower()
+    """True when DuckDuckGo served a structural rate-limit challenge.
+
+    A challenge is identified by a 202 status, an ``/anomaly`` redirect, a
+    DuckDuckGo anomaly title, or a challenge/captcha container. Plain result
+    text mentioning "anomaly" is not a challenge; treating it as one discards
+    valid results for queries about anomaly detection.
+    """
+    if response.status_code == 202:
+        return True
+
+    final_url = getattr(response, "url", "") or ""
+    if "anomaly" in urlparse(str(final_url)).path.lower():
+        return True
+
+    soup = BeautifulSoup(response.text or "", "html.parser")
+    title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
+    if "duckduckgo" in title and "anomaly" in title:
+        return True
+
+    challenge_selectors = (
+        ".anomaly-modal",
+        "[class*='anomaly-modal']",
+        "#anomaly-modal",
+        "form[action*='anomaly']",
+        ".challenge-form",
+        "#challenge-form",
+        ".captcha",
+        "[class*='captcha']",
+        "iframe[src*='captcha']",
+    )
+    return soup.select_one(", ".join(challenge_selectors)) is not None
 
 
 def _is_transient_error(exc: Exception) -> bool:
@@ -148,13 +177,22 @@ def build_duckduckgo_url(query: str, page: int = 1, exclude_terms: str = "") -> 
     return "https://duckduckgo.com/html/?" + urlencode(params)
 
 
+def _is_http_url(url: str) -> bool:
+    """Return True only for an absolute HTTP(S) URL with a non-empty host."""
+    parsed = urlparse(url)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
 def extract_url_from_duckduckgo(link: str) -> str:
     """Return the real destination URL hidden inside a DuckDuckGo ``/l/?uddg=`` redirect.
 
     Handles the link forms returned by the HTML endpoint, e.g.
     ``//duckduckgo.com/l/?uddg=<percent-encoded-url>&rut=...``,
     ``/l/?uddg=...``, and ``https://duckduckgo.com/l/?uddg=...``.
-    Non-redirect links are returned unchanged.
+    A decoded destination is returned only when it is an absolute HTTP(S) URL;
+    ``javascript:``, ``data:``, ``file:`` and other schemes return an empty
+    string so the caller drops the result. Non-redirect links are returned
+    unchanged.
     """
     parsed = urlparse(link)
     is_ddg_redirect = parsed.path == "/l/" and (
@@ -163,7 +201,8 @@ def extract_url_from_duckduckgo(link: str) -> str:
     if is_ddg_redirect:
         params = parse_qs(parsed.query)
         if "uddg" in params:
-            return params["uddg"][0]
+            destination = params["uddg"][0].strip()
+            return destination if _is_http_url(destination) else ""
     return link
 
 

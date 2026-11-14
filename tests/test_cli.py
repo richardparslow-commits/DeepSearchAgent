@@ -964,6 +964,76 @@ def test_auto_run_analyze_failure_records_error(capsys, monkeypatch, tmp_path):
     assert sorted(ran) == ["alpha", "beta"]
 
 
+def test_auto_run_analysis_failure_retains_type_and_traceback(monkeypatch, caplog):
+    """The error row and event carry the exception type, message, and traceback."""
+    from va_legal_agent.__main__ import _JsonFormatter, _auto_run, _auto_run_summary
+
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": "proceed",
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    def fail_analyze(issue, **kwargs):
+        raise RuntimeError("boom-in-analysis")
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", fail_analyze)
+
+    with caplog.at_level(logging.ERROR, logger="va_legal_agent.events"):
+        results = _auto_run(
+            ["x"],
+            claim_type="Compensation",
+            max_results=1,
+            max_wall_seconds=None,
+            run_id="run-7",
+        )
+
+    assert len(results) == 1
+    row = results[0]
+    assert row["issue"] == "x"
+    assert row["verdict"] == "error"
+    assert row["error_type"] == "RuntimeError"
+    assert row["error"] == "boom-in-analysis"
+    assert "Traceback (most recent call last)" in row["traceback"]
+    assert "RuntimeError: boom-in-analysis" in row["traceback"]
+
+    events = [
+        record for record in caplog.records if getattr(record, "event", None) == "analysis_failed"
+    ]
+    assert len(events) == 1
+    event = events[0]
+    assert event.getMessage() == "analysis failed for x (run=run-7): boom-in-analysis"
+    assert event.error_type == "RuntimeError"
+    assert event.traceback == row["traceback"]
+    assert event.exc_info is not None
+    payload = json.loads(_JsonFormatter().format(event))
+    assert payload["error_type"] == "RuntimeError"
+    assert payload["traceback"] == row["traceback"]
+
+    summary = _auto_run_summary(results)
+    assert summary["successful"] == 0
+    assert summary["failed"] == 1
+    assert summary["errors"] == [
+        {
+            "issue": "x",
+            "error_type": "RuntimeError",
+            "error": "boom-in-analysis",
+            "traceback": row["traceback"],
+        }
+    ]
+
+
 def test_auto_run_passes_batch_run_id_to_per_issue_analyses(capsys, monkeypatch):
     """The exported batch RUN_ID reaches each analysis and completion event."""
     monkeypatch.setenv("RUN_ID", "batch-42")
@@ -1139,6 +1209,7 @@ def test_auto_run_iteration_guard_bounds_planning(monkeypatch):
     """A batch that keeps making slow progress cannot plan forever."""
     from va_legal_agent.__main__ import _auto_run
 
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
 
     def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
@@ -1199,6 +1270,7 @@ def test_auto_run_wait_is_capped(monkeypatch):
     """A far-future reset cannot put an unattended run to sleep for days."""
     from va_legal_agent.__main__ import _auto_run
 
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
     sleeps: list[float] = []
 
@@ -1255,6 +1327,7 @@ def test_auto_run_repeated_quota_stall_terminates(monkeypatch):
     """A second unchanged abort pass stops instead of waiting forever."""
     from va_legal_agent.__main__ import _auto_run
 
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
     sleeps: list[float] = []
 
@@ -1300,12 +1373,15 @@ def test_auto_run_repeated_quota_stall_terminates(monkeypatch):
     assert results == [{"issue": "a", "verdict": "abort"}]
 
 
-def test_auto_run_usage_failure_stops_with_pending(monkeypatch):
-    """A usage lookup failure exits the loop instead of escaping it."""
+def test_auto_run_usage_failure_retries_then_stops_with_pending(monkeypatch):
+    """A repeated usage lookup failure gets one bounded retry, then stops."""
     from va_legal_agent.__main__ import _auto_run
     from va_legal_agent.search import SearchError
 
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
+    usage_calls = []
+    sleeps = []
 
     def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
         calls.append(list(issues))
@@ -1323,13 +1399,121 @@ def test_auto_run_usage_failure_stops_with_pending(monkeypatch):
         )
 
     def fail_usage():
+        usage_calls.append(1)
         raise SearchError("usage endpoint unavailable")
 
     monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
     monkeypatch.setattr("va_legal_agent.__main__.fetch_courtlistener_usage", fail_usage)
     monkeypatch.setattr(
         "va_legal_agent.__main__._sleep_with_log",
-        lambda seconds, reason: pytest.fail("a failed usage lookup must not sleep"),
+        lambda seconds, reason: sleeps.append(seconds),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_iterations=10,
+    )
+
+    assert len(calls) == 2
+    assert len(usage_calls) == 2
+    assert sleeps == [60.0]
+    assert results == [{"issue": "a", "verdict": "abort"}]
+
+
+def test_auto_run_retries_transient_usage_failure_after_bounded_wait(monkeypatch):
+    """One transient lookup failure sleeps briefly, then re-plans and runs."""
+    from va_legal_agent.__main__ import _auto_run
+    from va_legal_agent.search import SearchError
+
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    calls = []
+    usage_calls = []
+    sleeps = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        verdict = "abort" if len(calls) == 1 else "proceed"
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": verdict,
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    def flaky_usage():
+        usage_calls.append(1)
+        if len(usage_calls) == 1:
+            raise SearchError("temporary usage outage")
+        return {"current_usage": []}
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr("va_legal_agent.__main__.fetch_courtlistener_usage", flaky_usage)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.courtlistener_daily_budget",
+        lambda usage: {"reset_at": None},
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda seconds, reason: sleeps.append(seconds),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _sample_analysis(),
+    )
+
+    results = _auto_run(
+        ["a"],
+        claim_type="Compensation",
+        max_results=1,
+        max_wall_seconds=None,
+        max_wait_seconds=17.0,
+    )
+
+    assert len(calls) == 2
+    assert len(usage_calls) == 1
+    assert sleeps == [17.0]
+    assert results == [{"issue": "a", "verdict": "run"}]
+
+
+def test_auto_run_without_courtlistener_skips_usage_lookup(monkeypatch):
+    """No CourtListener provider means there is no quota window to wait for."""
+    from va_legal_agent.__main__ import _auto_run
+
+    monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
+    calls = []
+
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+        calls.append(list(issues))
+        return (
+            [
+                {
+                    "issue": issue,
+                    "verdict": "abort",
+                    "courtlistener_requests": 1,
+                    "priority": None,
+                }
+                for issue in issues
+            ],
+            {"issues": len(issues)},
+        )
+
+    monkeypatch.setattr("va_legal_agent.__main__.batch_dry_run", fake_batch)
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.fetch_courtlistener_usage",
+        lambda: pytest.fail("usage must not be queried without CourtListener"),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__._sleep_with_log",
+        lambda seconds, reason: pytest.fail("no quota wait is possible"),
     )
 
     results = _auto_run(

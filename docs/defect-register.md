@@ -19,7 +19,7 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 
 | Pass | Source document | Findings | Rows here | Current state |
 |---|---|---:|---:|---|
-| 1 | `docs/audit-pass1.md` | 32 | 32 | 14 Closed, 2 Partial, 16 Open |
+| 1 | `docs/audit-pass1.md` | 32 | 32 | 21 Closed, 0 Partial, 11 Open |
 | 2 | `docs/audit-pass2.md` | 7 | 0 | 7 Closed; source document only |
 | 3 | `docs/audit-pass3.md` | 22 | 0 | 22 Closed; source document only |
 | 4 | — | 0 | 0 | Reserved |
@@ -30,11 +30,11 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 | Severity | Total | Open | Partial | Closed |
 |---|---:|---:|---:|---:|
 | High | 9 | 0 | 0 | 9 |
-| Medium | 16 | 9 | 2 | 5 |
+| Medium | 16 | 4 | 0 | 12 |
 | Low | 8 | 7 | 0 | 1 |
-| **Total** | **33** | **16** | **2** | **15** |
+| **Total** | **33** | **11** | **0** | **22** |
 
-Pass 1 alone contributes 32 findings: **14 Closed, 2 Partial, 16 Open**, matching the
+Pass 1 alone contributes 32 findings: **21 Closed, 0 Partial, 11 Open**, matching the
 remaining-core audit report. The ninth High is the supplementary legal finding `L-1`: it is
 outside Pass 1's file scope but is a fixed release-blocking defect recorded in the same
 audit document, so it is included here rather than left out of the consolidated view.
@@ -75,6 +75,7 @@ locations for untouched findings.
 
 | Severity | ID | File and line range | One-line defect | Status | Suggested disposition |
 |---|---|---|---|---|---|
+| High | P3-001 | `path/to/file.py:12-34` | One-line defect. | Open | Fix now |
 | High | P1-001 | `va_legal_agent/__main__.py:218-245` | Scheme-less `SEARCH_HTTP_PROXY` bypassed `_mask_proxy_url`; fixed by prepending `//` for parsing and redacting userinfo. | Closed | Closed — verify |
 | High | P1-004 | `va_legal_agent/__main__.py:784-785, 1019-1179, 1431-1434` | Non-positive `--max-batch-requests` deferred every row and `--auto-run` looped indefinitely; fixed with positive validation and bounded, stall-aware retries. | Closed | Closed — verify |
 | High | P1-007 | `va_legal_agent/config.py:31, 94-125` | `env_float` accepted `nan`/`inf`; fixed to reject non-finite values and cap sleep/backoff/timeout settings at 3600 s (wall-clock deadlines remain unbounded but finite). | Closed | Closed — verify |
@@ -84,21 +85,21 @@ locations for untouched findings.
 | High | P1-025 | `va_legal_agent/fetch.py:60-100` | Quoted reporter citations overrode the decision's own BVA citation; fixed to prefer the own citation. | Closed | Closed — verify |
 | High | P1-026 | `va_legal_agent/fetch.py:312-321` | `_normalize_statute_value` stripped real attached subsections (`§ 3.1(aa)` became `§ 3.1`, nested `(iv)` was lost); fixed to preserve attached subsections. | Closed | Closed — verify |
 | High | L-1 | `va_legal_agent/impact.py:226-258` | Every CAVC case, including non-precedential memoranda, was described as binding; fixed to pass the case's three-state `precedential` value into the authority note. | Closed | Closed — verify |
-| Medium | P1-014 | `va_legal_agent/providers.py:250-310` | Empty or boilerplate CourtListener queries run a court-only search. | Open | Fix next |
-| Medium | P1-015 | `va_legal_agent/providers.py:1620-1639` | Exclusion terms lack word boundaries, so `back` also removes `background`. | Open | Fix next |
-| Medium | P1-016 | `va_legal_agent/providers.py:621-631` | Malformed minute payloads return `{}` and silently disable the budget guard. | Open | Fix next |
-| Medium | P1-019 | `va_legal_agent/search.py:39-41` | `_is_challenge` matches `anomaly` anywhere, discarding valid DuckDuckGo results. | Open | Fix next |
-| Medium | P1-020 | `va_legal_agent/search.py:151-167` | DuckDuckGo redirect URLs are accepted without scheme validation (`javascript:`, `data:`, `file:`). | Open | Fix next |
 | Medium | P1-027 | `va_legal_agent/fetch.py:240-254` | Legal-standard extraction uses tuple order, so a later `clear error` mention beats an earlier `de novo`. | Open | Fix next |
 | Medium | P1-028 | `va_legal_agent/fetch.py:125-137` | Filing date outranks decision date, misdating authority by months or years. | Open | Fix next |
 | Medium | P1-030 | `va_legal_agent/fetch.py:669-675, 790-794` | Enrichment reads only four PDF pages, so holdings on page 5+ are recorded as empty. | Open | Fix next |
 | Medium | P1-031 | `va_legal_agent/deep_read.py:50-55, 57-69` | Facts extraction fails when a facts block ends at a chunk boundary without a blank line. | Open | Fix next |
-| Medium | P1-005 | `va_legal_agent/__main__.py:1113-1115, 130-148` | `_auto_run` now emits a failure event, but still discards exception type and traceback and adds no error to the result row. | Partial | Fix next |
-| Medium | P1-006 | `va_legal_agent/__main__.py:1151-1160` | Auto-run now catches usage-lookup `SearchError` cleanly, but still abandons the pending batch instead of retrying after a bounded wait. | Partial | Fix next |
 | Medium | P1-002 | `va_legal_agent/__main__.py:187-196` | `_mask_secret` revealed nearly all of an 8–9 character secret; fixed to mask values of 16 characters or fewer completely. | Closed | Closed — verify |
 | Medium | P1-003 | `va_legal_agent/__main__.py:230-236` | A non-numeric proxy port raised `ValueError` and crashed `--show-config`; fixed to omit the bad port while keeping the host visible. | Closed | Closed — verify |
+| Medium | P1-005 | `va_legal_agent/__main__.py:138-160, 1126-1134, 1232-1255` | Analysis failures now retain the exception type and full traceback in the failure event and per-issue error row, and the summary exposes an errors list. | Closed | Closed — verify |
+| Medium | P1-006 | `va_legal_agent/__main__.py:1181-1208` | Auto-run retries one transient usage-lookup `SearchError` after a bounded wait and stops after repeated failures; no-CourtListener pending batches skip the wait. | Closed | Closed — verify |
 | Medium | P1-009 | `va_legal_agent/models.py:31-38`; `fetch.py:594-616` | Unknown precedential status defaulted to `True`, overstating authority; fixed to a tri-state value where `None` means unknown, no penalty, and a verification flag. | Closed | Closed — verify |
 | Medium | P1-011 | `va_legal_agent/llm.py:22-63, 100-177`; `deep_read.py:135-168` | Untrusted case text entered LLM prompts without delimiters or an instruction hierarchy; fixed by escaping and delimiting narrative, reasoning, and reduce prompts. | Closed | Closed — verify |
+| Medium | P1-014 | `va_legal_agent/providers.py:407-409` | Empty or boilerplate CourtListener queries are rejected before a court-only search. | Closed | Closed — verify |
+| Medium | P1-015 | `va_legal_agent/providers.py:1638-1642` | Exclusion terms are matched as whole words, so `back` no longer removes `background` or `feedback`. | Closed | Closed — verify |
+| Medium | P1-016 | `va_legal_agent/providers.py:628-665` | Malformed minute payloads raise while a well-formed payload with no minute row returns `None`; the guard checks explicitly. | Closed | Closed — verify |
+| Medium | P1-019 | `va_legal_agent/search.py:39-70` | Challenge detection is structural (202, `/anomaly`, title, challenge/captcha containers), not an arbitrary body substring. | Closed | Closed — verify |
+| Medium | P1-020 | `va_legal_agent/search.py:180-206`; `fetch.py:31-35, 731, 776` | Decoded DuckDuckGo destinations and both fetch entry points accept only absolute HTTP(S) URLs, dropping `javascript:`, `data:`, and `file:`. | Closed | Closed — verify |
 | Medium | P1-024 | `va_legal_agent/fetch.py:330-338` | Single-`§` pattern dropped plural `§§` citations; fixed to accept plural cites. | Closed | Closed — verify |
 | Low | P1-008 | `va_legal_agent/config.py:58-85` | Unknown provider keys in the page-cap map are silently accepted. | Open | Backlog |
 | Low | P1-010 | `va_legal_agent/models.py:133` | `coverage_score` lacks 0–1 bounds, so invalid scores print as valid. | Open | Backlog |
@@ -107,7 +108,6 @@ locations for untouched findings.
 | Low | P1-018 | `va_legal_agent/providers.py:1273-1279` | Naive local-index timestamps raise `TypeError` instead of triggering a rebuild. | Open | Backlog |
 | Low | P1-021 | `va_legal_agent/search.py:203-205` | Zero-result pages are classified as provider failures. | Open | Backlog |
 | Low | P1-032 | `va_legal_agent/deep_read.py:32, 117-133, 167-178` | Deep-read synthesis emits `- (nothing relevant)` sentinel lines as content. | Open | Backlog |
-| Low | P1-029 | `va_legal_agent/fetch.py:341-355` | Six U.S.C. citations exhausted the cap, dropping all C.F.R. regulations; fixed to reserve C.F.R. slots. | Closed | Closed — verify |
 
 ## Pass 2 / Pass 3 status
 
@@ -136,7 +136,7 @@ their source IDs exactly and keep the six-column schema:
 Template row:
 
 ```markdown
-| High | P3-001 | `path/to/file.py:12-34` | One-line defect. | Open | Fix now |
+| Low | P1-029 | `va_legal_agent/fetch.py:341-355` | Six U.S.C. citations exhausted the cap, dropping all C.F.R. regulations; fixed to reserve C.F.R. slots. | Closed | Closed — verify |
 ```
 
 ## Notes

@@ -11,6 +11,7 @@ import logging
 import re
 from collections.abc import Callable
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -25,6 +26,13 @@ logger = logging.getLogger(__name__)
 
 class FetchError(RuntimeError):
     pass
+
+
+def _require_http_url(url: str) -> None:
+    """Reject non-HTTP(S) URLs before any network client sees them."""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise FetchError(f"Refusing to fetch non-HTTP(S) URL: {url!r}")
 
 
 _MONTHS = (
@@ -718,8 +726,9 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     fields and discards the body, this returns the whole opinion text: every
     PDF page (subject to *max_pages*, 0 = all pages), the full HTML page text,
     or a plain-text decision verbatim. Raises :class:`FetchError` on network
-    or size-cap failure.
+    or size-cap failure, or for a non-HTTP(S) URL.
     """
+    _require_http_url(url)
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
     try:
@@ -764,6 +773,7 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     statutes, and procedural outcome where detectable. Network failures and
     oversized responses raise FetchError; parse failures return empty fields.
     """
+    _require_http_url(url)
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
     try:

@@ -405,6 +405,8 @@ class CourtListenerProvider:
         # and de-quote the issue phrase so the tokenizer matches individual
         # words rather than requiring exact phrase matches.
         query = _minimize_courtlistener_query(query)
+        if not query.strip():
+            raise SearchError("empty query after CourtListener adaptation")
         # The search endpoint returns up to 20 results per page regardless of
         # page_size and paginates with an opaque cursor in ``next``, so a
         # numeric page N means: follow the cursor chain N-1 times, then read
@@ -615,28 +617,34 @@ def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
     have higher limits). A missing day row means the payload shape changed,
     which should raise rather than silently pass a wrong budget.
     """
-    return _extract_rate_row(usage, _DAILY_RATE_PATTERN, "daily")
+    budget = _extract_rate_row(usage, _DAILY_RATE_PATTERN)
+    if budget is None:
+        raise SearchError(
+            "Could not find the CourtListener daily request budget in the api-usage response."
+        )
+    return budget
 
 
-def courtlistener_minute_budget(usage: dict[str, object]) -> dict[str, object]:
+def courtlistener_minute_budget(
+    usage: dict[str, object],
+) -> dict[str, object] | None:
     """Extract the user-scope per-minute row from an api-usage payload.
 
-    Mirrors :func:`courtlistener_daily_budget` for the ``N/min`` window.
-    Returns the budget dict when found, or ``None`` when the payload has no
-    minute row (e.g. a different API version or a non-standard scope).
+    Mirrors :func:`courtlistener_daily_budget` for the ``N/min`` window, but
+    distinguishes an absent row (``None``; non-standard tier) from a malformed
+    payload, which raises :class:`SearchError` from :func:`_extract_rate_row`.
     """
-    try:
-        return _extract_rate_row(usage, _MINUTE_RATE_PATTERN, "per-minute")
-    except SearchError:
-        return {}  # absent minute row is non-fatal; callers check remaining
+    return _extract_rate_row(usage, _MINUTE_RATE_PATTERN)
 
 
 def _extract_rate_row(
-    usage: dict[str, object], pattern: re.Pattern[str], label: str  # type: ignore[type-arg]
-) -> dict[str, object]:
+    usage: dict[str, object], pattern: re.Pattern[str]  # type: ignore[type-arg]
+) -> dict[str, object] | None:
     """Pull a single rate-window row from an api-usage payload.
 
-    Shared helper for the daily and per-minute budget extractors.
+    Returns ``None`` when the payload is well-formed but has no user row for
+    *pattern*; malformed payloads (including a non-list ``current_usage``)
+    raise :class:`SearchError`.
     """
     rows = usage.get("current_usage")
     if not isinstance(rows, list):
@@ -654,9 +662,7 @@ def _extract_rate_row(
                 "remaining": int(row.get("remaining", 0) or 0),
                 "reset_at": row.get("reset_at"),
             }
-    raise SearchError(
-        f"Could not find the CourtListener {label} request budget in the api-usage response."
-    )
+    return None
 
 
 def check_courtlistener_daily_budget(min_remaining: int) -> dict[str, object]:
@@ -695,8 +701,8 @@ def check_courtlistener_minute_budget(min_remaining: int) -> dict[str, object]:
     wider minute windows that we cannot read.
     """
     budget = courtlistener_minute_budget(fetch_courtlistener_usage())
-    if not budget:
-        return budget  # no minute row; skip
+    if budget is None:
+        return {}  # no minute row; skip
     remaining = int(budget["remaining"])
     if remaining < min_remaining:
         reset = budget.get("reset_at") or "the next minute window"
@@ -1629,8 +1635,11 @@ def _filter_excluded_terms(
     tokens = [t.strip() for t in (exclude_terms or "").split(",") if len(t.strip()) >= 2]
     if not tokens:
         return results
-    # Build a single regex — it is cheaper to scan each result once.
-    pattern = re.compile("|".join(re.escape(t) for t in tokens), re.IGNORECASE)
+    # Build a single whole-word regex — it is cheaper to scan each result once.
+    pattern = re.compile(
+        r"\b(?:" + "|".join(re.escape(t) for t in tokens) + r")\b",
+        re.IGNORECASE,
+    )
     return [
         r
         for r in results

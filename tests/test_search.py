@@ -111,11 +111,37 @@ def test_extract_url_leaves_click_tracker_alone_even_with_uddg():
     )
 
 
+def test_extract_url_drops_non_http_redirect_destination():
+    """A javascript/data/file destination must not escape URL unwrapping."""
+    assert extract_url_from_duckduckgo(
+        "//duckduckgo.com/l/?uddg=javascript%3Aalert%281%29"
+    ) == ""
+    assert extract_url_from_duckduckgo(
+        "//duckduckgo.com/l/?uddg=data%3Atext%2Fhtml%2Cx"
+    ) == ""
+    assert extract_url_from_duckduckgo(
+        "//duckduckgo.com/l/?uddg=file%3A%2F%2F%2Ftmp%2Fx"
+    ) == ""
+
+
 def test_is_challenge_detects_202_without_anomaly_text(monkeypatch):
     from va_legal_agent.search import _is_challenge
 
     assert _is_challenge(FakeResponse("<html>normal results</html>", status_code=202))
     assert not _is_challenge(FakeResponse("<html>normal results</html>", status_code=200))
+
+
+def test_is_challenge_ignores_anomaly_word_in_results_text():
+    from va_legal_agent.search import _is_challenge
+
+    results_page = FakeResponse(
+        "<html><title>Anomaly detection results</title>"
+        "<div class='result'>There is no anomaly in this article.</div></html>"
+    )
+    assert not _is_challenge(results_page)
+    assert _is_challenge(
+        FakeResponse("<html><div class='anomaly-modal'>challenge</div></html>")
+    )
 
 
 def test_is_transient_error_handles_response_none():
@@ -389,7 +415,7 @@ def test_search_web_detects_anomaly_page_with_200_status(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
     monkeypatch.setattr(
         "va_legal_agent.search.cffi_requests.get",
-        lambda url, impersonate=None, timeout=None: FakeResponse("<html>duckduckgo anomaly detected</html>"),
+        lambda url, impersonate=None, timeout=None: FakeResponse("<html><title>DuckDuckGo anomaly detected</title></html>"),
     )
 
     with pytest.raises(SearchError, match="anomaly"):

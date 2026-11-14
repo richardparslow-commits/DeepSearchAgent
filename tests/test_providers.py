@@ -23,6 +23,7 @@ from va_legal_agent.providers import (
     _bva_text_matches,
     _courtlistener_query,
     _fetch_bva_decision_text,
+    _filter_excluded_terms,
     _minimize_bva_query,
     _minimize_courtlistener_query,
     _parse_bva_leaf_sitemap,
@@ -421,6 +422,21 @@ def test_courtlistener_sends_api_key_when_set(monkeypatch):
     assert captured["headers"]["Authorization"] == "Token secret-token"
 
 
+@pytest.mark.parametrize("query", ["", '""'])
+def test_courtlistener_search_rejects_empty_adapted_query(query, monkeypatch):
+    """An empty minimization must not become a court-only CourtListener search."""
+    called = []
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.get",
+        lambda *args, **kwargs: called.append(1),
+    )
+
+    with pytest.raises(SearchError, match="empty query after CourtListener adaptation"):
+        CourtListenerProvider().search(query)
+
+    assert called == []
+
+
 def test_courtlistener_raises_on_http_error(monkeypatch):
     monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
 
@@ -811,6 +827,22 @@ def test_search_all_exclude_terms_empty_or_short_does_nothing(monkeypatch):
     monkeypatch.setenv("SEARCH_EXCLUDE_TERMS", "k,a")
     results2 = search_all("tinnitus", max_results=10)
     assert len(results2) == 1
+
+
+def test_filter_excluded_terms_uses_whole_word_boundaries():
+    """`back` must not remove background/feedback, but removes a real back result."""
+    results = [
+        {"title": "Background on tinnitus", "snippet": ""},
+        {"title": "Feedback and tinnitus", "snippet": ""},
+        {"title": "Back condition and tinnitus", "snippet": ""},
+    ]
+
+    filtered = _filter_excluded_terms(results, "back")
+
+    assert [r["title"] for r in filtered] == [
+        "Background on tinnitus",
+        "Feedback and tinnitus",
+    ]
 
 
 def test_search_all_exclude_terms_case_insensitive(monkeypatch):
@@ -3278,15 +3310,23 @@ def test_courtlistener_minute_budget_picks_user_min_row():
     assert budget["remaining"] == 5
 
 
-def test_courtlistener_minute_budget_returns_empty_when_absent():
-    # A payload with no minute row (e.g. a different tier) returns {} instead
-    # of raising — higher tiers may have wider windows we cannot read.
+def test_courtlistener_minute_budget_returns_none_when_absent():
+    # A payload with no minute row (e.g. a different tier) returns None instead
+    # of an empty dict — higher tiers may have wider windows we cannot read.
     payload = {
         "current_usage": [
             {"scope": "user", "rate": "125/day", "used": 10, "limit": 125, "remaining": 115},
         ]
     }
-    assert courtlistener_minute_budget(payload) == {}
+    assert courtlistener_minute_budget(payload) is None
+
+
+def test_courtlistener_minute_budget_raises_on_malformed_payload():
+    """A missing current_usage list is malformed, not an absent minute row."""
+    with pytest.raises(SearchError, match="no current_usage list"):
+        courtlistener_minute_budget({})
+    with pytest.raises(SearchError, match="no current_usage list"):
+        courtlistener_minute_budget({"current_usage": {"rate": "5/min"}})
 
 
 def test_check_courtlistener_minute_budget_aborts_when_exhausted(monkeypatch):

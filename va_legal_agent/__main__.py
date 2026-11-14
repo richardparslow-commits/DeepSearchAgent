@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import time
+import traceback
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -70,6 +71,8 @@ class _JsonFormatter(logging.Formatter):
             "courtlistener_quota",
             "issue",
             "error",
+            "error_type",
+            "traceback",
         ):
             value = getattr(record, key, None)
             if value is not None:
@@ -127,23 +130,34 @@ def _emit_completion_event(analysis: LegalAnalysis, run_id: str) -> None:
     _EVENTS_LOGGER.info(message, *args, extra=extra)
 
 
+def _format_exception(error: BaseException) -> str:
+    """Return the complete traceback text for *error*, without a trailing newline."""
+    return "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    ).rstrip()
+
+
 def _emit_failure_event(issue: str, error: BaseException, run_id: str) -> None:
     """Emit a structured failure event pipelines can key off of.
 
     Mirrors :func:`_emit_completion_event` so automation gets a definitive
-    terminal signal on both success and failure; the original exception is
-    re-raised by the caller so exit behavior is unchanged.
+    terminal signal on both success and failure. The event keeps the existing
+    ``error`` message field for consumers and adds the exception type and full
+    traceback for diagnosis.
     """
     _EVENTS_LOGGER.error(
         "analysis failed for %s (run=%s): %s",
         issue,
         run_id,
         error,
+        exc_info=(type(error), error, error.__traceback__),
         extra={
             "event": "analysis_failed",
             "run_id": run_id,
             "issue": issue,
             "error": str(error),
+            "error_type": type(error).__name__,
+            "traceback": _format_exception(error),
         },
     )
 
@@ -1055,7 +1069,9 @@ def _auto_run(
     analysis and terminal event carries *run_id*. Returns per-issue result rows
     with verdicts ``run`` / ``error`` for the executed issues, and ``deferred``
     / ``abort`` for the backlog that could not fit (and would need a later
-    window).
+    window). A failed quota lookup is retried once after a bounded fallback
+    wait; a second consecutive lookup failure stops with the pending rows.
+    A pending batch that does not use CourtListener is not waited on.
 
     The planning/wait loop is bounded by *max_iterations* and each sleep by
     *max_wait_seconds*. It stops early when a pass cannot change the pending
@@ -1065,10 +1081,11 @@ def _auto_run(
     their verdicts so the caller can report an incomplete run.
     """
     logger = logging.getLogger(__name__)
-    results: dict[str, str] = {}
+    results: dict[str, dict[str, object]] = {}
     pending = list(issues)
     iterations = 0
     stalled_waits = 0
+    usage_failures = 0
     iteration_limit = (
         _AUTO_RUN_MAX_ITERATIONS if max_iterations is None else max(1, max_iterations)
     )
@@ -1109,14 +1126,20 @@ def _auto_run(
                     )
                     analysis.run_id = run_id
                     _emit_completion_event(analysis, run_id)
-                    results[issue] = "run"
+                    results[issue] = {"issue": issue, "verdict": "run"}
                 except Exception as exc:  # noqa: BLE001 - per-issue failure is recorded
                     _emit_failure_event(issue, exc, run_id)
-                    results[issue] = "error"
+                    results[issue] = {
+                        "issue": issue,
+                        "verdict": "error",
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "traceback": _format_exception(exc),
+                    }
             else:
                 # Keep the first non-run verdict for issues still pending
                 # (deferred/abort); a later successful pass overwrites it.
-                results.setdefault(issue, verdict)
+                results.setdefault(issue, {"issue": issue, "verdict": verdict})
                 next_pending.append(issue)
                 next_verdicts[issue] = verdict
         # Defensive: a planner row is expected for every pending issue. If one
@@ -1124,7 +1147,7 @@ def _auto_run(
         # summary and exiting successfully.
         for issue in pending:
             if issue not in planned:
-                results.setdefault(issue, "deferred")
+                results.setdefault(issue, {"issue": issue, "verdict": "deferred"})
                 next_pending.append(issue)
                 next_verdicts[issue] = "deferred"
         if not next_pending:
@@ -1150,20 +1173,50 @@ def _auto_run(
             stalled_waits = 0
         # Remainders still need the window: wait for the daily reset, but keep
         # each sleep bounded even if the endpoint reports a far-future reset.
+        # Without CourtListener there is no quota window to wait for; stop
+        # rather than polling a provider that cannot free the backlog.
+        if "courtlistener" not in resolve_search_providers():
+            logger.error(
+                "auto-run stopped: %d issue(s) remain but CourtListener is not "
+                "configured, so no quota window can free them",
+                len(next_pending),
+            )
+            break
         try:
             usage = fetch_courtlistener_usage()
             daily = courtlistener_daily_budget(usage)
         except SearchError as exc:
+            usage_failures += 1
             logger.error(
-                "auto-run stopped: could not determine the next quota window: %s", exc
+                "auto-run: could not determine the next quota window: %s "
+                "(failure %d of 2)",
+                exc,
+                usage_failures,
+                exc_info=True,
             )
-            break
+            if usage_failures >= 2:
+                logger.error(
+                    "auto-run stopped: CourtListener usage lookup failed %d "
+                    "consecutive time(s); %d issue(s) remain",
+                    usage_failures,
+                    len(next_pending),
+                )
+                break
+            # A single transient lookup failure should not abandon a
+            # resumable batch. Retry after a bounded fallback wait; reset the
+            # quota-stall counter so the retry can actually reach the lookup.
+            stalled_waits = 0
+            wait = max(0.0, min(60.0, wait_limit))
+            _sleep_with_log(wait, "retrying the CourtListener usage lookup")
+            pending = next_pending
+            continue
+        usage_failures = 0
         reset = daily.get("reset_at")
         delay = _seconds_until_utc(str(reset)) if reset else 3600.0
         wait = min(max(delay, 60.0), wait_limit)
         _sleep_with_log(wait, "the CourtListener daily window reset")
         pending = next_pending
-    return [{"issue": issue, "verdict": verdict} for issue, verdict in results.items()]
+    return list(results.values())
 
 
 def _seconds_until_utc(iso: str) -> float:
@@ -1186,12 +1239,23 @@ def _auto_run_summary(results: list[dict[str, object]]) -> dict[str, object]:
     err = sum(1 for r in results if r["verdict"] == "error")
     deferred = sum(1 for r in results if r["verdict"] == "deferred")
     aborted = sum(1 for r in results if r["verdict"] == "abort")
+    errors = [
+        {
+            "issue": row["issue"],
+            "error_type": row.get("error_type"),
+            "error": row.get("error"),
+            "traceback": row.get("traceback"),
+        }
+        for row in results
+        if row["verdict"] == "error"
+    ]
     return {
         "issues": len(results),
         "successful": ok,
         "failed": err,
         "deferred": deferred,
         "aborted": aborted,
+        "errors": errors,
     }
 
 
