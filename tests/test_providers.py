@@ -5777,3 +5777,195 @@ def test_courtlistener_semantic_search_error_mentions_semantic(monkeypatch):
 
     with pytest.raises(SearchError, match="semantic search failed"):
         CourtListenerProvider().semantic_search("tinnitus")
+
+
+def test_courtlistener_lookup_retries_a_transient_post(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_post(url, data=None, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.ConnectionError("temporary")
+        return FakeResponse([{"citation": "30 Vet.App. 123", "status": 404}])
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    results = CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+    assert calls["n"] == 2
+    assert len(sleeps) == 1
+    assert results[0]["status"] == 404
+
+
+def test_courtlistener_lookup_retry_posts_retry_after_delay(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    sleeps: list[float] = []
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", sleeps.append)
+    calls = {"n": 0}
+
+    def fake_post(url, data=None, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse({}, status_code=429, headers={"Retry-After": "4"})
+        return FakeResponse([{"citation": "30 Vet.App. 123", "status": 200}])
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+    assert calls["n"] == 2
+    assert sleeps == [4.0]
+
+
+def test_courtlistener_lookup_without_token_hints_at_the_key(monkeypatch):
+    monkeypatch.delenv("COURTLISTENER_API_KEY", raising=False)
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
+    def fake_post(*args, **kwargs):
+        raise requests.HTTPError(
+            "401", response=FakeResponse({}, status_code=401)
+        )
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    with pytest.raises(SearchError, match="COURTLISTENER_API_KEY"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_courtlistener_lookup_wraps_non_transient_post_errors(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
+    def fake_post(*args, **kwargs):
+        raise requests.HTTPError(
+            "400", response=FakeResponse({}, status_code=400)
+        )
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    with pytest.raises(SearchError, match="citation lookup failed"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_courtlistener_lookup_wraps_invalid_json(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
+    class BadJson(FakeResponse):
+        def json(self):
+            raise ValueError("bad json")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.post",
+        lambda *args, **kwargs: BadJson({}),
+    )
+
+    with pytest.raises(SearchError, match="invalid JSON"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_courtlistener_lookup_exhausts_transient_post_errors(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "1")
+    monkeypatch.setattr("va_legal_agent.providers.time.sleep", lambda _: None)
+
+    def fake_post(*args, **kwargs):
+        raise requests.ConnectionError("still down")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    with pytest.raises(SearchError, match="repeatedly unavailable"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_courtlistener_lookup_blank_text_does_not_post(monkeypatch):
+    called = {"n": 0}
+
+    def fake_post(*args, **kwargs):
+        called["n"] += 1
+        return FakeResponse([])
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    assert CourtListenerProvider().lookup_citations("   ") == []
+    assert called["n"] == 0
+
+
+def test_courtlistener_lookup_reraises_the_no_token_hint(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+
+    def fake_post(*args, **kwargs):
+        raise SearchError("CourtListener requires an API token; set COURTLISTENER_API_KEY.")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._post_json", fake_post
+    )
+
+    with pytest.raises(SearchError, match="COURTLISTENER_API_KEY"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_courtlistener_lookup_wraps_generic_post_search_errors(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+
+    def fake_post(*args, **kwargs):
+        raise SearchError("network broke")
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers.CourtListenerProvider._post_json", fake_post
+    )
+
+    with pytest.raises(SearchError, match="citation lookup failed.*network broke"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
+def test_bva_recent_leaves_returns_empty_when_index_is_empty(monkeypatch):
+    monkeypatch.setattr("va_legal_agent.providers._bva_sitemap_index", lambda: [])
+
+    assert BvaSitemapProvider()._recent_leaves(1) == []
+
+
+def test_bva_local_shards_ignores_corpus_without_manifest(tmp_path):
+    from va_legal_agent.providers import _bva_local_shards
+
+    (tmp_path / "corpus-2024.txt").write_text("orphan", encoding="utf-8")
+
+    assert _bva_local_shards(str(tmp_path)) == []
+
+    legacy_corpus, legacy_manifest = _bva_local_index_paths(str(tmp_path))
+    (tmp_path / "corpus.txt").write_text("legacy", encoding="utf-8")
+    (tmp_path / "manifest.json").write_text("[]", encoding="utf-8")
+
+    assert _bva_local_shards(str(tmp_path)) == [
+        (None, legacy_corpus, legacy_manifest)
+    ]
+
+
+def test_bva_local_rebuilds_a_stale_year_shard(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+    monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+    monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_YEARS", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.providers._fetch_bva_decision_text",
+        lambda url: "tinnitus service connection granted",
+    )
+    _bva_local_build(
+        str(tmp_path),
+        [("https://va.gov/vetapp24/Files1/24000001.txt", "2024-08-01")],
+        0,
+        year=2024,
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.providers._bva_local_needs_rebuild",
+        lambda *args, **kwargs: True,
+    )
+    _stub_recent_leaves(monkeypatch, [])
+
+    results = BvaLocalIndexProvider().search("tinnitus")
+
+    assert len(results) == 1

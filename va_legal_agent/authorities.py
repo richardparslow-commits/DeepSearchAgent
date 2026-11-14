@@ -42,7 +42,11 @@ ECFR_SECTION_URL = "https://www.ecfr.gov/current/title-38/section-{section}"
 FEDERAL_REGISTER_DOCUMENTS_URL = "https://www.federalregister.gov/api/v1/documents.json"
 GOVINFO_SEARCH_URL = "https://api.govinfo.gov/search"
 
-_CAVC_DOCKET_RE = re.compile(r"\b(\d{2})-(\d{3,5})(?:\(E\))?\b", re.IGNORECASE)
+# Docket numbers in CAVC PDF links are often attached to a filename with an
+# underscore (``Jones_20-8342(E).pdf``), so a word boundary is too strict.
+_CAVC_DOCKET_RE = re.compile(
+    r"(?<!\d)(\d{2})-(\d{3,5})(?:\(E\))?(?!\d)", re.IGNORECASE
+)
 _CFR_SECTION_RE = re.compile(
     r"\b38\s*(?:C\.\s*F\.\s*R\.?|CFR)\s*(?:§§?|sections?)?\s*"
     r"(\d{1,2}\.\d{1,4}[A-Za-z]?)",

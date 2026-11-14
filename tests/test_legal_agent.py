@@ -34,6 +34,7 @@ from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
     _build_analysis,
+    _citation_flags_from_lookup,
     _dedupe,
     _dedupe_rank_and_enrich,
     _observe,
@@ -4337,3 +4338,124 @@ def test_analyze_cases_attaches_authority_checks(monkeypatch):
     assert [check.source for check in analysis.authority_checks] == ["CAVC", "eCFR"]
     assert len(analysis.authority_flags) == 1
     assert "Authority conflict" in analysis.authority_flags[0]
+
+
+def test_semantic_gap_cases_skips_after_wall_deadline(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider",
+        lambda: pytest.fail("must not search after the deadline"),
+    )
+
+    assert _semantic_gap_cases("tinnitus", ("nexus",), 4, 0.0) == []
+
+
+def test_semantic_gap_cases_swallows_search_errors(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+
+    class FailingProvider:
+        def semantic_search(self, query, max_results=10, page=1):
+            raise SearchError("semantic outage")
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider", lambda: FailingProvider()
+    )
+
+    assert _semantic_gap_cases("tinnitus", ("nexus",), 4, None) == []
+
+
+def test_enrich_top_cases_records_rule_30a_and_overrides_precedential(monkeypatch):
+    case = CaseRecord(
+        title="Single Judge Disposition",
+        court=COURT_CAVC,
+        url="https://example.com/rule30a",
+        precedential=True,
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details",
+        lambda url, timeout=None: {"rule_30a": True, "precedential": True},
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.rule_30a is True
+    assert case.precedential is False
+
+
+def test_citation_flags_cover_status_fallbacks_and_deduplication():
+    results = [
+        {
+            "citation": "",
+            "normalized_citations": ["30 Vet.App. 123"],
+            "status": 400,
+            "error_message": "bad reporter",
+        },
+        {"citation": "31 Vet.App. 456", "status": 429, "error_message": "over cap"},
+        {"citation": "32 Vet.App. 789", "status": 500, "error_message": "server"},
+        {"citation": "33 Vet.App. 101", "status": "not-a-number", "error_message": "detail"},
+        {"citation": "34 Vet.App. 202", "status": 0, "error_message": ""},
+        {"citation": "", "normalized_citations": [], "status": 404},
+        {"citation": "35 Vet.App. 303", "status": 404},
+        {"citation": "35 Vet.App. 303", "status": 404},
+        {"citation": "36 Vet.App. 404", "status": 200},
+    ]
+
+    flags = _citation_flags_from_lookup(results)
+
+    assert "Invalid citation '30 Vet.App. 123'" in flags[0]
+    assert "(bad reporter)" in flags[0]
+    assert "250-citation" in flags[1]
+    assert "status 500" in flags[2]
+    assert "no usable" in flags[3]
+    assert "(detail)" in flags[3]
+    assert "34 Vet.App. 202" in flags[4]
+    assert "Unresolved citation '(unknown citation)'" in flags[5]
+    assert "Unresolved citation '35 Vet.App. 303'" in flags[6]
+    assert len([flag for flag in flags if "35 Vet.App. 303" in flag]) == 1
+    assert not any("36 Vet.App. 404" in flag for flag in flags)
+
+
+def test_check_analysis_citations_skips_when_no_text(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {"used": 0, "limit": 125, "remaining": 125},
+    )
+    analysis = LegalAnalysis(
+        issue="tinnitus", summary="", how_it_affects_va_claims=""
+    )
+
+    assert check_analysis_citations(analysis, []) == []
+
+
+def test_check_analysis_citations_reports_lookup_failure(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {"used": 0, "limit": 125, "remaining": 125},
+    )
+
+    def fail(self, text):
+        raise SearchError("lookup unavailable")
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider.lookup_citations", fail
+    )
+    analysis = LegalAnalysis(
+        issue="tinnitus",
+        summary="See 30 Vet.App. 123.",
+        how_it_affects_va_claims="",
+    )
+
+    flags = check_analysis_citations(
+        analysis,
+        [CaseRecord(title="Smith", court=COURT_CAVC, citation="30 Vet.App. 123")],
+    )
+
+    assert flags == [
+        "CourtListener citation check failed: lookup unavailable"
+    ]
