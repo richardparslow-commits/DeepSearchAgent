@@ -56,13 +56,14 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 ## Quick start
 
 1. Create a virtual environment.
-2. Install dependencies (use `requirements-dev.txt` instead if you also want the test/dev tooling):
+2. Install the package (use `requirements-dev.txt` instead if you also want the test/dev tooling):
    ```bash
    pip install -r requirements.txt
+   pip install -r requirements-dev.txt   # dev, LLM, and web extras
    ```
-   Alternatively, install as a package (also provides the `va-legal-agent` command):
+   Or install extras directly (also provides the `va-legal-agent` command):
    ```bash
-   pip install -e .          # add "[llm]" for the optional OpenAI feature
+   pip install -e ".[dev,llm,web]"
    ```
 3. Copy the example environment file:
    ```bash
@@ -361,6 +362,9 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `LOG_JSON` | `0` | Emit diagnostic logs as JSON on stderr (`1`/`true`/`yes`/`on`); overridden by `--log-format` |
 | `RUN_ID` | – | Correlation id attached to terminal events; a fresh id is generated per run when unset |
 | `BATCH_STATE_DIR` | temp dir | Directory for per-run_id batch state files used by `--batch-size` |
+| `PORT` | `8080` | Web app listening port; the app binds loopback only |
+| `WEBAPP_STATE_DIR` | `.webapp/` | Directory for persisted web-app jobs |
+| `WEBAPP_MAX_CONCURRENT` | `2` | Concurrent web-app analyses (validated 1–32; extras receive HTTP 429) |
 
 ## Notes
 

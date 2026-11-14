@@ -32,9 +32,10 @@ class CaseRecord(BaseModel):
     # authority). Non-precedential decisions (memorandum dispositions,
     # unpublished orders, single-judge designations) carry a 0.25 composite
     # penalty and are flagged in the report as persuasive rather than
-    # binding. Defaults to True (assume precedential when the body cannot
-    # be read).
-    precedential: bool = True
+    # binding. ``None`` means the body was unavailable or unreadable, so the
+    # status is unknown; callers must neither treat that as binding nor apply
+    # the non-precedential penalty.
+    precedential: bool | None = None
     # Legal standard of review extracted from the decision text, e.g.
     # "clear error", "de novo", "abuse of discretion", "substantial
     # evidence".  Knowing the standard tells you whether the case is

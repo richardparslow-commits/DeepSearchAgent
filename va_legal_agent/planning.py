@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from .topics import STATUTE_HINTS, TOPICS
+from .topics import STATUTE_HINTS, TOPICS, topic_matches_issue
 
 SEARCH = "search"
 SYNTHESIZE = "synthesize"
@@ -76,17 +76,19 @@ class ResearchPlan:
 
 
 def detect_issue_topics(issue: str) -> tuple[str, ...]:
-    """Return the topic names implicated by *issue* (keyword or name match).
+    """Return the topic names implicated by *issue* by phrase, name, or keyword.
 
     Topics are returned in ``TOPICS`` order. This is the intent-mapping step:
     it decides which claim elements the issue actually raises rather than
-    searching every element's vocabulary.
+    searching every element's vocabulary. All topic phrases are matched with
+    token boundaries, so ``service-connected`` and ``aggravated`` count while
+    ``operating`` does not accidentally raise ``rating``.
     """
     text = (issue or "").lower()
     return tuple(
         topic.name
         for topic in TOPICS
-        if topic.name in text or (topic.keyword and topic.keyword in text)
+        if topic_matches_issue(topic, text)
     )
 
 

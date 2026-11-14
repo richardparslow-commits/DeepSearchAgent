@@ -23,9 +23,15 @@ def _case(
     outcome: str = "",
     statutes: list[str] | None = None,
     deep_summary: str = "",
-    appellant_role: str = "",
+    appellant_role: str = "veteran",
     court: str = "",
+    precedential: bool | None = True,
 ) -> CaseRecord:
+    # Contradiction fixtures below share a statute; the detector now also
+    # requires a shared legal element, so give those fixtures a nexus snippet
+    # unless they supply their own source text.
+    if statutes and not snippet:
+        snippet = "nexus"
     return CaseRecord(
         title=title,
         court=court or "Court of Appeals for Veterans Claims",
@@ -36,6 +42,7 @@ def _case(
         statutes=statutes or [],
         deep_summary=deep_summary,
         appellant_role=appellant_role,
+        precedential=precedential,
     )
 
 
@@ -56,12 +63,32 @@ def test_detect_claim_elements_from_issue_text():
     assert "benefit of the doubt" in names
 
 
-def test_detect_claim_elements_falls_back_to_full_library():
-    # A bare condition names no element phrase, so detection falls back to the
-    # whole library (the app is VA-specific) instead of returning nothing.
-    assert [spec.name for spec in detect_claim_elements("tinnitus")] == [
-        topic.name for topic in TOPICS
-    ]
+def test_detect_claim_elements_returns_empty_for_bare_condition():
+    # A bare condition or a non-service-connection benefit names no element
+    # phrase; do not expand it into all nine Caluza-style elements.
+    assert detect_claim_elements("tinnitus") == []
+    assert detect_claim_elements("Aid and Attendance") == []
+
+
+def test_detect_claim_elements_matches_all_topic_phrases_with_boundaries():
+    service_connected = [spec.name for spec in detect_claim_elements("service-connected knee")]
+    aggravated = [spec.name for spec in detect_claim_elements("aggravated knee")]
+
+    assert "service connection" in service_connected
+    assert "aggravation" in aggravated
+    # "rating" must not match inside "operating" or "frustrating".
+    assert detect_claim_elements("operating a vehicle") == []
+    assert detect_claim_elements("a frustrating delay") == []
+
+
+def test_rating_coverage_ignores_operating_and_frustrating():
+    cases = [_case("Smith", snippet="operating a vehicle during a frustrating delay")]
+
+    result = build_interpretive_analysis("rating", "Compensation", cases)
+
+    assert result.detected_elements[0].name == "rating"
+    assert result.detected_elements[0].covered_by == []
+    assert result.coverage_score == 0.0
 
 
 def test_uncovered_element_names_flags_elements_without_coverage():
@@ -74,18 +101,17 @@ def test_uncovered_element_names_flags_elements_without_coverage():
     ) == ("presumption",)
 
 
-def test_uncovered_element_names_falls_back_for_bare_issue():
-    # A bare issue scopes in the whole library, so with no covering cases every
-    # element is flagged as uncovered (drives the exhaustive gap round).
-    assert uncovered_element_names("tinnitus", []) == tuple(topic.name for topic in TOPICS)
+def test_uncovered_element_names_is_empty_for_bare_issue():
+    # No detected elements means there is nothing to flag as uncovered. The
+    # analysis reports an unclassified issue instead of inventing a library.
+    assert uncovered_element_names("tinnitus", []) == ()
+    assert uncovered_element_names("Aid and Attendance", []) == ()
 
-    # A case covering "service connection" and "nexus" still leaves the rest.
-    uncovered = uncovered_element_names(
+    # Even a case with element-like text cannot create uncovered elements when
+    # the issue itself detected none.
+    assert uncovered_element_names(
         "tinnitus", [_case("Smith v. Wilkie", snippet="service connection requires a nexus")]
-    )
-    assert "service connection" not in uncovered
-    assert "nexus" not in uncovered
-    assert "benefit of the doubt" in uncovered
+    ) == ()
 
 
 def test_extract_principle_findings_attributes_source_cases():
@@ -96,24 +122,41 @@ def test_extract_principle_findings_attributes_source_cases():
 
     findings = extract_principle_findings(cases)
 
-    benefit = next(f for f in findings if "equipoise" in f.principle)
+    benefit = next(f for f in findings if "approximate balance" in f.principle)
     assert benefit.source_cases == ["Smith v. Wilkie"]
+    assert "not limited to equipoise" in benefit.principle
+    assert "relative equipoise" not in benefit.principle
     reasons = next(f for f in findings if "7104" in f.principle)
     assert reasons.source_cases == ["Jones v. McDonough"]
 
 
+def test_principle_findings_use_jandreau_and_colvin_limits():
+    case = _case("Smith v. Wilkie", snippet="lay evidence medical evidence")
+
+    findings = extract_principle_findings([case])
+    lay = next(f for f in findings if "circumstances Jandreau identifies" in f.principle)
+    medical = next(f for f in findings if "medical expertise" in f.principle)
+
+    assert "cannot substitute for medical evidence beyond lay competence" in lay.principle
+    assert "may not substitute its own medical judgment" in medical.principle
+    assert "Medical evidence is required to establish diagnosis" not in medical.principle
+
+
 def test_outcome_direction_classifies_favorable_unfavorable_unknown():
-    assert _outcome_direction("granted") == 1
-    assert _outcome_direction("vacated") == 1
-    assert _outcome_direction("remanded") == 1
-    assert _outcome_direction("vacated and remanded") == 1
-    assert _outcome_direction("denied") == -1
-    assert _outcome_direction("affirmed") == -1
-    assert _outcome_direction("dismissed") == -1
-    # Mixed-direction compounds and unknown signals are never guessed.
-    assert _outcome_direction("granted and denied") == 0
-    assert _outcome_direction("reversed") == 0
-    assert _outcome_direction("") == 0
+    assert _outcome_direction("granted", "veteran") == 1
+    assert _outcome_direction("vacated", "veteran") == 1
+    assert _outcome_direction("remanded", "veteran") == 1
+    assert _outcome_direction("vacated and remanded", "veteran") == 1
+    assert _outcome_direction("denied", "veteran") == -1
+    assert _outcome_direction("affirmed", "veteran") == -1
+    assert _outcome_direction("dismissed", "veteran") == -1
+    # Mixed-direction compounds, partial dispositions, and unknown signals
+    # are never guessed.
+    assert _outcome_direction("granted and denied", "veteran") == 0
+    assert _outcome_direction("granted in part and denied in part", "veteran") == 0
+    assert _outcome_direction("granted in part", "veteran") == 0
+    assert _outcome_direction("reversed", "veteran") == 0
+    assert _outcome_direction("", "veteran") == 0
 
 
 def test_outcome_direction_secretary_flips_affirmed_and_dismissed():
@@ -143,9 +186,11 @@ def test_outcome_direction_veteran_stays_unfavorable_for_affirmed():
     assert _outcome_direction("dismissed", appellant_role="veteran") == -1
 
 
-def test_outcome_direction_unknown_role_stays_default():
-    assert _outcome_direction("affirmed", appellant_role="unknown") == -1
-    assert _outcome_direction("affirmed", appellant_role="") == -1
+def test_outcome_direction_requires_explicit_appellant_role():
+    assert _outcome_direction("affirmed", appellant_role="unknown") == 0
+    assert _outcome_direction("affirmed", appellant_role="") == 0
+    assert _outcome_direction("affirmed") == 0
+    assert _outcome_direction("granted", appellant_role="unknown") == 0
 
 
 def test_detect_contradictions_party_aware_affirmed():
@@ -301,8 +346,16 @@ def test_detect_contradictions_dedupes_case_pair():
 def test_detect_contradictions_falls_back_to_text_statutes():
     # Unenriched cases: statutes are pulled from the case text.
     cases = [
-        _case("Smith v. Wilkie", outcome="granted", snippet="under 38 U.S.C. § 5107(b)"),
-        _case("Jones v. McDonough", outcome="denied", snippet="under 38 U.S.C. § 5107(b)"),
+        _case(
+            "Smith v. Wilkie",
+            outcome="granted",
+            snippet="nexus under 38 U.S.C. § 5107(b)",
+        ),
+        _case(
+            "Jones v. McDonough",
+            outcome="denied",
+            snippet="nexus under 38 U.S.C. § 5107(b)",
+        ),
     ]
 
     contradictions = detect_contradictions(cases)
@@ -550,9 +603,9 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
     assert all(step for step in result.next_steps)
 
 
-def test_deep_summary_feeds_element_coverage():
-    # snippet/holding/impact are empty; only the deep-read summary mentions the
-    # element phrase. The deterministic coverage scan must credit it.
+def test_deep_summary_does_not_feed_element_coverage():
+    # The deep-read summary is model-generated. It may inform the narrative,
+    # but it is not source evidence that the case addresses an element.
     cases = [
         _case(
             "Smith v. Wilkie",
@@ -562,17 +615,15 @@ def test_deep_summary_feeds_element_coverage():
 
     result = build_interpretive_analysis("service connection", "Compensation", cases)
 
-    assert result.detected_elements[0].covered_by == ["Smith v. Wilkie"]
-    assert result.coverage_score == 1.0
+    assert result.detected_elements[0].covered_by == []
+    assert result.coverage_score == 0.0
 
 
-def test_coverage_zero_without_deep_summary():
-    # Same case, no deep summary: the element phrase appears nowhere in the
-    # scanned text, so coverage must stay 0.0 (pins that deep_summary is what
-    # supplies the match above).
-    cases = [_case("Smith v. Wilkie")]
+def test_generated_impact_does_not_feed_element_coverage():
+    case = _case("Smith v. Wilkie")
+    case.impact = "service connection requires a nexus"
 
-    result = build_interpretive_analysis("service connection", "Compensation", cases)
+    result = build_interpretive_analysis("service connection", "Compensation", [case])
 
     assert result.detected_elements[0].covered_by == []
     assert result.coverage_score == 0.0
@@ -640,26 +691,19 @@ def test_build_analysis_flags_missing_principles():
     assert "No explicit principle" in result.how_it_affects_va_claims
 
 
-def test_build_analysis_falls_back_to_full_library_for_bare_issue():
+def test_build_analysis_bare_condition_does_not_invent_elements():
     cases = [_case("Doe v. VA", snippet="service connection requires a nexus")]
 
     result = build_interpretive_analysis("tinnitus", "Compensation", cases)
 
-    # The bare condition falls back to the full element library, so coverage is
-    # computed against every claim element instead of a trivially empty set.
-    assert [element.name for element in result.detected_elements] == [
-        topic.name for topic in TOPICS
-    ]
-    assert result.detected_elements[0].covered_by == ["Doe v. VA"]  # service connection
-    # Full library: service connection (0.30) + nexus (0.40) covered out of
-    # all nine elements (total weight 1.00).  Previously every element was 1/9;
-    # now nexus is 0.40 and everything else shares the remaining 0.60.
-    assert result.coverage_score == 0.70
-    # The fallback still yields actionable element steps (not an empty list).
-    assert result.next_steps[0] == (
-        "Map the record to the three Caluza elements (diagnosis, in-service "
-        "event, nexus) and identify which element is contested."
-    )
+    # The bare condition is unclassified: no unrelated elements are invented
+    # and the analysis is explicitly flagged instead of reporting fake coverage.
+    assert result.detected_elements == []
+    assert result.coverage_score == 0.0
+    assert result.coverage_confidence == "low"
+    assert any("No claim elements were detected" in gap for gap in result.gaps)
+    assert "No claim elements were detected from the issue." in result.how_it_affects_va_claims
+    assert all("Caluza" not in step for step in result.next_steps)
     assert "XXXX" not in result.how_it_affects_va_claims
 
 
@@ -911,19 +955,15 @@ def test_weighted_coverage_two_elements_high_weight_missing():
 
 def test_weighted_coverage_all_covered():
     """Full coverage across all nine elements yields 1.0 regardless of weights."""
-    cases = [
-        _case(
-            "Omni Case",
-            snippet=(
-                "service connection nexus benefit of the doubt reasons and bases "
-                "evidence evaluation presumption rating aggravation duty to assist"
-            ),
-        )
-    ]
+    issue = (
+        "service connection nexus benefit of the doubt reasons and bases "
+        "evidence evaluation presumption rating aggravation duty to assist"
+    )
+    cases = [_case("Omni Case", snippet=issue)]
 
-    result = build_interpretive_analysis("tinnitus", "Compensation", cases)
+    result = build_interpretive_analysis(issue, "Compensation", cases)
 
-    # Bare issue → full library fallback. All 9 elements covered.
+    assert len(result.detected_elements) == len(TOPICS)
     assert result.coverage_score == 1.0
     assert all(element.covered_by for element in result.detected_elements)
 
@@ -940,9 +980,13 @@ def test_weighted_coverage_none_covered():
 def test_weighted_coverage_element_carries_weight_in_model():
     """Every ClaimElement in the output carries its weight for downstream
     inspection (CSV/JSON/strength-message consumers)."""
-    cases = [_case("Smith v. Wilkie", snippet="nexus opinion required")]
+    issue = (
+        "service connection nexus benefit of the doubt reasons and bases "
+        "evidence evaluation presumption rating aggravation duty to assist"
+    )
+    cases = [_case("Smith v. Wilkie", snippet=issue)]
 
-    result = build_interpretive_analysis("tinnitus", "Compensation", cases)
+    result = build_interpretive_analysis(issue, "Compensation", cases)
 
     # All 9 elements carry their declared weight.
     for element in result.detected_elements:
@@ -1107,7 +1151,7 @@ def test_confidence_low_with_few_cases_no_deep_no_holdings_no_llm(monkeypatch):
     assert result.coverage_confidence == "low"
 
 
-def test_confidence_medium_with_five_cases_deep_and_holdings(monkeypatch):
+def test_confidence_medium_with_five_supported_cases(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     cases = [
         _case(f"Case {i}", snippet="service connection requires a nexus",
@@ -1115,7 +1159,7 @@ def test_confidence_medium_with_five_cases_deep_and_holdings(monkeypatch):
         for i in range(5)
     ]
 
-    # 5 cases (1) + deep (1) + holdings (1) = 3 → medium
+    # Five binding-court cases with full element coverage reach medium.
     result = build_interpretive_analysis("service connection", "Compensation", cases)
 
     assert result.coverage_confidence == "medium"
@@ -1145,10 +1189,10 @@ def test_confidence_high_with_ten_cases_deep_holdings_llm(monkeypatch):
     assert result.coverage_confidence == "high"
 
 
-def test_confidence_deep_read_contributes_one_point(monkeypatch):
+def test_confidence_deep_read_alone_does_not_raise_confidence(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    # 5 cases + deep_summaries → 1 (case count) + 1 (deep) = 2 → low
-    # Add holding → 3 → medium
+    # Deep summaries are generated text and no longer earn confidence points.
+    # These cases have no source element coverage, so confidence stays low.
     cases = [
         _case(f"Case {i}", deep_summary="Full text.", holding="The Board erred.")
         for i in range(5)
@@ -1156,10 +1200,11 @@ def test_confidence_deep_read_contributes_one_point(monkeypatch):
 
     result = build_interpretive_analysis("service connection", "Compensation", cases)
 
-    assert result.coverage_confidence == "medium"
+    assert result.coverage_score == 0.0
+    assert result.coverage_confidence == "low"
 
 
-def test_confidence_llm_contributes_one_point(monkeypatch):
+def test_confidence_llm_narrative_does_not_add_confidence(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     from va_legal_agent.llm import ReasoningResult
 
@@ -1172,7 +1217,8 @@ def test_confidence_llm_contributes_one_point(monkeypatch):
         lambda issue, claim_type, cases: reasoning,
     )
 
-    # 5 cases + holdings + LLM = 1 + 1 + 1 = 3 → medium
+    # Five source-supported binding-court cases reach medium; the LLM
+    # narrative is not a separate confidence point.
     cases = [
         _case(f"Case {i}", snippet="nexus required", holding="Remanded.")
         for i in range(5)
@@ -1183,9 +1229,8 @@ def test_confidence_llm_contributes_one_point(monkeypatch):
     assert result.coverage_confidence == "medium"
 
 
-def test_confidence_ten_cases_counts_two(monkeypatch):
+def test_confidence_ten_supported_cases_is_high(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    # 10 cases + holdings = 2 + 1 = 3 → medium
     cases = [
         _case(f"Case {i}", snippet="nexus required", holding="Remanded.")
         for i in range(10)
@@ -1193,7 +1238,8 @@ def test_confidence_ten_cases_counts_two(monkeypatch):
 
     result = build_interpretive_analysis("nexus", "Compensation", cases)
 
-    assert result.coverage_confidence == "medium"
+    assert result.coverage_score == 1.0
+    assert result.coverage_confidence == "high"
 
 
 def test_statute_outcome_matrix_unknown_court_sort():
@@ -1209,3 +1255,197 @@ def test_statute_outcome_matrix_unknown_court_sort():
     # CAVC (known) sorts before the unknown court.
     assert rows[0].court == "Court of Appeals for Veterans Claims"
     assert rows[1].court == "Some County District Court"
+
+
+# ── Pass 2 regressions: element detection and source-only evidence ──────────
+
+
+def test_detect_claim_elements_aid_and_attendance_is_not_all_nine():
+    assert detect_claim_elements("Aid and Attendance") == []
+    assert detect_claim_elements("tinnitus") == []
+
+
+def test_build_analysis_aid_and_attendance_has_no_caluza_elements():
+    # Aid and Attendance is an SMC benefit, not a service-connection claim. It
+    # must not inherit the nine-element Caluza library.
+    cases = [_case("Smith v. Wilkie", snippet="service connection requires a nexus")]
+
+    result = build_interpretive_analysis("Aid and Attendance", "Compensation", cases)
+
+    assert result.detected_elements == []
+    assert result.coverage_score == 0.0
+    assert result.coverage_confidence == "low"
+    assert any("No claim elements were detected" in gap for gap in result.gaps)
+    assert "No claim elements were detected from the issue." in result.how_it_affects_va_claims
+
+
+def test_generated_fields_do_not_create_principle_findings():
+    case = _case("Smith v. Wilkie")
+    case.impact = "The benefit of the doubt applies."
+    case.deep_summary = "The Board must provide reasons and bases."
+
+    assert extract_principle_findings([case]) == []
+
+
+def test_negated_holding_does_not_feed_element_coverage_or_principles():
+    case = _case(
+        "Smith v. Wilkie",
+        holding="No nexus was established; the benefit of the doubt does not apply.",
+    )
+
+    result = build_interpretive_analysis(
+        "nexus and benefit of the doubt", "Compensation", [case]
+    )
+
+    assert all(element.covered_by == [] for element in result.detected_elements)
+    assert result.coverage_score == 0.0
+    assert result.likely_applicable_principles == []
+
+
+# ── Pass 2 regressions: same-statute contradictions ─────────────────────────
+
+
+def test_detect_contradictions_requires_shared_claim_element():
+    cases = [
+        _case(
+            "Tinnitus v. Wilkie",
+            snippet="nexus",
+            outcome="granted",
+            statutes=["38 U.S.C. § 1110"],
+        ),
+        _case(
+            "Knee v. McDonough",
+            snippet="rating",
+            outcome="denied",
+            statutes=["38 U.S.C. § 1110"],
+        ),
+    ]
+
+    assert detect_contradictions(cases) == []
+
+
+def test_detect_contradictions_reports_shared_element_in_statement():
+    cases = [
+        _case(
+            "Tinnitus v. Wilkie",
+            snippet="nexus",
+            outcome="granted",
+            statutes=["38 U.S.C. § 1110"],
+        ),
+        _case(
+            "Hearing loss v. McDonough",
+            snippet="nexus",
+            outcome="denied",
+            statutes=["38 U.S.C. § 1110"],
+        ),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert len(contradictions) == 1
+    assert "regarding nexus" in contradictions[0].statement
+
+
+# ── Pass 2 regressions: authority-aware coverage confidence ─────────────────
+
+
+def test_confidence_unknown_precedential_is_not_binding(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case(
+            f"Unknown {i}",
+            snippet="nexus required",
+            holding="Remanded.",
+            precedential=None,
+        )
+        for i in range(10)
+    ]
+
+    result = build_interpretive_analysis("nexus", "Compensation", cases)
+
+    assert result.coverage_score == 1.0
+    assert result.coverage_confidence == "low"
+
+
+def test_confidence_all_bva_is_low_despite_full_coverage(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case(
+            f"BVA {i}",
+            court="Board of Veterans' Appeals",
+            snippet="service connection nexus",
+            holding="Remanded.",
+        )
+        for i in range(10)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == 1.0
+    assert result.coverage_confidence == "low"
+
+
+def test_confidence_ten_cavc_cases_with_zero_coverage_is_low(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [
+        _case(f"Case {i}", holding="The Board erred.")
+        for i in range(10)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == 0.0
+    assert result.coverage_confidence == "low"
+
+
+def test_confidence_high_requires_multiple_cases_supporting_an_element(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cases = [_case("Only Source", snippet="service connection", holding="Remanded.")]
+    cases.extend(_case(f"Other {i}", holding="The Board erred.") for i in range(9))
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    # Coverage is full, but only one case supports the element; that is medium,
+    # not high, confidence.
+    assert result.coverage_score == 1.0
+    assert result.coverage_confidence == "medium"
+
+
+def test_statute_outcome_matrix_requires_explicit_appellant_role():
+    cases = [
+        _case(
+            "Granted",
+            outcome="granted",
+            statutes=["38 U.S.C. § 1110"],
+            appellant_role="",
+        ),
+        _case(
+            "Denied",
+            outcome="denied",
+            statutes=["38 U.S.C. § 1110"],
+            appellant_role="",
+        ),
+    ]
+
+    rows = build_statute_outcome_matrix(cases)
+
+    assert len(rows) == 1
+    assert rows[0].favorable == 0
+    assert rows[0].unfavorable == 0
+    assert rows[0].unknown == 2
+
+
+def test_statute_outcome_matrix_treats_mixed_compound_as_unknown():
+    case = _case(
+        "Mixed",
+        outcome="granted in part and denied in part",
+        statutes=["38 U.S.C. § 1110"],
+        appellant_role="veteran",
+    )
+
+    rows = build_statute_outcome_matrix([case])
+
+    assert len(rows) == 1
+    assert rows[0].favorable == 0
+    assert rows[0].unfavorable == 0
+    assert rows[0].unknown == 1

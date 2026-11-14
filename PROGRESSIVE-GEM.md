@@ -24,7 +24,7 @@ If the user says **"skip"**, skip the current step and move to the next one.
 
 ## Step 1 — Decompose the issue into claim elements
 
-Scan the user's issue text against the detection phrases in **Knowledge section 1 (CLAIM ELEMENT LIBRARY)**. List every element whose phrase appears, plus its weight and a one-line description. If the issue is a bare condition (e.g., "tinnitus", "Aid and Attendance"), list all nine elements — every VA claim is a service-connection question at root.
+Scan the user's issue text against the detection phrases in **Knowledge section 1 (CLAIM ELEMENT LIBRARY)**. List every element whose phrase appears, plus its weight and a one-line description. If the issue is a bare condition (e.g., "tinnitus") or a non-service-connection benefit (e.g., "Aid and Attendance"), list only the elements that actually apply; do not assume all nine. A service-connection condition normally uses service connection, nexus, and evidence evaluation. Aid and Attendance uses the § 3.350 SMC criteria, and a rating issue uses the rating-schedule elements. If no element applies, say so.
 
 **Output format for Step 1:**
 
@@ -69,7 +69,7 @@ Type **proceed** to continue to Step 3, or tell me what to adjust.
 
 ## Step 3 — Recall known veterans-law cases
 
-For each element-statute pair, recall cases from **Knowledge section 3 (CASE CATALOG)** plus your broader training knowledge that address it. List the case name, court, year, and the specific holding that makes it relevant. Be honest — if you're unsure about a citation, skip that case rather than guessing.
+For each element-statute pair, recall cases from **Knowledge section 3 (CASE CATALOG)** plus your broader training knowledge that address it. List the case name, court, year, and the specific holding that makes it relevant. Be honest — if you're unsure about a citation, skip that case rather than guessing. CAVC decisions bind the Board only when precedential (panel/en banc); memorandum and single-judge actions are persuasive only, and BVA decisions bind no one.
 
 **Output format for Step 3:**
 
@@ -100,7 +100,7 @@ Type **proceed** to continue to Step 4, or tell me what to adjust.
 For each case from Step 3, determine, using **Knowledge section 5 (OUTCOME CLASSIFICATION RULES)**:
 - **Outcome**: favorable to the veteran, unfavorable, or unknown/ambiguous
 - **Procedural posture**: granted, denied, affirmed, vacated, remanded, dismissed
-- **Appellant**: veteran or Secretary (this matters — "affirmed" when the Secretary appealed means the veteran's grant was upheld, so it's favorable)
+- **Appellant**: veteran or Secretary (this matters — "affirmed" when the Secretary appealed means the veteran's grant was upheld, so it's favorable). If the appellant is unknown or was not extracted, classify the outcome as unknown; do not assume the veteran appealed.
 - **Authority tier**: binding when precedential (Federal Circuit; CAVC panel/en banc), or persuasive (CAVC memorandum/single-judge; BVA)
 
 Group cases by element and statute.
@@ -144,7 +144,7 @@ Type **proceed** to continue to Step 6, or tell me what to adjust.
 
 ## Step 6 — Flag contradictions
 
-Compare every pair of cases that share a statute. If two cases reach opposite outcomes (one favorable, one unfavorable) on the same statute, flag it as a contradiction. Skip pairs where either outcome is unknown/ambiguous, or where a later case explicitly overrules an earlier one.
+Compare every pair of cases that share a statute and a claim element or legal question. If two cases reach opposite outcomes (one favorable, one unfavorable) on the same statute and the same element/legal question, flag it as a contradiction. Cases that share only a broad statute but address different issues or elements are not contradictions. Skip pairs where either outcome is unknown/ambiguous, or where a later case explicitly overrules an earlier one.
 
 **Output format for Step 6:**
 
@@ -155,7 +155,7 @@ Contradiction 1: [Case A] and [Case B] reach opposite outcomes on [statute]: [sh
   - [Case A]: [outcome], [court], [year]
   - [Case B]: [outcome], [court], [year]
 
-(or "No contradictions detected — all cases on each statute reach consistent outcomes.")
+(or "No contradictions detected — cases on each shared issue/element reach consistent outcomes.")
 
 Type **proceed** to continue to Step 7, or tell me what to adjust.
 ```

@@ -1,6 +1,7 @@
 """Tests for the nuanced impact-analysis layer (va_legal_agent.impact)."""
 
 from va_legal_agent.impact import (
+    MIXED_OUTCOME_NOTE,
     analyze_case_impact,
     authority_note_for,
     detect_issue_tags,
@@ -65,6 +66,21 @@ def test_detect_issue_tags_fallback():
     ]
 
 
+def test_detect_issue_tags_matches_all_topic_phrases():
+    assert detect_issue_tags(_case(snippet="service-connected knee disability")) == [
+        "service connection"
+    ]
+
+
+def test_detect_issue_tags_does_not_match_rating_inside_words():
+    assert detect_issue_tags(_case(snippet="operating a motor vehicle")) == [
+        "the factual and legal issue"
+    ]
+    assert detect_issue_tags(_case(snippet="a frustrating delay")) == [
+        "the factual and legal issue"
+    ]
+
+
 def test_nuance_starts_with_relevance_sentence():
     profile = analyze_case_impact(_case(snippet="nexus opinion"))
 
@@ -89,9 +105,15 @@ def test_outcome_not_scanned_from_snippet():
 
 
 def test_outcome_note_mapping():
-    assert outcome_note_for("vacated and remanded").startswith("The decision below was vacated")
-    assert outcome_note_for("") == ""
-    assert outcome_note_for("certiorari granted") == ""
+    note = outcome_note_for("vacated and remanded", appellant_role="veteran")
+    assert note.startswith("The decision below was vacated")
+    assert "remanded" in note
+    assert outcome_note_for("", appellant_role="veteran") == ""
+    assert outcome_note_for("certiorari granted", appellant_role="veteran") == ""
+    assert outcome_note_for("affirmed and vacated", appellant_role="veteran") == MIXED_OUTCOME_NOTE
+    assert outcome_note_for("granted in part and denied in part", appellant_role="veteran") == (
+        MIXED_OUTCOME_NOTE
+    )
 
 
 def test_outcome_note_secretary_override_affirmed():
@@ -125,9 +147,16 @@ def test_outcome_note_no_override_for_veteran():
     assert "affirmed, reinforcing" in note
 
 
-def test_outcome_note_no_override_for_unknown():
-    note = outcome_note_for("affirmed", appellant_role="unknown")
-    assert "affirmed, reinforcing" in note
+def test_outcome_note_requires_explicit_appellant_role():
+    assert outcome_note_for("affirmed", appellant_role="unknown") == ""
+    assert outcome_note_for("affirmed", appellant_role="") == ""
+    assert outcome_note_for("affirmed") == ""
+
+
+def test_analyze_case_impact_missing_role_omits_outcome_note():
+    case = _case(holding="affirmed", outcome="affirmed")
+    profile = analyze_case_impact(case)
+    assert profile.outcome_note == ""
 
 
 def test_analyze_case_impact_secretary_affirmed_is_favorable():
@@ -196,6 +225,18 @@ def test_statute_note_two_hints_join_with_and():
     assert "the reasons-and-bases requirement" in note
 
 
+def test_statute_note_is_subsection_aware():
+    section_5107a = statute_note_for(["38 U.S.C. § 5107(a)"])
+    section_7104a = statute_note_for(["38 U.S.C. § 7104(a)"])
+    nested_5107 = statute_note_for(["38 U.S.C. § 5107(b)(1)"])
+    nested_7104 = statute_note_for(["38 U.S.C. § 7104(d)(1)(A)"])
+
+    assert "benefit-of-the-doubt" not in section_5107a
+    assert "reasons-and-bases" not in section_7104a
+    assert "benefit-of-the-doubt" in nested_5107
+    assert "reasons-and-bases" in nested_7104
+
+
 def test_statute_note_cites_non_hint_statutes_exactly():
     assert statute_note_for(["12 U.S.C. § 999", "15 U.S.C. § 777"]) == (
         "The ruling cites 12 U.S.C. § 999, 15 U.S.C. § 777, which may provide statutory anchors."
@@ -233,6 +274,14 @@ def test_authority_note_nonprecedential_cavc_is_persuasive():
     )
 
 
+def test_authority_note_unknown_precedential_is_not_binding():
+    note = authority_note_for(CAVC, precedential=None)
+    assert "status" in note.lower()
+    assert "unknown" in note.lower()
+    assert "verify" in note.lower()
+    assert "binding on the Board" not in note
+
+
 def test_analyze_case_impact_nonprecedential_cavc_uses_persuasive_note():
     profile = analyze_case_impact(_case(court=CAVC, precedential=False))
 
@@ -253,6 +302,7 @@ def test_nuance_layers_posture_statute_and_authority_notes():
         holding="vacated and remanded",
         statutes=["38 U.S.C. § 7104(d)(1)"],
         court=CAVC,
+        appellant_role="veteran",
     )
 
     profile = analyze_case_impact(case)
@@ -280,6 +330,7 @@ def test_analyze_case_impact_lists_tags_and_completes_profile():
         holding="vacated and remanded",
         statutes=["38 U.S.C. § 5107(b)"],
         court=CAVC,
+        appellant_role="veteran",
     )
 
     profile = analyze_case_impact(case)

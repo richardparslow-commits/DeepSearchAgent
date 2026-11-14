@@ -11,6 +11,7 @@ optional LLM layer; otherwise a deterministic template summary is used.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from .config import get_settings
@@ -18,7 +19,14 @@ from .fetch import extract_statutes
 from .impact import detect_outcome
 from .llm import interpret_cases, reason_cases
 from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding, StatuteOutcomeRow
-from .topics import COURT_SUPREME, PRINCIPLE_PATTERNS, TOPICS
+from .topics import (
+    BINDING_COURTS,
+    COURT_SUPREME,
+    PRINCIPLE_PATTERNS,
+    TOPICS,
+    phrase_matches,
+    phrase_pattern,
+)
 
 @dataclass(frozen=True)
 class ElementSpec:
@@ -58,11 +66,14 @@ _ELEMENT_DETAILS: dict[str, tuple[str, str, str, float]] = {
         0.40,
     ),
     "benefit of the doubt": (
-        "When the evidence for and against the claim is in relative balance, the "
-        "benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b)).",
-        "Highlight areas where favorable and unfavorable evidence are roughly in "
-        "balance, and request that the benefit of the doubt be applied.",
-        "Identify issues where the evidence is in equipoise and argue the benefit of the doubt.",
+        "When the positive and negative evidence is in approximate balance (nearly "
+        "equal, including but not limited to equipoise), the benefit of the doubt "
+        "is given to the veteran (38 U.S.C. § 5107(b)).",
+        "Highlight issues where favorable and unfavorable evidence is nearly equal "
+        "(an approximate balance), and request that the benefit of the doubt be applied; "
+        "do not require exact equipoise.",
+        "Identify issues where the evidence is in approximate balance (nearly equal) "
+        "and argue the benefit of the doubt.",
         0.10,
     ),
     "reasons and bases": (
@@ -153,16 +164,42 @@ class InterpretiveAnalysis:
     statute_outcome_matrix: list[StatuteOutcomeRow] = field(default_factory=list)
 
 
-def _case_text(case: CaseRecord) -> str:
-    # ``deep_summary`` is included so full-text ingestion feeds the
-    # deterministic element-coverage, principle, and statute scans, not just
-    # the LLM reasoning pass. Without it, deep-read mode could produce a
-    # substantive holding while the coverage score stays 0.0 because the
-    # snippet/holding fields were too thin to match an element phrase.
-    return (
-        f"{case.title} {case.snippet} {case.holding} "
-        f"{case.impact} {case.deep_summary}"
-    ).lower()
+def _source_text(case: CaseRecord) -> str:
+    """Return source-derived text for deterministic legal scans.
+
+    Generated fields (``impact`` and ``deep_summary``) are deliberately
+    excluded: they are derived from the case and must never be treated as
+    independent evidence that the case addresses an element or principle.
+    """
+    return f"{case.title} {case.snippet} {case.holding}".lower()
+
+
+_NEGATION_RE = re.compile(
+    r"\b(?:no|not|never|without|neither|nor|none|fail(?:ed|s|ing)?|"
+    r"cannot|can't|isn't|wasn't|aren't|weren't|doesn't|don't|didn't|"
+    r"inapplicable|unwarranted)\b",
+    re.IGNORECASE,
+)
+
+
+def _phrase_is_affirmed(text: str, phrase: str) -> bool:
+    """Return True when *phrase* occurs outside a negating context.
+
+    This is intentionally conservative: a case that says "no nexus" or
+    "the benefit of the doubt does not apply" is not treated as authority
+    for the affirmative principle. The check only covers the current
+    sentence, so an unrelated negation elsewhere in the holding does not
+    erase a positive statement.
+    """
+    for match in phrase_pattern(phrase).finditer(text):
+        index = match.start()
+        before = re.split(r"[.;!?]", text[max(0, index - 80) : index])[-1]
+        after = re.split(
+            r"[.;!?]", text[index + len(phrase) : index + len(phrase) + 80]
+        )[0]
+        if not _NEGATION_RE.search(before) and not _NEGATION_RE.search(after):
+            return True
+    return False
 
 
 # Dispositions that favor the claimant position vs. go against it, used by the
@@ -183,28 +220,43 @@ _UNFAVORABLE_OUTCOMES = frozenset({"denied", "affirmed", "dismissed"})
 def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
     """Classify an outcome as favorable (+1), unfavorable (-1), or unknown (0).
 
-    ``extract_outcome`` joins multiple signals with " and " (e.g. "vacated and
-    remanded"). A compound that mixes directions ("granted and denied") or an
-    unrecognized signal resolves to 0 rather than guessing, so the deterministic
-    detector never flags on ambiguous postures.
+    An explicit appellant role is required for a substantive classification.
+    An empty or unknown role returns 0 rather than assuming the veteran
+    appealed: ``affirmed`` means opposite things
+    depending on which party appealed, so guessing would silently flip the
+    result. When the role is ``"secretary"``, every disposition is read from
+    the appellant's point of view, so a denial of the Secretary's appeal
+    upholds the veteran's grant, while a grant or vacatur goes against the
+    veteran.
 
-    When *appellant_role* is ``"secretary"``, every disposition flips: the
-    outcome is read from the appellant's point of view, so a denial of the
-    Secretary's appeal upholds the veteran's grant, while a grant or vacatur
-    of that appeal goes against the veteran. Without this, every
-    ``"affirmed"`` was classified as unfavorable, which is wrong half the time
-    in VA law (the Secretary appeals grants far more often than veterans
-    appeal denials in the CAVC dataset).
+    ``extract_outcome`` joins multiple signals with " and " (e.g. "vacated and
+    remanded"). A compound that mixes directions ("granted and denied"), a
+    partial disposition ("granted in part"), or an unrecognized signal
+    resolves to 0 rather than guessing, so the deterministic detector never
+    flags on ambiguous postures.
     """
-    signals = outcome.lower().split(" and ")
-    if not signals or any(not signal for signal in signals):
+    role = (appellant_role or "").lower()
+    if role not in {"veteran", "secretary"}:
         return 0
-    is_secretary = appellant_role == "secretary"
+
+    signals = [
+        signal.strip().lower()
+        for signal in (outcome or "").split(" and ")
+        if signal.strip()
+    ]
+    if not signals:
+        return 0
+
+    is_secretary = role == "secretary"
     directions: set[int] = set()
     for signal in signals:
-        if signal in _FAVORABLE_OUTCOMES:
+        # "granted in part" is not a full grant; do not classify it as one.
+        if "in part" in signal:
+            return 0
+        name = signal.split(" ", 1)[0]
+        if name in _FAVORABLE_OUTCOMES:
             direction = 1
-        elif signal in _UNFAVORABLE_OUTCOMES:
+        elif name in _UNFAVORABLE_OUTCOMES:
             direction = -1
         else:
             return 0
@@ -215,18 +267,30 @@ def _outcome_direction(outcome: str, appellant_role: str = "") -> int:
 
 
 def _case_statutes(case: CaseRecord) -> list[str]:
-    """Return the case's cited statutes, scanning text when unenriched."""
-    return list(case.statutes) or extract_statutes(_case_text(case))
+    """Return the case's cited statutes, scanning source text when unenriched."""
+    return list(case.statutes) or extract_statutes(_source_text(case))
+
+
+def _case_element_names(case: CaseRecord) -> set[str]:
+    """Return elements affirmatively addressed in the case's source text."""
+    text = _source_text(case)
+    return {
+        spec.name
+        for spec in detect_claim_elements(text)
+        if any(_phrase_is_affirmed(text, phrase) for phrase in spec.phrases)
+    }
 
 
 def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
-    """Deterministically flag opposite outcomes on a shared statute.
+    """Deterministically flag opposite outcomes on a shared statute and element.
 
     The always-on complement to the LLM reasoning pass: pairs of retrieved
-    authorities that cite the same statute but reach opposite outcomes
-    (favorable vs. unfavorable to the claimant) are surfaced as contradictions
-    so the report never silently picks one side. The outcome prefers the
-    enriched field and falls back to the title/holding text (mirroring
+    authorities that cite the same statute and affirmatively address the same
+    claim element but reach opposite outcomes (favorable vs. unfavorable to the
+    claimant) are surfaced as contradictions so the report never silently picks
+    one side. A shared statute alone is not enough: different issues or elements
+    under the same statute are not a conflict. The outcome prefers the enriched
+    field and falls back to the title/holding text (mirroring
     :func:`impact.detect_outcome`), matching the statute fallback; unknown or
     mixed postures never trigger a flag.
     """
@@ -248,6 +312,9 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
         first_statutes = set(_case_statutes(first))
         if not first_statutes:
             continue
+        first_elements = _case_element_names(first)
+        if not first_elements:
+            continue
         for j, second in enumerate(cases[i + 1 :], start=i + 1):
             second_direction = directions[j]
             if second_direction == 0 or second_direction == first_direction:
@@ -258,16 +325,20 @@ def detect_contradictions(cases: list[CaseRecord]) -> list[Contradiction]:
             shared = first_statutes & set(_case_statutes(second))
             if not shared:
                 continue
+            shared_elements = first_elements & _case_element_names(second)
+            if not shared_elements:
+                continue
             key = tuple(sorted((first.title, second.title)))
             if key in seen:
                 continue
             seen.add(key)
             statute = sorted(shared)[0]
+            element = sorted(shared_elements)[0]
             contradictions.append(
                 Contradiction(
                     statement=(
                         f"{first.title} and {second.title} reach opposite outcomes on "
-                        f"{statute}: {outcomes[i]} versus {outcomes[j]}."
+                        f"{statute} regarding {element}: {outcomes[i]} versus {outcomes[j]}."
                     ),
                     case_a=first.title,
                     case_b=second.title,
@@ -297,21 +368,29 @@ def _merge_contradictions(
 def detect_claim_elements(issue: str) -> list[ElementSpec]:
     """Return the element specs whose detection phrases appear in the claim issue.
 
-    Falls back to the full element library when the issue names no element
-    (a bare condition like ``"tinnitus"``): the app is VA-claims-specific, so
-    a bare condition is still a service-connection question and the coverage
-    score needs a non-empty denominator instead of a trivially 0.0.
+    No fallback is applied: a bare condition such as "tinnitus" or a
+    non-service-connection benefit such as Aid and Attendance must not be
+    expanded into every element in the library. When nothing matches, the
+    caller should surface an unclassified issue rather than inventing
+    Caluza elements that do not govern the claim.
     """
     text = issue.lower()
-    detected = [spec for spec in ELEMENT_LIBRARY if any(phrase in text for phrase in spec.phrases)]
-    return detected or list(ELEMENT_LIBRARY)
+    return [
+        spec
+        for spec in ELEMENT_LIBRARY
+        if any(phrase_matches(text, phrase) for phrase in spec.phrases)
+    ]
 
 
 def extract_principle_findings(cases: list[CaseRecord]) -> list[PrincipleFinding]:
-    """Scan case text for known principle phrases, attributing each to its source cases."""
+    """Scan source text for affirmed principle phrases."""
     findings: list[PrincipleFinding] = []
     for phrase, principle in PRINCIPLE_PATTERNS:
-        sources = [case.title for case in cases if phrase in _case_text(case)]
+        sources = [
+            case.title
+            for case in cases
+            if _phrase_is_affirmed(_source_text(case), phrase)
+        ]
         if sources:
             findings.append(PrincipleFinding(principle=principle, source_cases=sources))
     return findings
@@ -321,7 +400,7 @@ def _cases_covering_element(spec: ElementSpec, cases: list[CaseRecord]) -> list[
     return [
         case.title
         for case in cases
-        if any(phrase in _case_text(case) for phrase in spec.phrases)
+        if any(_phrase_is_affirmed(_source_text(case), phrase) for phrase in spec.phrases)
     ]
 
 
@@ -403,9 +482,13 @@ def _template_interpretation(
     case_names = ", ".join(case.title for case in cases[:interpret_limit])
     if findings:
         principle_text = " ".join(finding.principle for finding in findings[:3])
-        # ``elements`` is never empty here: detect_claim_elements falls back to
-        # the full library for a bare issue, so the element text is unconditional.
-        element_text = f"Key elements to establish: {'; '.join(spec.name for spec in elements)}. "
+        # A bare or non-service-connection issue can have no detected elements;
+        # say so explicitly instead of falling back to the full Caluza library.
+        element_text = (
+            f"Key elements to establish: {'; '.join(spec.name for spec in elements)}. "
+            if elements
+            else "No claim elements were detected from the issue. "
+        )
         return (
             f"For the issue of {issue} under {claim_type}, the retrieved authorities "
             f"({case_names}) indicate the following governing principles: {principle_text} "
@@ -462,8 +545,14 @@ def build_interpretive_analysis(
             "verify the query terms or broaden the search.",
         )
 
-    # ``detect_claim_elements`` now falls back to the full library for a bare
-    # issue, so ``detected`` is never empty here and the divisor is safe.
+    if not detected:
+        gaps.insert(
+            0,
+            "No claim elements were detected from the issue; specify the benefit type or claim element.",
+        )
+
+    # A bare or non-service-connection issue can yield no detected elements;
+    # coverage is then 0.0 rather than padded with unrelated claim elements.
     covered_weight = sum(element.weight for element in detected if element.covered_by)
     total_weight = sum(element.weight for element in detected)
     coverage_score = covered_weight / total_weight if total_weight > 0 else 0.0
@@ -510,22 +599,30 @@ def build_interpretive_analysis(
         source = "llm" if llm_text else "template"
 
     # ── Coverage confidence ─────────────────────────────────────────────
-    confidence_points = 0
-    case_count = len(cases)
-    if case_count >= 10:
-        confidence_points += 2
-    elif case_count >= 5:
-        confidence_points += 1
-    if any(case.deep_summary for case in cases):
-        confidence_points += 1
-    if any(case.holding for case in cases):
-        confidence_points += 1
-    if source == "llm":
-        confidence_points += 1
-
-    if confidence_points >= 5:
+    # Volume alone is not confidence. High confidence requires a binding,
+    # precedential decision, meaningful element coverage, and at least one
+    # element supported by multiple cases. An all-BVA or all-non-precedential
+    # corpus cannot be high-confidence authority.
+    binding_cases = [
+        case
+        for case in cases
+        if case.precedential is True and case.court in BINDING_COURTS
+    ]
+    multi_case_support = any(
+        len(element.covered_by) >= 2 for element in detected
+    )
+    if not binding_cases or coverage_score <= 0.0:
+        coverage_confidence = "low"
+    elif (
+        len(cases) >= 10
+        and coverage_score >= 0.60
+        and multi_case_support
+        and any(case.holding for case in cases)
+    ):
         coverage_confidence = "high"
-    elif confidence_points >= 3:
+    elif coverage_score >= 0.30 and (
+        len(cases) >= 5 or (len(cases) >= 3 and binding_cases)
+    ):
         coverage_confidence = "medium"
     else:
         coverage_confidence = "low"

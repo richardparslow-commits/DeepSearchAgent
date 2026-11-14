@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "mutation.yml"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 BASELINE = REPO_ROOT / ".mutation-baseline.json"
 MATRIX_ENTRY_RE = re.compile(
     r"^\s*- module: (?P<module>\S+)\n"
@@ -30,6 +31,13 @@ def _matrix_entries(text: str) -> dict[str, tuple[str, int]]:
     }
     assert entries, "mutation workflow has no matrix entries"
     return entries
+
+
+def test_workflows_grant_only_read_access() -> None:
+    """Both workflows must not inherit write-capable default permissions."""
+    pattern = re.compile(r"(?m)^permissions:\n  contents: read$")
+    for workflow in (CI_WORKFLOW, WORKFLOW):
+        assert pattern.search(workflow.read_text(encoding="utf-8")), workflow
 
 
 def test_every_baseline_module_has_its_own_matrix_leg() -> None:

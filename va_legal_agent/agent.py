@@ -38,6 +38,8 @@ from .topics import (
     COURT_UNKNOWN,
     TOPICS,
     authority_weight_for,
+    phrase_matches,
+    topic_matches_issue,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,9 +182,9 @@ def _tokenize(text: str) -> list[str]:
 def _issue_term_weights(issue: str) -> dict[str, float]:
     """Build weighted term vector from *issue* and matching ``TOPICS`` synonyms.
 
-    Issue tokens get weight 1.0.  Synonyms for topic entries whose ``keyword``
-    appears in the issue get weight 0.5 (they are semantically related but
-    not the exact issue phrase).
+    Issue tokens get weight 1.0. Synonyms for topic entries whose name, keyword,
+    or any detection phrase matches the issue get weight 0.5 (they are
+    semantically related but not the exact issue phrase).
     """
     weights: dict[str, float] = {}
     normalized_issue = issue.lower()
@@ -191,7 +193,7 @@ def _issue_term_weights(issue: str) -> dict[str, float]:
         weights[term] = max(weights.get(term, 0.0), 1.0)
 
     for topic in TOPICS:
-        if topic.keyword and topic.keyword in normalized_issue:
+        if topic_matches_issue(topic, normalized_issue):
             for synonym in topic.synonyms:
                 for term in _tokenize(synonym):
                     weights[term] = max(weights.get(term, 0.0), 0.5)
@@ -249,17 +251,27 @@ def score_case_relevance(case: CaseRecord, issue: str) -> int:
     text = f"{case.title} {case.snippet} {case.holding} {case.impact} {case.issue}".lower()
     score = 0
     normalized_issue = issue.lower()
-    if normalized_issue in text:
+    if phrase_matches(text, normalized_issue):
         score += 2
     for topic in TOPICS:
-        if topic.keyword and topic.keyword in normalized_issue:
-            if any(synonym in text for synonym in topic.synonyms):
+        if topic_matches_issue(topic, normalized_issue):
+            if any(
+                phrase_matches(text, phrase)
+                for phrase in (*topic.phrases, *topic.synonyms)
+            ):
                 score += 2
-    if "veterans" in text:
+    if phrase_matches(text, "veterans"):
         score += 1
-    if "service connection" in text or "benefit of the doubt" in text or "reasons and bases" in text:
+    if (
+        phrase_matches(text, "service connection")
+        or phrase_matches(text, "benefit of the doubt")
+        or phrase_matches(text, "reasons and bases")
+    ):
         score += 2
-    if case.court and "Veterans" in case.court:
+    # COURT_UNKNOWN is the literal "Veterans law research result"; it must not
+    # inherit the Veterans-court bonus merely because its label contains the
+    # word "Veterans".
+    if case.court and case.court != COURT_UNKNOWN and "Veterans" in case.court:
         score += 1
     # Semantic similarity bonus: 0-4 points for paraphrased concept overlap.
     # The bonus rewards cases whose vocabulary overlaps with the issue's
@@ -842,11 +854,12 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             value = details.get(key) or getattr(case, key)
             if value:
                 setattr(case, key, value)
-        # Precedential is a bool: False means a non-precedential marker was
-        # found, which is a real signal that must not be swallowed by the
-        # truthiness check above (``if value`` skips ``False``).
-        if "precedential" in details:
-            case.precedential = bool(details["precedential"])
+        # Precedential is tri-state: False means a non-precedential marker was
+        # found and True means a readable body carried none. Keep None as
+        # unknown instead of coercing it to either certainty.
+        status = details.get("precedential")
+        if status is not None:
+            case.precedential = bool(status)
         # Populate appellant_role from enrichment so the contradiction detector
         # and impact notes are party-aware (e.g. "affirmed" when the Secretary
         # cross-appealed is favorable to the veteran, not unfavorable).
@@ -950,7 +963,8 @@ def _build_analysis(
     summary = "\n".join(
         f"- {case.title} ({case.court}) "
         f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
-        + (" [non-precedential]" if not case.precedential else "")
+        + (" [non-precedential]" if case.precedential is False else "")
+        + (" [precedential status unknown]" if case.precedential is None else "")
         + (f" [superseded by {case.superseded_by}]" if case.superseded_by else "")
         for case in cases[:5]
     )

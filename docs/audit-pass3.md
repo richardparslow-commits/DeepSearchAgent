@@ -8,15 +8,13 @@
 `fetch.py` fixes, the remediation for the Pass 3 findings marked **FIXED** below, and the
 associated regression tests.
 
-**Environment:** Python 3.12.3, project `.venv`, Flask 3.1.3, `pytest 9.2.0`,
+**Environment:** Python 3.12.3, project `.venv`, Flask 3.1.3, `pytest 8.4.2`,
 `ruff 0.17.5`, GNU bash and make on Linux.
 
 **Document status:** regenerated Pass 3 in the Pass 1 format on 2026-11-13. IDs `P3-001` …
-`P3-022` are preserved. The working tree now contains fixes for `P3-001`, `P3-002`,
-`P3-003`, `P3-004`, `P3-005`, `P3-006`, `P3-007`, `P3-008`, `P3-009`, `P3-010`, `P3-011`,
-`P3-012`, `P3-013`, `P3-014`, `P3-015`, `P3-017`, `P3-018`, `P3-019` and `P3-021`; the totals distinguish fixed from
-open. Where a fixed finding no longer reproduces, the regression test is the executed
-evidence. The
+`P3-022` are preserved. The working tree now contains fixes for all 22 findings; no Pass 3
+finding remains open. Where a fixed finding no longer reproduces, the regression test is the
+executed evidence. The
 `[tool.mutmut]` defaults now target the package and run the full test selection; each pass
 scopes that config temporarily and restores it.
 
@@ -40,16 +38,16 @@ not paraphrased. Findings are ordered by file, not by severity.
 | `deploy/run_batch.sh` | 100 | 1 | 1 | 0 |
 | `deploy/va-legal-agent-batch.service` | 29 | 0 | 0 | 0 |
 | `deploy/va-legal-agent-batch.timer` | 11 | 0 | 0 | 0 |
-| `.github/workflows/ci.yml`, `mutation.yml` | 191 | 3 | 2 | 1 |
+| `.github/workflows/ci.yml`, `mutation.yml` | 195 | 3 | 3 | 0 |
 | `Makefile` | 97 | 2 | 2 | 0 |
 | `pyproject.toml` | 64 | 1 | 1 | 0 |
-| `requirements.txt`, `requirements-dev.txt` | 17 | 1 | 0 | 1 |
+| `requirements.txt`, `requirements-dev.txt` | 6 | 1 | 1 | 0 |
 | `.mutation-baseline.json` | 541 | 1 | 1 | 0 |
-| `.env.example` | 202 | 1 | 0 | 1 |
-| **Total** | **2,892** | **22** | **19** | **3** |
+| `.env.example` | 213 | 1 | 1 | 0 |
+| **Total** | **2,896** | **22** | **22** | **0** |
 
 Severity: **3 High, 10 Medium, 9 Low** (including fixed items). Fixed: **3 High, 10 Medium,
-6 Low**. Open: **0 High, 0 Medium, 3 Low**.
+9 Low**. Open: **0 High, 0 Medium, 0 Low**.
 
 The three High findings form one chain: `P3-008` (a crashed mutmut pass reports zero
 survivors), `P3-010` (a missing survivor file is only a warning) and `P3-014`
@@ -692,9 +690,9 @@ Regression tests: `test_every_baseline_module_has_its_own_matrix_leg`,
 
 **Remediation:** implemented with the per-module matrix and artifact-based gate above.
 
-### P3-016 — CI security — Low
+### P3-016 — CI security — Low — **FIXED**
 
-**Location:** `.github/workflows/ci.yml:1-9`, `.github/workflows/mutation.yml:1-24`
+**Location:** `.github/workflows/ci.yml:7-8`, `.github/workflows/mutation.yml:35-36`
 
 **Offending code:**
 ```yaml
@@ -710,18 +708,19 @@ available to everything the job executes, including `pip install -e .` build bac
 the test suite. The workflows only need to read the checkout, so the default is broader than
 necessary for a project that also runs third-party mutation tooling.
 
+**Fix:** both workflows now declare a top-level `permissions: contents: read`, so the
+`GITHUB_TOKEN` is read-only for the checkout and every dependency/test command that runs
+under it. No job requires write access.
+
 **Evidence:**
 ```text
-P3-016 .github/workflows/ci.yml permissions: False
-P3-016 .github/workflows/mutation.yml permissions: False
-```
+ci.yml permissions: {'contents': 'read'}
+mutation.yml permissions: {'contents': 'read'}
 
-**Remediation:** add
-```yaml
-permissions:
-  contents: read
+$ .venv/bin/python -m pytest -q tests/test_mutation_gate_integrity.py
+7 passed
 ```
-to both workflows.
+Regression test: `test_workflows_grant_only_read_access`.
 
 ---
 
@@ -797,7 +796,7 @@ All checks passed!
 
 ### P3-019 — CI coverage — Medium — **FIXED**
 
-**Location:** `pyproject.toml:39`; `.github/workflows/ci.yml:26-29`;
+**Location:** `pyproject.toml:39`; `.github/workflows/ci.yml:29-32`;
 `webapp.py:1-30` (design note)
 
 **Offending code (before the fix):**
@@ -815,8 +814,9 @@ module, no coverage target, no mutation target and no lint target (`P3-018`). Th
 extra was still not installed by the test workflow, so CI never even imported the app. A
 local `tests/test_webapp.py` exists (added with the `P3-005` fix), but it starts with
 `pytest.importorskip("flask")`, so it skipped in CI under the old install command.
-`requirements-dev.txt` does not include Flask either, so a developer following
-`pip install -e ".[dev]"` cannot run the app tests without discovering the separate extra.
+Before P3-020, `requirements-dev.txt` did not include Flask either, so a developer
+following `pip install -e ".[dev]"` could not run the app tests without discovering the
+separate extra.
 
 **Evidence (before the fix):**
 ```text
@@ -824,7 +824,7 @@ P3-019 CI installs: ['.venv/bin/pip install --upgrade pip', '.venv/bin/pip insta
 P3-019 webapp tests exist: True | skip guard: True
 ```
 
-**Fix:** the `check` job now installs the package as `-e ".[dev,web]"`, so Flask and
+**Fix:** the `check` job now installs the package as `-e ".[dev,llm,web]"`, so Flask and
 waitress are present when the job runs `make test-w`, while pytest, pytest-cov and ruff
 come from the same `dev` extra instead of a separate floating install. A CI guard imports
 both packages before the suite, so a missing web extra fails immediately rather than
@@ -837,19 +837,19 @@ $ .venv/bin/python -m pytest -q tests/test_webapp.py -rs
 20 passed
 
 $ make test-w
-1266 passed
+1269 passed
 ```
 
 ---
 
-## `requirements.txt`, `requirements-dev.txt` (Total Lines Verified: 17)
+## `requirements.txt`, `requirements-dev.txt` (Total Lines Verified: 6)
 
-### P3-020 — Dependency management — Low
+### P3-020 — Dependency management — Low — **FIXED**
 
-**Location:** `requirements-dev.txt:1-12`, `pyproject.toml:21-39`,
-`.github/workflows/ci.yml:26-29`
+**Location:** `requirements.txt:1-3`, `requirements-dev.txt:1-3`,
+`pyproject.toml:20-39`, `.github/workflows/ci.yml:29-32`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```text
 # requirements-dev.txt
 -r requirements.txt
@@ -872,15 +872,19 @@ floating; the remaining problem is the duplicate requirements files and the `ope
 disagreement between local `requirements-dev.txt` and the `dev` extra. The duplication
 also means a dependency bump must be made in two places, with no check that they agree.
 
+**Fix:** `pyproject.toml` is now the single dependency source. `requirements.txt` delegates
+to `-e .` and `requirements-dev.txt` to `-e .[dev,llm,web]`; neither duplicates a package
+version. CI installs the same `.[dev,llm,web]` extras, so OpenAI, web, and test tooling can
+no longer disagree between local and CI installs. `README.md` and `USAGE.md` show the same
+extras command.
+
 **Evidence:**
 ```text
-P3-020 dev extra has openai: False
-P3-020 requirements-dev requirements: ['-r requirements.txt', 'pytest>=8.0.0', 'pytest-cov>=5.0.0', 'ruff>=0.6.0', 'mutmut==3.7.0', 'debugpy==1.8.14', 'agent-dev-cli==0.0.1b260427', 'openai>=1.35.0,<4']
+$ .venv/bin/python -m pytest -q tests/test_dependency_declarations.py
+2 passed
 ```
-
-**Remediation:** make `pyproject.toml` the single source (`pip install -e ".[dev,llm,web]"`
-in CI and in the docs), or generate the requirements files from it and add a CI check that
-they match.
+Regression tests: `test_requirements_files_delegate_to_pyproject` and
+`test_ci_installs_the_same_extras_as_dev_requirements`.
 
 ---
 
@@ -932,13 +936,13 @@ the mutation scope.
 
 ---
 
-## `.env.example` (Total Lines Verified: 202)
+## `.env.example` (Total Lines Verified: 213)
 
-### P3-022 — Documentation — Low
+### P3-022 — Documentation — Low — **FIXED**
 
-**Location:** `.env.example:1-202`; reads at `webapp.py:54`, `:57`, `:528`
+**Location:** `.env.example:16-25`; reads at `webapp.py:64`, `:87`, `:606`
 
-**Offending code:**
+**Offending code (before the fix):**
 ```python
 STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
 _MAX_CONCURRENT = int(os.environ.get("WEBAPP_MAX_CONCURRENT", "2"))
@@ -954,14 +958,18 @@ permanently 429 every submission) is undocumented precisely where defaults are e
 Because `python-dotenv` loads `.env` for the app too, adding these entries is sufficient to
 configure it.
 
+**Fix:** `.env.example` now has a “Web app (Flask)” section documenting `PORT=8080`,
+`WEBAPP_STATE_DIR=.webapp`, and `WEBAPP_MAX_CONCURRENT=2`, including the 1–32 range and the
+loopback-only warning. The same three variables are in the README settings table. The
+settings-parity test now scans `webapp.py` as well as the package, so future web-app
+settings cannot be added without documentation.
+
 **Evidence:**
 ```text
-P3-022 WEBAPP/PORT entries: []
+$ .venv/bin/python -m pytest -q tests/test_config.py::test_env_var_documentation_parity
+1 passed
 ```
-
-**Remediation:** add a short “Web app (Flask)” section documenting `PORT` (default 8080),
-`WEBAPP_STATE_DIR` (default `.webapp/`) and `WEBAPP_MAX_CONCURRENT` (default 2, must be
-1–32), with the loopback-only warning.
+Regression test: `test_env_var_documentation_parity`.
 
 ---
 

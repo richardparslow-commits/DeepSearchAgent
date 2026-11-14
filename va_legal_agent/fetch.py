@@ -438,8 +438,8 @@ def extract_appellant_role(text: str) -> str:
     Detection is conservative: only explicit textual identification of the
     appellant (``"the veteran's appeal"``, ``"the Secretary's cross-appeal"``,
     ``"appellant, the Secretary"``) triggers a classification. ``"appellant"``
-    alone without a qualifier returns ``'unknown'`` so the caller falls back
-    to the default outcome classification rather than guessing.
+    alone without a qualifier returns ``'unknown'`` so the caller classifies
+    the outcome as unknown rather than assuming the veteran appealed.
     """
     if any(pat.search(text) for pat in _SECRETARY_PATTERNS):
         return _APP_ROLE_SECRETARY
@@ -591,23 +591,24 @@ _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
 _PRECEDENTIAL_HEADER_CHARS = 1500
 
 
-def extract_precedential_status(text: str) -> bool:
-    """Return ``False`` when the decision's header designates it non-precedential.
+def extract_precedential_status(text: str) -> bool | None:
+    """Return the decision's precedential status, or ``None`` when unreadable.
 
     Veterans-law decisions come in two flavors: precedential (published, can
     be cited as binding authority) and non-precedential (memorandum
     dispositions, unpublished orders, single-judge designations — persuasive
     at best).  The designation is read from the header only, so a published
     opinion that cites or discusses an unpublished order is not itself
-    demoted.  Returns ``True`` for empty text (assume precedential when no
-    body is available).
+    demoted.  Empty/whitespace-only text means no body was available, so the
+    status is unknown rather than presumed precedential.
 
     The result feeds the ranking layer (a 0.25 penalty to ``composite_score``
-    for non-precedential decisions within their tier) and the interpretation
-    layer (flagging which holdings come from non-binding authority).
+    only when the status is explicitly non-precedential) and the
+    interpretation layer (flagging which holdings come from non-binding
+    authority).
     """
     if not text or not text.strip():
-        return True
+        return None
     header = text[:_PRECEDENTIAL_HEADER_CHARS]
     for regex in _PRECEDENTIAL_MARKERS:
         if regex.search(header):
@@ -756,7 +757,7 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     return soup.get_text(" ", strip=True)
 
 
-def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | list[str]]:
+def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | list[str] | bool | None]:
     """Fetch a case page or PDF and extract structured details.
 
     Extracts citation, decision date, holding, docket number, judge, cited
@@ -811,7 +812,7 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     return details
 
 
-def extract_case_details(text: str) -> dict[str, str | list[str]]:
+def extract_case_details(text: str) -> dict[str, str | list[str] | bool | None]:
     """Extract all structured details from raw decision text.
 
     Public counterpart used by the enrichment path and by the CourtListener

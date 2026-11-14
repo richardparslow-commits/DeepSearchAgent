@@ -6,7 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from va_legal_agent.config import DEFAULT_USER_AGENT, Settings, env_bool, env_float, env_int, get_settings
+from va_legal_agent.config import (
+    DEFAULT_USER_AGENT,
+    MAX_ENV_FLOAT_SECONDS,
+    Settings,
+    env_bool,
+    env_float,
+    env_int,
+    get_settings,
+)
 
 
 _ENV_VARS = (
@@ -118,6 +126,29 @@ def test_env_float_parses_value_and_falls_back_on_garbage_and_negative(monkeypat
     assert env_float("SOME_FLOAT", 1.5) == 1.5
     monkeypatch.setenv("SOME_FLOAT", "-0.5")
     assert env_float("SOME_FLOAT", 1.5) == 1.5
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "1e309"])
+def test_env_float_rejects_non_finite_values(monkeypatch, raw):
+    monkeypatch.setenv("SOME_FLOAT", raw)
+    assert env_float("SOME_FLOAT", 1.5) == 1.5
+
+
+def test_env_float_rejects_values_above_the_sleep_cap(monkeypatch):
+    monkeypatch.setenv("SOME_FLOAT", "3600.1")
+    assert env_float("SOME_FLOAT", 1.5, max_value=MAX_ENV_FLOAT_SECONDS) == 1.5
+    monkeypatch.setenv("SOME_FLOAT", "3600")
+    assert env_float("SOME_FLOAT", 1.5, max_value=MAX_ENV_FLOAT_SECONDS) == 3600.0
+
+
+def test_search_pacing_float_is_capped_at_the_config_call_site(monkeypatch):
+    monkeypatch.setenv("SEARCH_DELAY_SECONDS", "3600.1")
+    assert get_settings().search_delay_seconds == Settings().search_delay_seconds
+
+
+def test_search_max_wall_float_is_finite_without_the_sleep_cap(monkeypatch):
+    monkeypatch.setenv("SEARCH_MAX_WALL_SECONDS", "7200")
+    assert get_settings().search_max_wall_seconds == 7200.0
 
 
 def test_env_bool_truthy_set(monkeypatch):
@@ -317,7 +348,8 @@ def _env_vars_read_in(tree: ast.Module) -> set[str]:
             continue
         fn = node.func
         is_helper = (
-            isinstance(fn, ast.Name) and fn.id in {"env_int", "env_float", "env_bool"}
+            isinstance(fn, ast.Name)
+            and fn.id in {"env_int", "env_float", "env_bool", "_env_int"}
         )
         is_getenv = (
             isinstance(fn, ast.Attribute)
@@ -325,7 +357,15 @@ def _env_vars_read_in(tree: ast.Module) -> set[str]:
             and isinstance(fn.value, ast.Name)
             and fn.value.id == "os"
         )
-        if not (is_helper or is_getenv):
+        is_environ_get = (
+            isinstance(fn, ast.Attribute)
+            and fn.attr == "get"
+            and isinstance(fn.value, ast.Attribute)
+            and fn.value.attr == "environ"
+            and isinstance(fn.value.value, ast.Name)
+            and fn.value.value.id == "os"
+        )
+        if not (is_helper or is_getenv or is_environ_get):
             continue
         if (
             node.args
@@ -337,15 +377,15 @@ def _env_vars_read_in(tree: ast.Module) -> set[str]:
 
 
 def test_env_var_documentation_parity():
-    """Every env var the package reads is documented in both reference files.
+    """Every env var the package or web app reads is documented in both files.
 
     The contract, enforced by the manual settings sweep: every env var read in
-    ``config.py`` must appear in the README settings table and have a
-    ``.env.example`` entry; every ``.env.example`` entry must be in the README
-    table; and every documented var must actually be read by some module (so
-    docs can't outlive the code). This test would have caught the two gaps the
-    sweep found -- CITATION_TRAVERSAL / CITATION_TRAVERSE_LIMIT and USER_AGENT
-    were read but undocumented in one or both files.
+    ``config.py`` or ``webapp.py`` must appear in the README settings table and
+    have a ``.env.example`` entry; every ``.env.example`` entry must be in the
+    README table; and every documented var must actually be read by some module
+    (so docs can't outlive the code). This test would have caught the two gaps
+    the sweep found -- CITATION_TRAVERSAL / CITATION_TRAVERSE_LIMIT and
+    USER_AGENT were read but undocumented in one or both files.
     """
     root = Path(__file__).resolve().parents[1]
 
@@ -363,6 +403,8 @@ def test_env_var_documentation_parity():
     package_vars: set[str] = set()
     for path in (root / "va_legal_agent").glob("*.py"):
         package_vars |= _env_vars_read_in(ast.parse(path.read_text()))
+    webapp_vars = _env_vars_read_in(ast.parse((root / "webapp.py").read_text()))
+    documented_reads = package_vars | webapp_vars
 
     readme_vars = set(
         re.findall(
@@ -375,17 +417,17 @@ def test_env_var_documentation_parity():
         re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(), re.MULTILINE)
     )
 
-    missing_from_readme = config_vars - readme_vars
-    missing_from_template = config_vars - template_vars
+    missing_from_readme = (config_vars | webapp_vars) - readme_vars
+    missing_from_template = (config_vars | webapp_vars) - template_vars
     undocumented_template = template_vars - readme_vars
-    dead_docs = (readme_vars | template_vars) - package_vars
+    dead_docs = (readme_vars | template_vars) - documented_reads
 
     assert not missing_from_readme, (
-        "Settings read in config.py are missing from the README settings table: "
+        "Settings read in config.py or webapp.py are missing from the README settings table: "
         f"{sorted(missing_from_readme)}"
     )
     assert not missing_from_template, (
-        "Settings read in config.py are missing from .env.example: "
+        "Settings read in config.py or webapp.py are missing from .env.example: "
         f"{sorted(missing_from_template)}"
     )
     assert not undocumented_template, (

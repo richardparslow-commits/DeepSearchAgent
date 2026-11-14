@@ -42,10 +42,10 @@ Every VA claim issue maps to some subset of these 9 elements. The Gem detects el
 
 ### benefit of the doubt
 - weight: 0.10
-- phrases: "benefit of the doubt", "reasonable doubt", "equipoise"
-- description: "When the evidence for and against the claim is in relative balance, the benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b))."
-- guidance: "Highlight areas where favorable and unfavorable evidence are roughly in balance, and request that the benefit of the doubt be applied."
-- step: "Identify issues where the evidence is in equipoise and argue the benefit of the doubt."
+- phrases: "benefit of the doubt", "reasonable doubt", "equipoise", "approximate balance"
+- description: "When the positive and negative evidence is in approximate balance (nearly equal, including but not limited to equipoise), the benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b); Lynch v. McDonough, 21 F.4th 776, 781 (Fed. Cir. 2021) (en banc))."
+- guidance: "Highlight issues where favorable and unfavorable evidence is nearly equal (an approximate balance), and request that the benefit of the doubt be applied; do not require exact equipoise."
+- step: "Identify issues where the evidence is in approximate balance (nearly equal) and argue the benefit of the doubt."
 
 ### reasons and bases
 - weight: 0.05
@@ -103,7 +103,7 @@ Every VA claim issue maps to some subset of these 9 elements. The Gem detects el
 
 ### 38 U.S.C. § 5107(b)
 - element: benefit of the doubt
-- description: "When the positive and negative evidence is in approximate balance, the benefit of the doubt is given to the claimant."
+- description: "When the positive and negative evidence is in approximate balance (nearly equal, including but not limited to equipoise), the benefit of the doubt is given to the claimant; the rule does not apply when the evidence persuasively favors one side (Lynch v. McDonough, 21 F.4th 776, 781 (Fed. Cir. 2021) (en banc))."
 - outcomes from case law: uniformly favorable (this statute structurally benefits the claimant)
 
 ### 38 U.S.C. § 7104(d)(1)
@@ -153,17 +153,26 @@ Every VA claim issue maps to some subset of these 9 elements. The Gem detects el
 
 ## 3. CASE CATALOG
 
-Each case listed below is a real published decision in your training data. Cite only cases you are confident about.
+Each case listed below is a real decision in your training data; check its `precedential` field before treating it as binding. Cite only cases you are confident about.
 
-### Federal Circuit (binding authority over all veterans courts)
+### Federal Circuit (precedential decisions bind all veterans courts)
 
 #### Shedden v. Principi, 381 F.3d 1163 (Fed. Cir. 2004)
-- elements: service connection, nexus, benefit of the doubt
-- statutes: 38 U.S.C. § 1110, 38 U.S.C. § 5107(b)
-- holding: Remanded where the Board failed to apply § 5107(b) correctly; when evidence is in equipoise, the veteran wins.
-- outcome: favorable (vacated and remanded)
+- elements: service connection, presumption
+- statutes: 38 U.S.C. § 105(a), 38 U.S.C. § 1110
+- holding: Section 105(a) creates a presumption that a disability incurred or aggravated during active duty is service-connected. The Veterans Court's contrary statement was erroneous, but the error was harmless because the CUE claim failed on an independent ground.
+- outcome: unfavorable (affirmed)
 - appellant: veteran
-- posture: vacated and remanded
+- posture: affirmed
+- precedential: yes
+
+#### Lynch v. McDonough, 21 F.4th 776 (Fed. Cir. 2021) (en banc)
+- elements: benefit of the doubt
+- statutes: 38 U.S.C. § 5107(b)
+- holding: The benefit-of-the-doubt rule applies when the positive and negative evidence is in "approximate balance" — "nearly equal," which includes but is not limited to equipoise. It does not apply when the evidence persuasively favors one side.
+- outcome: unfavorable (affirmed)
+- appellant: veteran
+- posture: affirmed
 - precedential: yes
 
 #### Buchanan v. Nicholson, 451 F.3d 1331 (Fed. Cir. 2006)
@@ -176,12 +185,12 @@ Each case listed below is a real published decision in your training data. Cite 
 - precedential: yes
 
 #### Walker v. Shinseki, 708 F.3d 1331 (Fed. Cir. 2013)
-- elements: nexus, evidence evaluation
-- statutes: 38 U.S.C. § 1110, 38 C.F.R. § 3.303
-- holding: Competent lay evidence may establish observable symptoms and continuity; VA must consider lay evidence when weighing the claim.
-- outcome: favorable (vacated and remanded)
+- elements: service connection, evidence evaluation
+- statutes: 38 C.F.R. § 3.303(b), 38 C.F.R. § 3.309(a)
+- holding: Continuity of symptomatology under § 3.303(b) is available only for chronic diseases enumerated in § 3.309(a); other chronic conditions must be evaluated under the standard three-element test in § 3.303(a). The court abrogated CAVC decisions extending § 3.303(b) more broadly.
+- outcome: unfavorable (affirmed)
 - appellant: veteran
-- posture: vacated and remanded
+- posture: affirmed
 - precedential: yes
 
 #### Davidson v. Shinseki, 581 F.3d 1313 (Fed. Cir. 2009)
@@ -205,10 +214,10 @@ Each case listed below is a real published decision in your training data. Cite 
 #### Jandreau v. Nicholson, 492 F.3d 1372 (Fed. Cir. 2007)
 - elements: evidence evaluation, service connection
 - statutes: 38 U.S.C. § 1110, 38 C.F.R. § 3.303
-- holding: Lay evidence can establish a diagnosis when the condition is one a layperson can recognize (e.g., tinnitus, a limp, a rash).
-- outcome: favorable (vacated and remanded)
+- holding: Lay evidence may be competent and sufficient to establish a diagnosis when (1) a layperson is competent to identify the condition, (2) the layperson is reporting a contemporaneous medical diagnosis, or (3) lay testimony describing symptoms at the time supports a later diagnosis by a medical professional. Whether lay evidence is competent and sufficient is a fact issue for the Board. Lay evidence does not substitute for medical evidence where diagnosis or causation is beyond lay competence.
+- outcome: favorable (reversed and remanded)
 - appellant: veteran
-- posture: vacated and remanded
+- posture: reversed and remanded
 - precedential: yes
 
 #### Charles v. Principi, 93 F. App'x 217 (Fed. Cir. 2004)
@@ -220,7 +229,9 @@ Each case listed below is a real published decision in your training data. Cite 
 - posture: vacated and remanded
 - precedential: NO (non-precedential memorandum — note this when citing)
 
-### CAVC (binding on the Board, persuasive on the Federal Circuit)
+### CAVC (precedential decisions bind the Board; persuasive on the Federal Circuit)
+
+Precedential CAVC decisions (three-judge panel or en banc) bind the Board and VA in future cases. Non-precedential memorandum decisions and single-judge actions are persuasive only and may not be cited as precedent under U.S. Vet. App. R. 30(a).
 
 #### Gilbert v. Derwinski, 1 Vet. App. 49 (1990)
 - elements: reasons and bases
@@ -240,10 +251,10 @@ Each case listed below is a real published decision in your training data. Cite 
 - posture: vacated and remanded
 - precedential: yes
 
-#### Stefl v. Nicholson, 20 Vet. App. 78 (2006)
-- elements: evidence evaluation
-- statutes: 38 C.F.R. § 3.303
-- holding: Lay evidence of continuity of symptomatology is competent and must be considered; VA cannot dismiss lay observations as "not medical."
+#### Stefl v. Nicholson, 21 Vet. App. 120 (2007)
+- elements: evidence evaluation, duty to assist
+- statutes: 38 U.S.C. § 5103A, 38 C.F.R. § 3.159
+- holding: A medical nexus opinion that denies service connection solely because the condition is not presumptively service-connected, without considering direct service connection, is inadequate. An adequate opinion must address the relevant facts and medical science and provide a reasoned analysis the Board can weigh against contrary opinions.
 - outcome: favorable (vacated and remanded)
 - appellant: veteran
 - posture: vacated and remanded
@@ -268,12 +279,12 @@ Each case listed below is a real published decision in your training data. Cite 
 - precedential: yes
 
 #### Colvin v. Derwinski, 1 Vet. App. 171 (1991)
-- elements: nexus, evidence evaluation
-- statutes: 38 U.S.C. § 1110, 38 C.F.R. § 3.303
-- holding: Medical evidence is ordinarily required to establish nexus, but lay evidence can fill gaps when the connection is within common knowledge.
-- outcome: favorable (vacated and remanded)
+- elements: evidence evaluation, reasons and bases
+- statutes: 38 U.S.C. § 7104(d)(1)
+- holding: The Board may not reject independent medical evidence or substitute its own unsubstantiated medical judgment for it; where a determination requires medical expertise, the Board must identify competent medical evidence supporting its findings.
+- outcome: favorable (reversed and remanded)
 - appellant: veteran
-- posture: vacated and remanded
+- posture: reversed and remanded
 - precedential: yes
 
 #### Washington v. Nicholson, 21 Vet. App. 191 (2007)
@@ -290,24 +301,28 @@ Each case listed below is a real published decision in your training data. Cite 
 These are principles the case catalog above establishes. Cite them in the "Applicable principles" section when relevant cases are invoked:
 
 - "Service connection requires a current disability, an in-service event, and a nexus linking the two — the Caluza framework." (Caluza v. Brown, 7 Vet. App. 498)
-- "When the evidence for and against the claim is in relative equipoise, the benefit of the doubt is given to the veteran under 38 U.S.C. § 5107(b)." (Shedden v. Principi, 381 F.3d 1163)
+- "When the positive and negative evidence is in approximate balance (nearly equal, including but not limited to equipoise), the benefit of the doubt is given to the veteran under 38 U.S.C. § 5107(b); the rule does not apply when the evidence persuasively favors one side." (Lynch v. McDonough, 21 F.4th 776, 781 (Fed. Cir. 2021) (en banc))
 - "The Board must provide an adequate statement of reasons and bases for its decision under 38 U.S.C. § 7104(d)(1)." (Gilbert v. Derwinski, 1 Vet. App. 49; Buchanan v. Nicholson, 451 F.3d 1331)
-- "Competent lay evidence may establish observable symptoms and continuity without medical training." (Hensley v. West, 212 F.3d 1255; Jandreau v. Nicholson, 492 F.3d 1372)
-- "Medical evidence is required to establish diagnosis and, where appropriate, etiology." (Colvin v. Derwinski, 1 Vet. App. 171)
+- "Lay evidence is competent to establish symptoms observable by a layperson; the Board cannot dismiss lay evidence without explanation." (Hensley v. West, 212 F.3d 1255)
+- "Lay evidence may also be competent and sufficient to establish a diagnosis when the layperson can identify the condition, reports a contemporaneous medical diagnosis, or describes symptoms supporting a later medical diagnosis; sufficiency is a fact issue for the Board." (Jandreau v. Nicholson, 492 F.3d 1372, 1377)
+- "The Board may not substitute its own medical judgment for independent medical evidence; where a determination requires medical expertise, competent medical evidence is required." (Colvin v. Derwinski, 1 Vet. App. 171, 175)
 - "VA has a duty to assist the claimant in developing evidence relevant to the claim under 38 U.S.C. § 5103A." (Barr v. Nicholson, 21 Vet. App. 303)
 - "Presumptive service connection may apply for qualifying conditions and service histories." (38 U.S.C. §§ 1112–1118; 38 C.F.R. §§ 3.307–3.309)
 - "Tinnitus may be service-connected on evidence of in-service noise exposure and current diagnosis under 38 C.F.R. § 3.304(f)." (Charles v. Principi, 93 F. App'x 217)
 
 ## 4. COVERAGE SCORE FORMULA
 
-coverage_score = sum of weights of elements with at least one cited case / sum of weights of all detected elements
+coverage_score = sum of weights of elements supported by at least one cited case holding / sum of weights of all detected elements
 
 Confidence heuristic:
-- high: 10+ cases, some with deep holdings, at least one binding Federal Circuit or CAVC precedent, and at least one element has multiple cases
-- medium: 5–9 cases across multiple courts, or 3–4 cases including binding precedent
-- low: fewer than 5 cases, or all from a single non-binding (BVA-level) source
+- high: 10+ cases, coverage score at least 0.60, some with source holdings, at least one binding Federal Circuit or precedential CAVC decision, and at least one element supported by multiple cases
+- medium: 5+ cases with coverage at least 0.30, or 3–4 cases including binding precedent with coverage at least 0.30
+- low: fewer than 5 cases, all cases from a non-binding (BVA or non-precedential) source, or coverage below 0.30
 
 ## 5. OUTCOME CLASSIFICATION RULES
+
+### Appellant-role requirement
+The favorable and unfavorable lists below require an explicit appellant role. If the appellant is unknown or was not extracted, classify the outcome as unknown (0); do not assume the veteran appealed. "Affirmed" means opposite things depending on which party appealed.
 
 ### Favorable outcomes (count as +1)
 - granted: the claim was awarded
@@ -320,7 +335,7 @@ Confidence heuristic:
 - dismissed WHEN the veteran appealed: the appeal was rejected
 
 ### Secretary-appellant flip rule
-The lists above assume the veteran appealed. When the appellant is the Secretary (not the veteran), read every disposition from the Secretary's point of view and invert it:
+When an explicitly identified Secretary is the appellant, read every disposition from the Secretary's point of view and invert it:
 - **affirmed**: the Board's grant to the veteran was upheld on appeal = favorable
 - **dismissed**: the Secretary's appeal was dismissed, leaving the veteran's grant in place = favorable
 - **denied**: the Secretary's appeal was denied, leaving the veteran's grant in place = favorable
@@ -329,7 +344,9 @@ The lists above assume the veteran appealed. When the appellant is the Secretary
 - **remanded**: the Secretary's appeal remanded the veteran's grant, so it is not final = unfavorable
 
 ### Unknown (count as 0)
+- an empty or unknown appellant role
 - mixed outcomes (e.g., "granted in part and denied in part")
+- partial dispositions that cannot be resolved to one direction
 - unrecognized outcome language
 - enriched vs. text-scanned discrepancy
 

@@ -8,7 +8,9 @@ drifting apart.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +51,7 @@ class Topic:
 
     name: str
     phrases: tuple[str, ...]
-    # Issue substring that triggers this topic's relevance synonym boost.
+    # Issue phrase that triggers this topic's relevance synonym boost.
     # ``None`` for topics that are only detected from case text.
     keyword: str | None
     synonyms: tuple[str, ...]
@@ -114,6 +116,35 @@ TOPICS: tuple[Topic, ...] = (
 
 TOPICS_BY_NAME = {topic.name: topic for topic in TOPICS}
 
+
+@lru_cache(maxsize=None)
+def phrase_pattern(phrase: str) -> re.Pattern[str]:
+    """Compile a case-insensitive token-boundary matcher for *phrase*.
+
+    A plain substring check makes ``rating`` match inside ``operating`` and
+    ``frustrating``; word boundaries keep topic phrases from firing on those
+    accidental overlaps. Hyphenated phrases such as ``service-connected``
+    still match as a whole.
+    """
+    return re.compile(rf"\b{re.escape(phrase)}\b", re.IGNORECASE)
+
+
+def phrase_matches(text: str, phrase: str) -> bool:
+    """Return True when *phrase* occurs as a whole token sequence in *text*."""
+    if not text or not phrase:
+        return False
+    return phrase_pattern(phrase).search(text) is not None
+
+
+def topic_matches_issue(topic: Topic, issue: str) -> bool:
+    """Return True when *issue* names *topic* by name, keyword, or phrase."""
+    return any(
+        phrase_matches(issue, phrase)
+        for phrase in (topic.name, topic.keyword, *topic.phrases)
+        if phrase
+    )
+
+
 # Priority order for impact issue tags (deliberately distinct from TOPICS
 # order, which drives element detection).
 ISSUE_TAG_ORDER: tuple[str, ...] = (
@@ -143,12 +174,21 @@ STATUTE_HINTS: tuple[tuple[str, str], ...] = (
     ("4.1", "the rating-schedule requirements of 38 C.F.R. Part 4"),
 )
 
+# Doctrine hints that apply only to a specific first subsection. The keys
+# remain section fragments for query expansion, but note matching must not
+# treat § 5107(a) as § 5107(b) or § 7104(a) as § 7104(d)(1).
+STATUTE_HINT_SUBSECTIONS: dict[str, tuple[str, ...]] = {
+    "5107": ("b",),
+    "7104": ("d",),
+}
+
 # Text phrase -> known veterans-law principle, scanned across case text.
 PRINCIPLE_PATTERNS: tuple[tuple[str, str], ...] = (
     (
         "benefit of the doubt",
-        "When the evidence for and against the claim is in relative equipoise, the "
-        "benefit of the doubt is given to the veteran (38 U.S.C. § 5107(b)).",
+        "When the positive and negative evidence is in approximate balance (nearly "
+        "equal, including but not limited to equipoise), the benefit of the doubt "
+        "is given to the veteran (38 U.S.C. § 5107(b)).",
     ),
     (
         "reasons and bases",
@@ -165,11 +205,14 @@ PRINCIPLE_PATTERNS: tuple[tuple[str, str], ...] = (
     ),
     (
         "lay evidence",
-        "Competent lay evidence may establish observable symptoms and continuity without medical training.",
+        "Competent lay evidence may establish observable symptoms and, in the "
+        "circumstances Jandreau identifies, a diagnosis; it cannot substitute for "
+        "medical evidence beyond lay competence.",
     ),
     (
         "medical evidence",
-        "Medical evidence is required to establish diagnosis and, where appropriate, etiology.",
+        "Where a determination requires medical expertise, the Board must rely on "
+        "competent medical evidence and may not substitute its own medical judgment.",
     ),
     (
         "presumption",

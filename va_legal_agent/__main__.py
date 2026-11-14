@@ -528,7 +528,7 @@ def estimate_issue_run(
     providers = resolve_search_providers(settings.search_providers)
     queries = plan_queries(decompose_issue(issue, claim_type))
     elements = [spec.name for spec in detect_claim_elements(issue)]
-    gap_per_round = len(elements) or 1
+    gap_per_round = len(elements)
     rounds = max(settings.search_max_refinement_rounds, 0)
     worst_queries = len(queries) + rounds * gap_per_round
 

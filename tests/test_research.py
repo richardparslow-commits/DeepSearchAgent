@@ -8,6 +8,7 @@ from va_legal_agent.agent import (
 )
 from va_legal_agent.interpretation import build_interpretive_analysis
 from va_legal_agent.models import CaseRecord
+from va_legal_agent.topics import COURT_UNKNOWN
 
 CAVC = "Court of Appeals for Veterans Claims"
 CAFC = "U.S. Court of Appeals for the Federal Circuit"
@@ -91,9 +92,25 @@ def test_veterans_court_bonus_and_zero_floor():
 
     federal_circuit = _case(snippet=neutral_snippet, court=CAFC)
     cavc = _case(snippet=neutral_snippet, court=CAVC)
+    unknown = _case(snippet=neutral_snippet, court=COURT_UNKNOWN)
 
     assert score_case_relevance(federal_circuit, "tinnitus") == 0
     assert score_case_relevance(cavc, "tinnitus") == 1  # +1 for "Veterans" in court name
+    # COURT_UNKNOWN is labeled "Veterans law research result" but is not a
+    # known Veterans court, so it must not get the court bonus.
+    assert score_case_relevance(unknown, "tinnitus") == 0
+
+
+def test_topic_phrase_scoring_uses_token_boundaries():
+    service_connected = _case(snippet="service-connected knee disability")
+    aggravated = _case(snippet="aggravated by service", issue="aggravated")
+    operating = _case(snippet="operating a motor vehicle")
+    frustrating = _case(snippet="a frustrating delay")
+
+    assert score_case_relevance(service_connected, "service connection") == 2
+    assert score_case_relevance(aggravated, "aggravated") == 8
+    assert score_case_relevance(operating, "rating") == 0
+    assert score_case_relevance(frustrating, "rating") == 0
 
 
 def test_score_is_case_insensitive():
@@ -290,7 +307,7 @@ def test_template_narrative_limits_cases_and_principles(monkeypatch):
     # nexus) are woven into the narrative; later ones stay out.
     assert "5107" in narrative
     assert "7104" in narrative
-    assert "lay evidence may establish" not in narrative
+    assert "circumstances Jandreau identifies" not in narrative
     # Attribution strings are capped at three source cases.
     assert "(see: Case 0, Case 1, Case 2)" in result.likely_applicable_principles[0]
     assert "not legal advice" in narrative

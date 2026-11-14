@@ -50,10 +50,13 @@ def test_element_library_mirrors_topics():
 
 
 def test_issue_tag_patterns_derive_from_topics():
-    # Each (phrase, tag) pair must be (primary phrase, topic name) from TOPICS,
-    # in ISSUE_TAG_ORDER order.
+    # Every detection phrase from each tag topic must be represented, in
+    # ISSUE_TAG_ORDER order, so secondary phrases such as "service-connected"
+    # can match too.
     assert ISSUE_TAG_PATTERNS == tuple(
-        (TOPICS_BY_NAME[name].phrases[0], name) for name in ISSUE_TAG_ORDER
+        (phrase, name)
+        for name in ISSUE_TAG_ORDER
+        for phrase in TOPICS_BY_NAME[name].phrases
     )
 
 
@@ -63,4 +66,4 @@ def test_topics_have_unique_names_and_primary_phrases():
     assert set(names) == set(TOPICS_BY_NAME)
     for topic in TOPICS:
         assert topic.name
-        assert topic.phrases  # ISSUE_TAG_PATTERNS relies on phrases[0] existing
+        assert topic.phrases  # ISSUE_TAG_PATTERNS enumerates every phrase

@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 
 from .planning import detect_issue_topics, relevant_statutes
-from .topics import TOPICS_BY_NAME
+from .topics import TOPICS_BY_NAME, phrase_matches
 
 # A `site:` token (e.g. `site:uscourts.cavc.gov`). CourtListener can't use it.
 _SITE_PATTERN = re.compile(r"\bsite:[^\s]+")
@@ -49,8 +49,8 @@ def _expansion_phrases(issue: str) -> list[str]:
 
     Only topics implicated by *issue* contribute synonyms (via
     :func:`planning.detect_issue_topics`), so an issue about rating doesn't
-    pull in service-connection phrasing; topics without a keyword never match
-    and are skipped. Statute/doctrine fragments are likewise limited to those
+    pull in service-connection phrasing and unrelated topics are skipped.
+    Statute/doctrine fragments are likewise limited to those
     anchored to the detected topics (via :func:`planning.relevant_statutes`),
     so an unrelated issue like ``tinnitus`` no longer tacks on ``5107``/
     ``7104``. Only the fragment is used, not the prose hint.
@@ -63,7 +63,7 @@ def _expansion_phrases(issue: str) -> list[str]:
         for synonym in TOPICS_BY_NAME[name].synonyms:
             # Skip phrases already present in the issue (e.g. keyword ==
             # synonym) so we only add genuinely new terms.
-            if not synonym or synonym in issue_lower or synonym in seen:
+            if not synonym or phrase_matches(issue_lower, synonym) or synonym in seen:
                 continue
             seen.add(synonym)
             phrases.append(synonym)

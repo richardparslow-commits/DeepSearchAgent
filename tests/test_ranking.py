@@ -27,6 +27,7 @@ def make_case(
     date: str = "",
     citation: str = "",
     holding: str = "",
+    precedential: bool | None = True,
 ) -> CaseRecord:
     return CaseRecord(
         title=title,
@@ -36,6 +37,7 @@ def make_case(
         decision_date=date,
         citation=citation,
         holding=holding,
+        precedential=precedential,
         url=f"https://example.com/{title.lower().replace(' ', '-')}",
     )
 
@@ -299,6 +301,20 @@ def test_non_precedential_does_not_drop_below_lower_tier():
     assert ranked[0].authority_weight == 2
     assert ranked[1].title == "BVA Prec"
     assert ranked[1].authority_weight == 1
+
+
+def test_unknown_precedential_is_not_penalised_but_is_flagged():
+    """Unknown publication status is not treated as either precedential or not."""
+    unknown = make_case("Unknown", relevance=1, date="2020-01-01", holding="holding")
+    unknown.precedential = None
+    known = make_case("Known", relevance=1, date="2020-01-01", holding="holding")
+
+    unknown_score, unknown_expl = score_case(unknown, max_relevance=1, current_year=2026)
+    known_score, _ = score_case(known, max_relevance=1, current_year=2026)
+
+    assert unknown_score == pytest.approx(known_score)
+    assert "precedential status unknown" in unknown_expl
+    assert "non-precedential penalty" not in unknown_expl
 
 
 def test_non_precedential_penalty_constants():

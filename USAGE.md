@@ -14,10 +14,10 @@ README → Quick start if not).
 
 ```bash
 # Install dependencies (add "[llm]" for the optional OpenAI interpretation):
-pip install -r requirements.txt          # runtime deps only
-pip install -r requirements-dev.txt      # + pytest, ruff, mutmut for dev
-# or install as a package (also gives you the `va-legal-agent` command):
-pip install -e .                          # add: pip install -e ".[llm]"
+pip install -r requirements.txt          # runtime package
+pip install -r requirements-dev.txt      # + pytest, ruff, mutmut, LLM, and web extras
+# or install directly from pyproject.toml's extras:
+pip install -e ".[dev,llm,web]"          # also gives you the `va-legal-agent` command
 
 # Create your configuration:
 cp .env.example .env
@@ -320,9 +320,9 @@ Issue: service connection for tinnitus
 Run id: 9f3c1a2b7d4e
 
 Top cases:
-- Shedden v. Principi, 381 F.3d 1163 (Fed. Cir. 2004)
+- Lynch v. McDonough, 21 F.4th 776 (Fed. Cir. 2021) (en banc)
 - Buchanan v. Nicholson, 451 F.3d 1331 (Fed. Cir. 2006)
-- Walker v. Shinseki, 708 F.3d 1331 (Fed. Cir. 2013)
+- Jandreau v. Nicholson, 492 F.3d 1372 (Fed. Cir. 2007)
 - BVA Docket No. 21-1234 (2022)
 
 Summary:
@@ -331,16 +331,16 @@ Retrieved authority consistently holds that a current diagnosis of tinnitus, com
 
 
 How this affects VA claims:
-A veteran alleging service connection for tinnitus should expect the Board to evaluate three elements: a current diagnosis, an in-service noise exposure event, and a medical nexus. Under § 5107(b), when the evidence is in relative equipoise the benefit of the doubt goes to the veteran. Decisions granting remand typically do so because the Board failed to obtain a nexus opinion or misapplied the diagnosis requirement.
+A veteran alleging service connection for tinnitus should expect the Board to evaluate three elements: a current diagnosis, an in-service noise exposure event, and a medical nexus. Under § 5107(b), when the evidence is in approximate balance (nearly equal, including equipoise), the benefit of the doubt goes to the veteran. Decisions granting remand typically do so because the Board failed to obtain a nexus opinion or misapplied the diagnosis requirement.
 
 Applicable principles:
 - 38 U.S.C. § 1110 - service connection requires a current disability, an in-service event, and a nexus
-- 38 U.S.C. § 5107(b) - benefit of the doubt resolves equipoise in the claimant's favor
+- 38 U.S.C. § 5107(b) - benefit of the doubt resolves approximate balance in the claimant's favor
 - 38 C.F.R. § 3.303(a) - chronic disease and continuity of symptomatology
 - 38 C.F.R. § 3.304(f) - tinnitus associated with noise exposure
 
 Contradictions:
-- Opposite outcomes on 38 U.S.C. § 5107(b) (Shedden v. Principi vs BVA Docket No. 21-1234)
+- Opposite outcomes on 38 U.S.C. § 5107(b) (Lynch v. McDonough vs BVA Docket No. 21-1234)
 
 Next steps:
 - Obtain a current audiometric evaluation documenting bilateral tinnitus.

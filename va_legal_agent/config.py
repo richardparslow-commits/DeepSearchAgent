@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass, field
@@ -23,6 +24,11 @@ MAX_FETCH_BYTES = 20 * 1024 * 1024
 # (e.g. 10000) would otherwise spawn thousands of daemon threads and burst
 # every provider at once; the cap fails fast back to the default instead.
 MAX_SEARCH_WORKERS = 32
+
+# Upper bound on float settings that feed sleeps, backoff, and throttles. A
+# finite but absurd typo (e.g. SEARCH_MIN_INTERVAL_SECONDS=1e12) would hang a
+# run just as effectively as infinity; the cap fails back to the default.
+MAX_ENV_FLOAT_SECONDS = 3600.0
 
 
 def env_int(
@@ -85,8 +91,20 @@ def env_provider_int_map(raw: str, min_value: int = 0) -> dict[str, int]:
     return result
 
 
-def env_float(name: str, default: float) -> float:
-    """Read a non-negative float from the environment, falling back to *default*."""
+def env_float(
+    name: str,
+    default: float,
+    max_value: float | None = None,
+) -> float:
+    """Read a finite, non-negative float from the environment.
+
+    Garbage, negative values, non-finite values (``nan``/``inf``), and — when
+    *max_value* is supplied — values above the cap are logged and replaced with
+    *default*. The default cap protects sleeps, retries, and throttles from a
+    typo that would otherwise hang or crash a run. Pass ``max_value=None`` for
+    a finite value where the upper bound is intentional (for example a wall
+    clock deadline).
+    """
     raw = os.getenv(name, "")
     if not raw:
         return default
@@ -95,8 +113,14 @@ def env_float(name: str, default: float) -> float:
     except ValueError:
         logger.warning("%s=%r is not a number; using default %s.", name, raw, default)
         return default
+    if not math.isfinite(value):
+        logger.warning("%s=%s must be finite; using default %s.", name, value, default)
+        return default
     if value < 0:
         logger.warning("%s=%s must be >= 0; using default %s.", name, value, default)
+        return default
+    if max_value is not None and value > max_value:
+        logger.warning("%s=%s must be <= %s; using default %s.", name, value, max_value, default)
         return default
     return value
 
@@ -259,18 +283,28 @@ class Settings:
             search_max_workers=env_int(
                 "SEARCH_MAX_WORKERS", d.search_max_workers, max_value=MAX_SEARCH_WORKERS
             ),
-            search_delay_seconds=env_float("SEARCH_DELAY_SECONDS", d.search_delay_seconds),
+            search_delay_seconds=env_float(
+                "SEARCH_DELAY_SECONDS",
+                d.search_delay_seconds,
+                max_value=MAX_ENV_FLOAT_SECONDS,
+            ),
             search_retry_attempts=env_int(
                 "SEARCH_RETRY_ATTEMPTS", d.search_retry_attempts, min_value=0
             ),
             search_backoff_base_seconds=env_float(
-                "SEARCH_BACKOFF_BASE_SECONDS", d.search_backoff_base_seconds
+                "SEARCH_BACKOFF_BASE_SECONDS",
+                d.search_backoff_base_seconds,
+                max_value=MAX_ENV_FLOAT_SECONDS,
             ),
             search_backoff_max_seconds=env_float(
-                "SEARCH_BACKOFF_MAX_SECONDS", d.search_backoff_max_seconds
+                "SEARCH_BACKOFF_MAX_SECONDS",
+                d.search_backoff_max_seconds,
+                max_value=MAX_ENV_FLOAT_SECONDS,
             ),
             search_min_interval_seconds=env_float(
-                "SEARCH_MIN_INTERVAL_SECONDS", d.search_min_interval_seconds
+                "SEARCH_MIN_INTERVAL_SECONDS",
+                d.search_min_interval_seconds,
+                max_value=MAX_ENV_FLOAT_SECONDS,
             ),
             search_max_wall_seconds=env_float(
                 "SEARCH_MAX_WALL_SECONDS", d.search_max_wall_seconds
@@ -330,7 +364,11 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_model=os.getenv("OPENAI_MODEL", d.openai_model),
             openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
-            openai_timeout_seconds=env_float("OPENAI_TIMEOUT_SECONDS", d.openai_timeout_seconds),
+            openai_timeout_seconds=env_float(
+                "OPENAI_TIMEOUT_SECONDS",
+                d.openai_timeout_seconds,
+                max_value=MAX_ENV_FLOAT_SECONDS,
+            ),
             openai_max_tokens=env_int("OPENAI_MAX_TOKENS", d.openai_max_tokens),
             llm_reasoning=env_bool("LLM_REASONING", d.llm_reasoning),
             llm_reasoning_limit=env_int("LLM_REASONING_LIMIT", d.llm_reasoning_limit),

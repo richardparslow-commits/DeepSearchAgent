@@ -18,18 +18,30 @@ from .topics import (
     BOARD_COURT,
     ISSUE_TAG_ORDER,
     STATUTE_HINTS,
+    STATUTE_HINT_SUBSECTIONS,
     TOPICS_BY_NAME,
+    phrase_matches,
 )
 
 # Detection phrase -> reported tag, derived from the shared topic table in
 # topics.py, checked in priority order.
 ISSUE_TAG_PATTERNS: tuple[tuple[str, str], ...] = tuple(
-    (TOPICS_BY_NAME[name].phrases[0], name) for name in ISSUE_TAG_ORDER
+    (phrase, name)
+    for name in ISSUE_TAG_ORDER
+    for phrase in TOPICS_BY_NAME[name].phrases
 )
 
 # Procedural-posture notes keyed by the leading outcome signal. Phrasing
 # deliberately hyphenates doctrine names so synthesized notes do not register
 # as case-backed principle phrases downstream.
+_FAVORABLE_OUTCOMES = frozenset({"granted", "vacated", "remanded"})
+_UNFAVORABLE_OUTCOMES = frozenset({"denied", "affirmed", "dismissed"})
+
+MIXED_OUTCOME_NOTE = (
+    "The decision has a mixed disposition, so its effect is not classified as a "
+    "single favorable or unfavorable outcome."
+)
+
 OUTCOME_NOTES: dict[str, str] = {
     "vacated": (
         "The decision below was vacated, signaling a legal or procedural defect "
@@ -96,7 +108,10 @@ def _impact_text(case: CaseRecord) -> str:
 def detect_issue_tags(case: CaseRecord) -> list[str]:
     """Return the claim topics the case touches, in priority order."""
     text = _impact_text(case)
-    tags = [tag for phrase, tag in ISSUE_TAG_PATTERNS if phrase in text]
+    tags: list[str] = []
+    for phrase, tag in ISSUE_TAG_PATTERNS:
+        if tag not in tags and phrase_matches(text, phrase):
+            tags.append(tag)
     if not tags:
         tags.append(case.issue.lower() or "the factual and legal issue")
     return tags
@@ -113,18 +128,54 @@ def detect_outcome(case: CaseRecord) -> str:
     return extract_outcome(f"{case.title} {case.holding}".lower())
 
 
-def outcome_note_for(outcome: str, appellant_role: str = "") -> str:
-    """Map an outcome string to its nuance note via the leading signal.
+def _outcome_signals(outcome: str) -> list[str]:
+    """Split ``extract_outcome``'s ``" and "`` join into normalized signals."""
+    return [
+        signal.strip().lower()
+        for signal in (outcome or "").split(" and ")
+        if signal.strip()
+    ]
 
-    When *appellant_role* is ``"secretary"``, every disposition is read from
-    the appellant's point of view, so the veteran's direction is the opposite
-    of the Secretary's. This mirrors the party-aware direction classification
-    in :func:`interpretation._outcome_direction`.
+
+def outcome_note_for(outcome: str, appellant_role: str = "") -> str:
+    """Map an outcome string to its nuance note.
+
+    An explicit appellant role is required for a substantive note: ``affirmed``
+    means opposite things when the veteran and the Secretary appeal, so an
+    empty or unknown role is not guessed as the veteran. Compound outcomes are
+    classified together; a mixed compound gets :data:`MIXED_OUTCOME_NOTE`
+    instead of silently using its first signal.
     """
-    first_signal = outcome.split(" ", 1)[0].lower() if outcome else ""
-    if appellant_role == "secretary" and first_signal in _SECRETARY_OVERRIDES:
-        return _SECRETARY_OVERRIDES[first_signal]
-    return OUTCOME_NOTES.get(first_signal, "")
+    role = (appellant_role or "").lower()
+    if role not in {"veteran", "secretary"}:
+        return ""
+
+    signals = _outcome_signals(outcome)
+    if not signals:
+        return ""
+
+    notes: list[str] = []
+    directions: set[int] = set()
+    for signal in signals:
+        # "granted in part" is not a full grant; classify the compound as mixed.
+        if "in part" in signal:
+            return MIXED_OUTCOME_NOTE
+        name = signal.split(" ", 1)[0]
+        if name in _FAVORABLE_OUTCOMES:
+            direction = 1
+        elif name in _UNFAVORABLE_OUTCOMES:
+            direction = -1
+        else:
+            return ""
+        direction = -direction if role == "secretary" else direction
+        directions.add(direction)
+        note = _SECRETARY_OVERRIDES[name] if role == "secretary" else OUTCOME_NOTES[name]
+        if note not in notes:
+            notes.append(note)
+
+    if len(directions) != 1:
+        return MIXED_OUTCOME_NOTE
+    return " ".join(notes)
 
 
 def detect_statutes(case: CaseRecord) -> list[str]:
@@ -136,10 +187,25 @@ def _statute_hint_matches(fragment: str, statute: str) -> bool:
     """Match a statute fragment as a section token, not a substring.
 
     A plain substring check makes ``5103`` match inside ``5103A``; section
-    boundaries keep the notice and duty-to-assist provisions distinct.
+    boundaries keep the notice and duty-to-assist provisions distinct. For
+    hints tied to a specific subsection, the first parenthetical must match:
+    ``5107(a)`` is not the benefit-of-the-doubt rule in ``5107(b)``, and
+    ``7104(a)`` is not the reasons-and-bases requirement in ``7104(d)(1)``.
     """
-    pattern = rf"(?<![0-9A-Za-z.]){re.escape(fragment)}(?![0-9A-Za-z.])"
-    return re.search(pattern, statute) is not None
+    pattern = (
+        rf"(?<![0-9A-Za-z.]){re.escape(fragment)}(?![0-9A-Za-z.])"
+        r"(?:\(([0-9A-Za-z]+)\))?"
+    )
+    matches = list(re.finditer(pattern, statute))
+    if not matches:
+        return False
+    allowed = STATUTE_HINT_SUBSECTIONS.get(fragment)
+    if not allowed:
+        return True
+    return any(
+        match.group(1) is not None and match.group(1).lower() in allowed
+        for match in matches
+    )
 
 
 def statute_note_for(statutes: list[str]) -> str:
@@ -157,18 +223,24 @@ def statute_note_for(statutes: list[str]) -> str:
     return ""
 
 
-def authority_note_for(court: str, precedential: bool = True) -> str:
+def authority_note_for(court: str, precedential: bool | None = True) -> str:
     """Describe the weight of authority for the issuing body.
 
     ``precedential=False`` demotes an otherwise binding appellate court to
-    persuasive authority. BVA decisions remain non-binding regardless of the
-    flag.
+    persuasive authority. ``None`` means the status could not be verified, so
+    the note asks the reader to check it rather than calling the decision
+    binding. BVA decisions remain non-binding regardless of the flag.
     """
     if court in BINDING_COURTS:
-        if not precedential:
+        if precedential is False:
             return (
                 "As a non-precedential appellate decision, this ruling is persuasive only "
                 "and is not binding on the Board or VA adjudicators."
+            )
+        if precedential is None:
+            return (
+                "The precedential status of this appellate decision is unknown; verify its "
+                "publication status before relying on it as binding."
             )
         return "As appellate precedent, this ruling is binding on the Board and VA adjudicators."
     if court == BOARD_COURT:

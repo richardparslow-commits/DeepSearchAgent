@@ -22,6 +22,13 @@ def test_detect_issue_topics_maps_intent_to_elements():
     assert detect_issue_topics("tinnitus") == ()
 
 
+def test_detect_issue_topics_matches_all_phrases_with_token_boundaries():
+    assert detect_issue_topics("service-connected knee") == ("service connection",)
+    assert detect_issue_topics("aggravated knee") == ("aggravation",)
+    assert detect_issue_topics("operating a motor vehicle") == ()
+    assert detect_issue_topics("a frustrating delay") == ()
+
+
 def test_relevant_statutes_follow_detected_topics():
     assert relevant_statutes(("service connection",)) == ("1110", "1131", "3.303")
     assert relevant_statutes(("rating",)) == ("4.1",)

@@ -12,6 +12,7 @@ from va_legal_agent.planning import ResearchPlan, SubTask
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
+    _build_analysis,
     _dedupe,
     _dedupe_rank_and_enrich,
     _observe,
@@ -1142,6 +1143,39 @@ def test_enrich_populates_legal_standard_from_generic_fetch(monkeypatch):
     enrich_top_cases([case], limit=1)
 
     assert case.legal_standard == "de novo"
+
+
+def test_case_record_precedential_defaults_to_unknown():
+    """An unread decision is unknown authority, not presumptively precedential."""
+    assert CaseRecord(title="Unread", court="Court of Appeals for Veterans Claims").precedential is None
+
+
+def test_enrich_empty_details_leave_precedential_unknown(monkeypatch):
+    case = CaseRecord(
+        title="Unread",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/unread",
+    )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {}
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.precedential is None
+
+
+def test_analysis_summary_flags_unknown_precedential():
+    case = CaseRecord(
+        title="Unread",
+        court=COURT_CAVC,
+        holding="The Board must provide reasons and bases.",
+    )
+
+    analysis = _build_analysis("tinnitus", "Compensation", [case], None)
+
+    assert "[precedential status unknown]" in analysis.summary
 
 
 def test_enrich_populates_precedential_flag(monkeypatch):
@@ -2585,9 +2619,8 @@ def test_research_issue_budget_expires_mid_round_returns_partial(monkeypatch, ca
     values = iter([100.0, 100.0, 100.0, 200.0, 100.0, 200.0])
     monkeypatch.setattr("va_legal_agent.agent.time.monotonic", lambda: next(values))
     monkeypatch.setattr("va_legal_agent.agent.time.sleep", lambda s: None)
-    # Bare "tinnitus" now detects the full element library, which would add a
-    # gap round and consume an extra monotonic call; this test targets the
-    # budget-expiry path, so pin observation to "no gaps".
+    # This test targets the budget-expiry path, so pin observation to "no gaps"
+    # rather than depending on how many elements the issue happens to detect.
     monkeypatch.setattr("va_legal_agent.agent._observe", lambda issue, cases, telemetry: ((), []))
     results = [{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}]
 
@@ -3647,9 +3680,8 @@ def test_analyze_cases_default_claim_type_and_max_results(monkeypatch):
         monkeypatch,
         results=[{"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}],
     )
-    # Bare "tinnitus" now detects the full element library and would trigger
-    # gap re-searches; this test only verifies the default claim_type and
-    # max_results flow through, so pin observation to "no gaps".
+    # This test only verifies that the default claim_type and max_results flow
+    # through, so pin observation to "no gaps" regardless of element detection.
     monkeypatch.setattr("va_legal_agent.agent._observe", lambda issue, cases, telemetry: ((), []))
 
     analyze_cases_for_claim("tinnitus")  # both args use their defaults

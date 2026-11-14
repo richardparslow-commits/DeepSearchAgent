@@ -198,7 +198,7 @@ def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):
         "appellant_role": "unknown",
         "legal_standard": "",
         "citation_treatments": [],
-        "precedential": True,
+        "precedential": None,
     }
 
 
@@ -386,10 +386,10 @@ def test_extract_legal_standard_returns_first_match_only():
 # ── extract_precedential_status ─────────────────────────────────────────────
 
 
-def test_extract_precedential_status_defaults_to_true():
-    """Empty and whitespace-only text is assumed precedential."""
-    assert extract_precedential_status("") is True
-    assert extract_precedential_status("   ") is True
+def test_extract_precedential_status_unknown_for_empty_text():
+    """Empty and whitespace-only text has unknown, not presumptively valid, status."""
+    assert extract_precedential_status("") is None
+    assert extract_precedential_status("   ") is None
 
 
 def test_extract_precedential_status_not_for_publication():
@@ -492,6 +492,11 @@ def test_extract_case_details_flags_non_precedential():
         "NOT FOR PUBLICATION. The Board erred in weighing the evidence."
     )
     assert details["precedential"] is False
+
+
+def test_extract_case_details_empty_body_has_unknown_precedential():
+    details = extract_case_details("")
+    assert details["precedential"] is None
 
 
 def test_extract_precedential_status_did_not_serve_as_precedent():

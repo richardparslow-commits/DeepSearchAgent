@@ -115,7 +115,7 @@ def _expected_dry_run_requests(issue: str) -> int:
     settings = get_settings()
     queries = plan_queries(decompose_issue(issue, "Compensation"))
     elements = [spec.name for spec in detect_claim_elements(issue)]
-    worst = len(queries) + settings.search_max_refinement_rounds * (len(elements) or 1)
+    worst = len(queries) + settings.search_max_refinement_rounds * len(elements)
     return worst * settings.search_query_variants
 
 

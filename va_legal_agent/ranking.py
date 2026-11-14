@@ -78,14 +78,22 @@ def score_case(
         + WEIGHT_RECENCY * recency
         + WEIGHT_COMPLETENESS * completeness
     )
-    penalty = NON_PRECEDENTIAL_PENALTY if not case.precedential else 0.0
+    if case.precedential is False:
+        penalty = NON_PRECEDENTIAL_PENALTY
+        precedent_note = f" - non-precedential penalty {NON_PRECEDENTIAL_PENALTY}"
+    elif case.precedential is None:
+        penalty = 0.0
+        precedent_note = " - precedential status unknown; no penalty"
+    else:
+        penalty = 0.0
+        precedent_note = ""
     adjusted = tier_score - penalty
     explanation = (
         f"tier score {tier_score:.2f} = "
         f"relevance {relevance:.2f} x {WEIGHT_RELEVANCE} + "
         f"recency {recency:.2f} x {WEIGHT_RECENCY} + "
         f"completeness {completeness:.2f} x {WEIGHT_COMPLETENESS}"
-        + (f" - non-precedential penalty {NON_PRECEDENTIAL_PENALTY}" if penalty else "")
+        + precedent_note
     )
     return adjusted, explanation
 
