@@ -19,7 +19,14 @@ from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
 from .config import get_settings
 from .interpretation import detect_claim_elements
-from .models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding, StatuteOutcomeRow
+from .models import (
+    AuthorityCheck,
+    ClaimElement,
+    Contradiction,
+    LegalAnalysis,
+    PrincipleFinding,
+    StatuteOutcomeRow,
+)
 from .planning import decompose_issue, plan_queries
 from .providers import (
     courtlistener_daily_budget,
@@ -275,7 +282,7 @@ def _redacted_settings() -> dict[str, object]:
     """
     data: dict[str, object] = asdict(get_settings())
     data["effective_search_providers"] = resolve_search_providers()
-    for key in ("openai_api_key", "courtlistener_api_key"):
+    for key in ("openai_api_key", "courtlistener_api_key", "govinfo_api_key"):
         data[key] = _mask_secret(data.get(key))
     # The proxy URL may embed ``user:pass@``, so mask that too.
     data["search_http_proxy"] = _mask_proxy_url(data.get("search_http_proxy"))
@@ -324,6 +331,17 @@ def _quota_line(quota: dict[str, object]) -> str:
     )
 
 
+def _authority_lines(checks: list[AuthorityCheck]) -> list[str]:
+    """Render authority verifications as one line per checked source."""
+    lines: list[str] = []
+    for check in checks:
+        detail = f": {check.detail}" if check.detail else ""
+        lines.append(
+            f"[{check.status}] {check.authority} ({check.source}){detail}"
+        )
+    return lines
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
@@ -339,6 +357,13 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         _bullets("Next steps", analysis.next_steps),
         _bullets("Strengths", analysis.strengths + _search_strengths(analysis.search_telemetry)),
         _bullets("Gaps", analysis.gaps + _search_gaps(analysis.search_telemetry)),
+        _bullets("Citation checks", analysis.citation_flags),
+        _bullets("Authority checks", _authority_lines(analysis.authority_checks))
+        if analysis.authority_checks
+        else [],
+        _bullets("Authority flags", analysis.authority_flags)
+        if analysis.authority_flags
+        else [],
         ([_matrix_header()] + _matrix_rows(analysis.statute_outcome_matrix))
         if analysis.statute_outcome_matrix else [],
         [f"Coverage score: {analysis.coverage_score:.2f} (confidence: {analysis.coverage_confidence})"],
@@ -425,8 +450,9 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "run_id", "issue", "coverage_score", "coverage_confidence", "interpretation_source", "summary",
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
-        "gaps", "detected_elements", "principle_findings",
-        "statute_outcome_matrix", "search_telemetry", "courtlistener_quota",
+        "gaps", "citation_flags", "authority_checks", "authority_flags",
+        "detected_elements", "principle_findings", "statute_outcome_matrix",
+        "search_telemetry", "courtlistener_quota",
     ]
     row = [
         analysis.run_id,
@@ -443,6 +469,12 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         " | ".join(analysis.next_steps),
         " | ".join(analysis.strengths),
         " | ".join(analysis.gaps),
+        " | ".join(analysis.citation_flags),
+        json.dumps(
+            [check.model_dump() for check in analysis.authority_checks],
+            sort_keys=True,
+        ),
+        " | ".join(analysis.authority_flags),
         " | ".join(_element_label(e) for e in analysis.detected_elements),
         " | ".join(_finding_label(f) for f in analysis.principle_findings),
         json.dumps(

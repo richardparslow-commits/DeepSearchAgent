@@ -28,6 +28,14 @@ class CaseRecord(BaseModel):
     # the Secretary cross-appealed. The contradiction detector and impact
     # note layer use this to make outcome classification party-aware.
     appellant_role: str = ""
+    # CAVC Rule 30(a): a single-judge disposition that may not be cited as
+    # precedent. Extracted from the decision text, then cross-checked against
+    # the court's official Panel Opinions list when that validation is on.
+    rule_30a: bool = False
+    # Result of the official panel-list check: "panel", "not_listed",
+    # "verified_nonprecedential", "conflict", "unavailable", or "" (not a
+    # CAVC case / validation did not run).
+    cavc_panel_status: str = ""
     # Whether this decision is precedential (published, citable as binding
     # authority). Non-precedential decisions (memorandum dispositions,
     # unpublished orders, single-judge designations) carry a 0.25 composite
@@ -114,6 +122,18 @@ class StatuteOutcomeRow(BaseModel):
     unknown: int = 0
 
 
+class AuthorityCheck(BaseModel):
+    """One external verification result for a cited authority."""
+
+    authority: str
+    source: str
+    # "verified", "conflict", "unresolved", "no_recent_documents", or
+    # "unavailable".
+    status: str
+    detail: str = ""
+    url: str = ""
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -136,6 +156,17 @@ class LegalAnalysis(BaseModel):
     interpretation_source: str = "template"
     search_telemetry: dict[str, dict[str, object]] = Field(default_factory=dict)
     search_flags: list[str] = Field(default_factory=list)
+    # Best-effort CourtListener citation-lookup guardrail results. Each entry
+    # names a citation that could not be resolved, resolved ambiguously, or was
+    # not checked because of a failed lookup or exhausted daily quota. Empty
+    # when every citation resolved or the check did not run (no API token).
+    citation_flags: list[str] = Field(default_factory=list)
+    # External authority verification results (CAVC panel list, eCFR, Federal
+    # Register, GovInfo). Empty when verification is disabled or did not run.
+    authority_checks: list[AuthorityCheck] = Field(default_factory=list)
+    # Human-readable problems derived from ``authority_checks`` (conflicts,
+    # unresolved citations, or an unavailable verification source).
+    authority_flags: list[str] = Field(default_factory=list)
     # Snapshot of CourtListener's daily request window recorded by the usage
     # guard's final pre-flight check (``used``/``limit``/``remaining``/
     # ``reset_at``), so the output shows how much free-tier budget the run

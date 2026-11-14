@@ -87,6 +87,66 @@ def test_equal_count_survivor_swap_fails_gate(
     assert "missing: mutant-b" in output
 
 
+def test_identity_missing_from_baseline_fails_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An untriaged survivor must not hide behind a stale baseline omission."""
+    missing = "va_legal_agent.batch.xǁBatchTrackerǁ__init____mutmut_15"
+    _write_baseline(
+        tmp_path,
+        monkeypatch,
+        {"batch.py": ["va_legal_agent.batch.xǁBatchTrackerǁ__init____mutmut_8"]},
+    )
+    _write_survivors(
+        tmp_path,
+        monkeypatch,
+        "batch.py",
+        ["va_legal_agent.batch.xǁBatchTrackerǁ__init____mutmut_8", missing],
+    )
+
+    assert checker.main([]) == 1
+
+    output = capsys.readouterr().out
+    assert "survivor names changed" in output
+    assert "missing from .mutation-baseline.json" in output
+    assert missing in output
+
+
+def test_survivor_report_for_module_absent_from_baseline_fails_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A report for an unbaselined module must not be silently ignored."""
+    _write_baseline(tmp_path, monkeypatch, {"config.py": ["mutant-a"]})
+    _write_survivors(tmp_path, monkeypatch, "config.py", ["mutant-a"])
+    _write_survivors(tmp_path, monkeypatch, "new_module.py", ["mutant-new"])
+
+    assert checker.main([]) == 1
+
+    output = capsys.readouterr().out
+    assert "new_module.py" in output
+    assert "NOT IN BASELINE" in output
+    assert "unbaselined identities: mutant-new" in output
+
+
+def test_allow_missing_does_not_ignore_an_unbaselined_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--allow-missing covers absent measurements, not unknown survivors."""
+    _write_baseline(tmp_path, monkeypatch, {"config.py": ["mutant-a"]})
+    _write_survivors(tmp_path, monkeypatch, "config.py", ["mutant-a"])
+    _write_survivors(tmp_path, monkeypatch, "new_module.py", ["mutant-new"])
+
+    assert checker.main(["--allow-missing"]) == 1
+
+    assert "unbaselined identities: mutant-new" in capsys.readouterr().out
+
+
 def test_timeout_fails_even_when_names_match(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

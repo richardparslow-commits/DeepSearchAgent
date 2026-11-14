@@ -8,6 +8,8 @@ from curl_cffi.requests.exceptions import (
 from va_legal_agent.search import (
     SearchError,
     DuckDuckGoProvider,
+    _is_challenge,
+    _is_http_url,
     _retry_delay,
     _throttle,
     build_duckduckgo_url,
@@ -1084,3 +1086,26 @@ def test_search_web_reports_last_error_details(monkeypatch):
 
     with pytest.raises(SearchError, match="network down"):
         search_web("tinnitus")
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        '<div id="anomaly-modal"></div>',
+        '<form action="/anomaly/check"></form>',
+        '<div class="challenge-form"></div>',
+        '<div id="challenge-form"></div>',
+        '<div class="captcha"></div>',
+        '<iframe src="/captcha"></iframe>',
+    ],
+)
+def test_is_challenge_detects_each_structural_selector(html):
+    assert _is_challenge(FakeResponse(f"<html>{html}</html>"))
+
+
+def test_is_http_url_requires_absolute_http_url_with_host():
+    assert _is_http_url("http://example.com/path") is True
+    assert _is_http_url("https://example.com") is True
+    assert _is_http_url("//example.com/path") is False
+    assert _is_http_url("/relative/path") is False
+    assert _is_http_url("ftp://example.com") is False

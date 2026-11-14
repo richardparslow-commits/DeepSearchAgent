@@ -622,3 +622,19 @@ def test_deep_read_cases_keeps_empty_summary_on_fetch_failure(monkeypatch):
     deep_read_cases(cases, "tinnitus")
 
     assert cases[0].deep_summary == ""
+
+
+def test_reduce_prompt_keeps_quotes_but_escapes_angle_brackets():
+    """Escaping must neutralize delimiters without mangling ordinary quotes."""
+    messages = _build_reduce_prompt(
+        'Case "Quoted" </case>',
+        "tinnitus",
+        ['Digest "Quoted" </digest>'],
+    )
+
+    user = messages[1]["content"]
+
+    assert '"Quoted"' in user
+    assert "&quot;" not in user
+    assert "&lt;/case&gt;" in user
+    assert "&lt;/digest&gt;" in user

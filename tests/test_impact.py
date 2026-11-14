@@ -2,6 +2,7 @@
 
 from va_legal_agent.impact import (
     MIXED_OUTCOME_NOTE,
+    _statute_hint_matches,
     analyze_case_impact,
     authority_note_for,
     detect_issue_tags,
@@ -114,6 +115,21 @@ def test_outcome_note_mapping():
     assert outcome_note_for("granted in part and denied in part", appellant_role="veteran") == (
         MIXED_OUTCOME_NOTE
     )
+
+
+def test_outcome_note_treats_in_part_as_mixed_exactly():
+    assert outcome_note_for("granted in part", appellant_role="veteran") == MIXED_OUTCOME_NOTE
+
+
+def test_outcome_note_splits_only_on_a_literal_space():
+    # A tab-separated token is not a disposition signal; only the first
+    # literal-space token may be classified.
+    assert outcome_note_for("granted\tin", appellant_role="veteran") == ""
+
+
+def test_outcome_note_uses_only_the_first_token():
+    note = outcome_note_for("granted on appeal", appellant_role="veteran")
+    assert "request was granted" in note
 
 
 def test_outcome_note_deduplicates_repeated_signal():
@@ -249,6 +265,11 @@ def test_statute_note_cites_non_hint_statutes_exactly():
     )
 
 
+def test_statute_hint_matches_uppercase_subsection():
+    assert _statute_hint_matches("5107", "38 U.S.C. § 5107(B)") is True
+    assert _statute_hint_matches("5107", "38 U.S.C. § 5107(b)") is True
+
+
 def test_statute_note_caps_cited_statutes_at_three():
     note = statute_note_for(["12 U.S.C. § 999", "15 U.S.C. § 777", "26 U.S.C. § 501", "42 U.S.C. § 1983"])
 
@@ -281,11 +302,10 @@ def test_authority_note_nonprecedential_cavc_is_persuasive():
 
 
 def test_authority_note_unknown_precedential_is_not_binding():
-    note = authority_note_for(CAVC, precedential=None)
-    assert "status" in note.lower()
-    assert "unknown" in note.lower()
-    assert "verify" in note.lower()
-    assert "binding on the Board" not in note
+    assert authority_note_for(CAVC, precedential=None) == (
+        "The precedential status of this appellate decision is unknown; verify its "
+        "publication status before relying on it as binding."
+    )
 
 
 def test_analyze_case_impact_nonprecedential_cavc_uses_persuasive_note():

@@ -336,6 +336,9 @@ class CourtListenerProvider:
     SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
     API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
     CITATIONS_URL = "https://www.courtlistener.com/api/rest/v4/opinions-cited/"
+    CITATION_LOOKUP_URL = "https://www.courtlistener.com/api/rest/v4/citation-lookup/"
+    # The endpoint accepts blocks up to roughly fifty pages (64,000 chars).
+    CITATION_LOOKUP_MAX_CHARS = 64_000
 
     def _headers(self) -> dict[str, str]:
         settings = get_settings()
@@ -398,15 +401,130 @@ class CourtListenerProvider:
             f"CourtListener was repeatedly unavailable for {url}: {last_error}"
         ) from last_error
 
+    def _post_json(self, url: str, data: dict[str, object]) -> object:
+        """POST form *data* to *url* with the same retry policy as GETs.
+
+        CourtListener's citation-lookup API is a form-encoded POST. Pacing,
+        transient-error retries, the no-token 401 hint, and proxy handling are
+        deliberately identical to :meth:`_get_json` so the lookup consumes the
+        same throttles and quota as every other CourtListener request.
+        """
+        settings = get_settings()
+        retries = settings.search_retry_attempts
+        last_error: requests.RequestException | None = None
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                delay = _courtlistener_retry_delay(attempt - 1, last_error)
+                logger.warning(
+                    "CourtListener throttled %s (retry %d/%d); backing off %.1fs.",
+                    url, attempt, retries, delay,
+                )
+                time.sleep(delay)
+            _throttle(self.name)
+            try:
+                response = requests.post(
+                    url,
+                    data=data,
+                    headers=self._headers(),
+                    timeout=settings.request_timeout_seconds,
+                    **http_proxy_kwargs(),
+                )
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                if not _is_transient_error(exc):
+                    if (
+                        not settings.courtlistener_api_key
+                        and getattr(exc, "response", None) is not None
+                        and getattr(exc.response, "status_code", None) == 401
+                    ):
+                        raise SearchError(
+                            "CourtListener requires an API token (401 Unauthorized); "
+                            "set COURTLISTENER_API_KEY."
+                        ) from exc
+                    raise SearchError(
+                        f"CourtListener request failed: {url}: {exc}"
+                    ) from exc
+                last_error = exc
+                continue
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise SearchError(
+                    f"CourtListener returned invalid JSON for {url}: {exc}"
+                ) from exc
+        raise SearchError(
+            f"CourtListener was repeatedly unavailable for {url}: {last_error}"
+        ) from last_error
+
+    def lookup_citations(self, text: str) -> list[dict[str, object]]:
+        """Resolve every case citation in *text* with one batched POST.
+
+        Returns the endpoint's per-citation result objects. A ``status`` of
+        200 means the citation was found; 404, 300, 400, and 429 identify
+        unresolved, ambiguous, invalid-reporter, and over-the-cap citations
+        respectively. An empty list means Eyecite found no case citations (or
+        *text* was blank), so no lookup request is made for blank input.
+        """
+        if not text.strip():
+            return []
+        payload = text[: self.CITATION_LOOKUP_MAX_CHARS]
+        try:
+            data = self._post_json(self.CITATION_LOOKUP_URL, {"text": payload})
+        except SearchError as exc:
+            if "COURTLISTENER_API_KEY" in str(exc):
+                raise  # already the actionable no-token hint
+            raise SearchError(
+                f"CourtListener citation lookup failed: {exc}"
+            ) from exc
+        # The endpoint returns [] when no citation is parsed; some API
+        # versions serialize that empty result as {}. Treat both as "nothing
+        # to flag" rather than as a failed lookup.
+        if data == {}:
+            return []
+        if not isinstance(data, list):
+            raise SearchError(
+                "CourtListener citation lookup returned an unexpected response "
+                f"({type(data).__name__}); expected a list of citation results."
+            )
+        return [item for item in data if isinstance(item, dict)]
+
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
-        # CourtListener has its own court filter; site: tokens are noise there.
-        # Minimize the recall query for CourtListener's full-text engine:
-        # drop the quoted boilerplate, keep statute fragments for specificity,
-        # and de-quote the issue phrase so the tokenizer matches individual
-        # words rather than requiring exact phrase matches.
-        query = _minimize_courtlistener_query(query)
-        if not query.strip():
-            raise SearchError("empty query after CourtListener adaptation")
+        """Keyword search over CourtListener's case-law index."""
+        return self._search(query, max_results, page, semantic=False)
+
+    def semantic_search(
+        self, query: str, max_results: int = 10, page: int = 1
+    ) -> list[dict[str, str]]:
+        """Plain-language semantic search over CourtListener's case-law index.
+
+        This is intentionally separate from :meth:`search`: semantic queries
+        are used only for targeted gap refinement, so the initial broad
+        recall fan-out keeps its cheaper keyword behavior. The endpoint's
+        ``semantic=true`` mode embeds the query server-side; POSTing a local
+        embedding is unnecessary for this application.
+        """
+        return self._search(query, max_results, page, semantic=True)
+
+    def _search(
+        self,
+        query: str,
+        max_results: int,
+        page: int,
+        semantic: bool,
+    ) -> list[dict[str, str]]:
+        if semantic:
+            query = query.strip()
+            if not query:
+                raise SearchError("empty semantic query")
+        else:
+            # CourtListener has its own court filter; site: tokens are noise
+            # there. Minimize the recall query for its full-text engine: drop
+            # the quoted boilerplate, keep statute fragments for specificity,
+            # and de-quote the issue phrase so the tokenizer matches individual
+            # words rather than requiring exact phrase matches.
+            query = _minimize_courtlistener_query(query)
+            if not query.strip():
+                raise SearchError("empty query after CourtListener adaptation")
         # The search endpoint returns up to 20 results per page regardless of
         # page_size and paginates with an opaque cursor in ``next``, so a
         # numeric page N means: follow the cursor chain N-1 times, then read
@@ -415,6 +533,11 @@ class CourtListenerProvider:
             "q": _courtlistener_query(query),
             "format": "json",
         }
+        if semantic:
+            # Semantic search is available only for the case-law engine.
+            params["semantic"] = "true"
+            params["type"] = "o"
+        label = "semantic search" if semantic else "search"
         try:
             data = self._get_json(self.SEARCH_URL, params)
             for _ in range(max(page, 1) - 1):
@@ -426,7 +549,7 @@ class CourtListenerProvider:
             if "COURTLISTENER_API_KEY" in str(exc):
                 raise  # already the actionable no-token hint
             raise SearchError(
-                f"CourtListener search failed for query: {query}: {exc}"
+                f"CourtListener {label} failed for query: {query}: {exc}"
             ) from exc
 
         results: list[dict[str, str]] = []
@@ -1157,6 +1280,49 @@ class BvaSitemapProvider:
     def _current_year_code() -> str:
         return f"{datetime.now(timezone.utc).year % 100:02d}"
 
+    @staticmethod
+    def _full_year(code: str) -> int:
+        """Map a two-digit sitemap year code to its full year.
+
+        Codes are the last two digits of the decision year (vetapp92 is 1992,
+        vetapp26 is 2026). Codes 92-99 are therefore 19xx and codes 00-91 are
+        20xx; comparing the two-digit code itself would pick 99 (1999) over 26
+        (2026), so every ordering uses this mapping.
+        """
+        two_digit = int(code)
+        return 1900 + two_digit if two_digit >= 92 else 2000 + two_digit
+
+    def _recent_leaves(
+        self, limit: int
+    ) -> list[tuple[str, int, list[tuple[str, str]]]]:
+        """The newest *limit* year leaves, as ``[(code, year, entries), ...]``.
+
+        Years come from the official sitemap index (not the calendar), newest
+        first. A year whose leaf cannot be fetched is skipped so one bad year
+        cannot block the remaining shards. Returns ``[]`` when the index is
+        empty or *limit* is non-positive.
+        """
+        if limit <= 0:
+            return []
+        index = _bva_sitemap_index()
+        if not index:
+            return []
+        ordered = sorted(
+            index, key=lambda pair: self._full_year(pair[0]), reverse=True
+        )
+        leaves: list[tuple[str, int, list[tuple[str, str]]]] = []
+        for code, _url in ordered[:limit]:
+            try:
+                leaf = _bva_leaf_sitemap(code)
+            except SearchError as exc:
+                logger.warning(
+                    "BVA leaf sitemap fetch failed for year %s: %s", code, exc
+                )
+                continue
+            if leaf:
+                leaves.append((code, self._full_year(code), leaf))
+        return leaves
+
     def _most_recent_leaf(self) -> list[tuple[str, str]]:
         """The current year's leaf sitemap, newest-first.
 
@@ -1171,16 +1337,9 @@ class BvaSitemapProvider:
         index = _bva_sitemap_index()
         if not index:
             return []
-        # Year codes are the last two digits of the decision year (vetapp92 is
-        # 1992, vetapp26 is 2026). Codes 92-99 are therefore 19xx and codes
-        # 00-91 are 20xx; comparing the two-digit code itself (numerically or
-        # lexicographically) would pick 99 (1999) over 26 (2026), so map each
-        # code to its full year before taking the max.
-        def _full_year(code: str) -> int:
-            two_digit = int(code)
-            return 1900 + two_digit if two_digit >= 92 else 2000 + two_digit
-
-        newest_year = max(index, key=lambda pair: _full_year(pair[0]))[0]
+        newest_year = max(
+            index, key=lambda pair: self._full_year(pair[0])
+        )[0]
         return _bva_leaf_sitemap(newest_year)
 
     def search(self, query: str, max_results: int = 10, page: int = 1) -> list[dict[str, str]]:
@@ -1232,33 +1391,51 @@ _BVA_LOCAL_SEPARATOR = "\n\x00\n"
 _bva_local_lock = threading.Lock()
 
 
-def _bva_local_index_paths(directory: str) -> tuple[str, str]:
-    """Return the (corpus, manifest) file paths for a local index directory."""
+def _bva_local_index_paths(
+    directory: str, year: int | None = None
+) -> tuple[str, str]:
+    """Return the (corpus, manifest) paths for one year shard.
+
+    ``year=None`` addresses the legacy single-corpus layout (``corpus.txt`` /
+    ``manifest.json``); a full year selects that year's shard
+    (``corpus-2026.txt`` / ``manifest-2026.json``). Keeping the legacy form
+    preserves existing callers and lets an old index keep serving while the
+    sharded index is rebuilt.
+    """
+    if year is None:
+        return (
+            os.path.join(directory, _BVA_LOCAL_CORPUS),
+            os.path.join(directory, _BVA_LOCAL_MANIFEST),
+        )
     return (
-        os.path.join(directory, _BVA_LOCAL_CORPUS),
-        os.path.join(directory, _BVA_LOCAL_MANIFEST),
+        os.path.join(directory, f"corpus-{year}.txt"),
+        os.path.join(directory, f"manifest-{year}.json"),
     )
 
 
-def _bva_local_meta_path(directory: str) -> str:
-    """Return the meta file path for a local index directory."""
-    return os.path.join(directory, _BVA_LOCAL_META)
+def _bva_local_meta_path(directory: str, year: int | None = None) -> str:
+    """Return the meta file path for one shard (or the legacy index)."""
+    if year is None:
+        return os.path.join(directory, _BVA_LOCAL_META)
+    return os.path.join(directory, f"index-{year}.meta.json")
 
 
 def _bva_local_write_meta(
-    directory: str, most_recent_lastmod: str
+    directory: str, most_recent_lastmod: str, year: int | None = None
 ) -> None:
-    """Write the build-time metadata after a successful build."""
+    """Write the build-time metadata after a successful shard build."""
     meta = {
         "build_time": datetime.now(timezone.utc).isoformat(),
         "most_recent_lastmod": most_recent_lastmod,
     }
-    with open(_bva_local_meta_path(directory), "w", encoding="utf-8") as fh:
+    if year is not None:
+        meta["year"] = year
+    with open(_bva_local_meta_path(directory, year), "w", encoding="utf-8") as fh:
         json.dump(meta, fh)
 
 
 def _bva_local_needs_rebuild(
-    directory: str, max_age_hours: int
+    directory: str, max_age_hours: int, year: int | None = None
 ) -> bool:
     """True when the local index is stale and should be rebuilt.
 
@@ -1274,11 +1451,13 @@ def _bva_local_needs_rebuild(
     - The live sitemap's most recent lastmod is newer than the stored one.
 
     Returns ``False`` when the index is still fresh or the sitemap fetch
-    fails (the existing index is better than nothing).
+    fails (the existing index is better than nothing). With *year*, the check
+    is scoped to that shard and leaf, so unchanged historical years are not
+    rebuilt merely because time passed.
     """
     if max_age_hours <= 0:
         return False  # auto-rebuild disabled — never refresh
-    meta_path = _bva_local_meta_path(directory)
+    meta_path = _bva_local_meta_path(directory, year)
     if not os.path.exists(meta_path):
         return True
     try:
@@ -1308,7 +1487,10 @@ def _bva_local_needs_rebuild(
     stored_lastmod = meta.get("most_recent_lastmod", "")
     if stored_lastmod:
         try:
-            leaf = BvaSitemapProvider()._most_recent_leaf()
+            if year is None:
+                leaf = BvaSitemapProvider()._most_recent_leaf()
+            else:
+                leaf = _bva_leaf_sitemap(f"{year % 100:02d}")
         except SearchError:
             return False  # sitemap down; keep what we have
         if leaf and leaf[0][1] > stored_lastmod:
@@ -1322,6 +1504,7 @@ def _bva_local_build(
     directory: str,
     leaf: list[tuple[str, str]],
     max_files: int,
+    year: int | None = None,
 ) -> tuple[str, list[dict[str, object]]]:
     """Download decision files into ``corpus.txt`` + byte-offset manifest.
 
@@ -1338,8 +1521,8 @@ def _bva_local_build(
     freshness check would otherwise accept and silently serve wrong results.
     """
     os.makedirs(directory, exist_ok=True)
-    corpus_path, manifest_path = _bva_local_index_paths(directory)
-    meta_path = _bva_local_meta_path(directory)
+    corpus_path, manifest_path = _bva_local_index_paths(directory, year)
+    meta_path = _bva_local_meta_path(directory, year)
     corpus_tmp = corpus_path + ".tmp"
     manifest_tmp = manifest_path + ".tmp"
     meta_tmp = meta_path + ".tmp"
@@ -1378,14 +1561,14 @@ def _bva_local_build(
     with open(manifest_tmp, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh)
     most_recent = leaf[0][1] if leaf else ""
+    meta = {
+        "build_time": datetime.now(timezone.utc).isoformat(),
+        "most_recent_lastmod": most_recent,
+    }
+    if year is not None:
+        meta["year"] = year
     with open(meta_tmp, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "build_time": datetime.now(timezone.utc).isoformat(),
-                "most_recent_lastmod": most_recent,
-            },
-            fh,
-        )
+        json.dump(meta, fh)
     # Commit: atomically swap the real files in only after all temps are done.
     os.replace(corpus_tmp, corpus_path)
     os.replace(manifest_tmp, manifest_path)
@@ -1393,12 +1576,46 @@ def _bva_local_build(
     return corpus_path, manifest
 
 
-def _bva_local_load(directory: str) -> tuple[str, list[dict[str, object]]]:
-    """Read the local index from disk."""
-    corpus_path, manifest_path = _bva_local_index_paths(directory)
+def _bva_local_load(
+    directory: str, year: int | None = None
+) -> tuple[str, list[dict[str, object]]]:
+    """Read one local index shard from disk (legacy index when year is None)."""
+    corpus_path, manifest_path = _bva_local_index_paths(directory, year)
     with open(manifest_path, encoding="utf-8") as fh:
         manifest = json.load(fh)
     return corpus_path, manifest
+
+
+def _bva_local_shards(
+    directory: str,
+) -> list[tuple[int | None, str, str]]:
+    """Return available shards, newest-first, as ``(year, corpus, manifest)``.
+
+    A year shard is usable only when both its corpus and manifest exist. When
+    no year shards are present, a legacy single-corpus index is returned as
+    ``(None, ...)`` so an existing installation keeps serving results while
+    the sharded index is rebuilt.
+    """
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        names = []
+    shards: list[tuple[int | None, str, str]] = []
+    for name in names:
+        match = re.fullmatch(r"corpus-(\d{4})\.txt", name)
+        if match is None:
+            continue
+        year = int(match.group(1))
+        corpus_path = os.path.join(directory, name)
+        manifest_path = os.path.join(directory, f"manifest-{year}.json")
+        if os.path.exists(manifest_path):
+            shards.append((year, corpus_path, manifest_path))
+    if shards:
+        return sorted(shards, key=lambda item: item[0], reverse=True)
+    legacy_corpus, legacy_manifest = _bva_local_index_paths(directory)
+    if os.path.exists(legacy_corpus) and os.path.exists(legacy_manifest):
+        return [(None, legacy_corpus, legacy_manifest)]
+    return []
 
 
 def _bva_local_search_corpus(
@@ -1441,18 +1658,21 @@ def _bva_local_search_corpus(
 
 
 class BvaLocalIndexProvider:
-    """Sub-second, WAF-free BVA search from an on-disk local index.
+    """Sub-second, WAF-free BVA search from per-year on-disk shards.
 
-    On first use it downloads every decision file enumerated by the
-    current year's leaf sitemap (optionally capped by
-    ``SEARCH_BVA_LOCAL_INDEX_MAX_FILES``), concatenates their bodies
-    into one ``corpus.txt`` with a byte-offset ``manifest.json``, and
-    then serves every later query by reading the corpus once into
-    memory — no per-query HTTP at all.
+    On first use it reads the official sitemap index, takes the newest
+    ``SEARCH_BVA_LOCAL_INDEX_YEARS`` years (default 5), and builds one
+    ``corpus-YYYY.txt`` + ``manifest-YYYY.json`` shard per year. Each shard is
+    downloaded and committed independently with its own metadata, so a long
+    first build is resumable: a failure in one year does not roll back years
+    that already finished, and the next query fills only the missing or stale
+    shards. ``SEARCH_BVA_LOCAL_INDEX_MAX_FILES`` caps downloads per shard.
 
-    Subsequent queries are instantaneous (sub-second even for 40k+
-    decisions).  Set ``SEARCH_BVA_LOCAL_INDEX_DIR`` to an empty string
-    to disable this provider.
+    Queries scan shards newest-first and load one shard at a time, keeping
+    memory bounded to a single year instead of the whole five-year corpus.
+    A legacy single-corpus index still serves results when no year shards
+    exist. Set ``SEARCH_BVA_LOCAL_INDEX_DIR`` to an empty string to disable
+    this provider.
     """
 
     name = "bvalocal"
@@ -1461,8 +1681,8 @@ class BvaLocalIndexProvider:
         self, query: str, max_results: int = 10, page: int = 1
     ) -> list[dict[str, str]]:
         # ``page`` is accepted for the provider protocol but ignored here: the
-        # local index is a whole-corpus grep (no pagination window), so every
-        # page scans the same corpus and returns the top *max_results* matches.
+        # local index is a whole-shard grep (no pagination window), so every
+        # page scans the same shards and returns the top *max_results* matches.
         settings = get_settings()
         directory = settings.search_bva_local_index_dir
         if not directory:
@@ -1472,49 +1692,84 @@ class BvaLocalIndexProvider:
             )
         issue = _minimize_bva_query(query)
         tokens = _bva_issue_tokens(issue)
-        corpus_path, manifest_path = _bva_local_index_paths(directory)
         # The agent fans queries out across a worker pool, so several threads
         # can reach here at once. Build/load is serialized under the process
-        # lock so a first-use build (which truncates corpus.txt with "w") can
-        # never race a concurrent read, and so only one thread performs the
-        # download. Double-check the stale/missing condition inside the lock:
-        # the first thread may have already built it while the others queued.
+        # lock so a first-use build cannot race a concurrent shard discovery,
+        # and so only one thread performs the downloads. The shard files are
+        # committed atomically, so queries may then read them outside the lock.
         with _bva_local_lock:
-            missing = not os.path.exists(manifest_path) or not os.path.exists(
-                corpus_path
-            )
-            if missing or _bva_local_needs_rebuild(
-                directory, settings.search_bva_local_index_max_age_hours
-            ):
+            shards = _bva_local_shards(directory)
+            wanted = settings.search_bva_local_index_years
+            year_shards = [shard for shard in shards if shard[0] is not None]
+            # Steady state: a full set of fresh shards needs no sitemap check,
+            # keeping ordinary queries HTTP-free. Discovery runs on first use,
+            # when a shard is missing, and when a shard has aged out.
+            fresh_full_set = len(year_shards) >= wanted
+            if fresh_full_set:
+                for year, _corpus, _manifest in year_shards[:wanted]:
+                    if _bva_local_needs_rebuild(
+                        directory,
+                        settings.search_bva_local_index_max_age_hours,
+                        year=year,
+                    ):
+                        fresh_full_set = False
+                        break
+            if fresh_full_set:
+                targets = []
+            else:
                 try:
-                    leaf = BvaSitemapProvider()._most_recent_leaf()
-                except SearchError:
-                    if missing:
+                    targets = BvaSitemapProvider()._recent_leaves(wanted)
+                except SearchError as exc:
+                    if not shards:
                         raise SearchError(
                             "No BVA decisions indexed; the va.gov "
                             "sitemap is unavailable."
                         ) from None
-                    # Index exists but sitemap is down — use the stale copy.
-                else:
-                    if not leaf:
-                        if missing:
-                            raise SearchError(
-                                "No BVA decisions indexed; the va.gov "
-                                "sitemap is unavailable."
-                            )
-                    else:
+                    logger.warning(
+                        "BVA sitemap unavailable; serving existing local shards: %s",
+                        exc,
+                    )
+                    targets = []
+            if targets:
+                os.makedirs(directory, exist_ok=True)
+                for _code, year, leaf in targets:
+                    corpus_path, manifest_path = _bva_local_index_paths(
+                        directory, year
+                    )
+                    missing = not os.path.exists(manifest_path) or not os.path.exists(
+                        corpus_path
+                    )
+                    if missing or _bva_local_needs_rebuild(
+                        directory,
+                        settings.search_bva_local_index_max_age_hours,
+                        year=year,
+                    ):
                         _bva_local_build(
                             directory,
                             leaf,
                             settings.search_bva_local_index_max_files,
+                            year=year,
                         )
+                shards = _bva_local_shards(directory)
+            if not shards:
+                raise SearchError(
+                    "No BVA decisions indexed; the va.gov sitemap is unavailable."
+                )
+        results: list[dict[str, str]] = []
+        remaining = max_results
+        for _year, corpus_path, manifest_path in shards:
             with open(corpus_path, encoding="utf-8") as fh:
                 corpus_text = fh.read()
             with open(manifest_path, encoding="utf-8") as fh:
                 manifest = json.load(fh)
-        results = _bva_local_search_corpus(
-            corpus_text, manifest, tokens, max_results
-        )
+            results.extend(
+                _bva_local_search_corpus(
+                    corpus_text, manifest, tokens, remaining
+                )
+            )
+            remaining = max_results - len(results)
+            if remaining <= 0:
+                break
         if not results:
             raise SearchError(
                 f"No search results returned for query: {query}"

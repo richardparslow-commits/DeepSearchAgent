@@ -322,3 +322,25 @@ def test_non_precedential_penalty_constants():
     assert NON_PRECEDENTIAL_PENALTY == 0.25
     assert NON_PRECEDENTIAL_PENALTY > 0
     assert NON_PRECEDENTIAL_PENALTY < 1.0
+
+
+def test_unknown_precedential_note_is_exact():
+    case = make_case("Unknown", relevance=1, date="2020-01-01", holding="holding")
+    case.precedential = None
+
+    _, explanation = score_case(case, max_relevance=1, current_year=2026)
+
+    assert explanation.endswith(" - precedential status unknown; no penalty")
+    assert "XX" not in explanation
+
+
+def test_precedential_case_explanation_has_no_unknown_note():
+    case = make_case(
+        "Known", relevance=1, date="2020-01-01", citation="30 Vet.App. 1", holding="holding"
+    )
+
+    _, explanation = score_case(case, max_relevance=1, current_year=2026)
+
+    assert explanation.endswith("completeness 1.00 x 0.15")
+    assert "XXXX" not in explanation
+    assert "precedential status unknown" not in explanation

@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
+from curl_cffi.const import CurlOpt
 from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
@@ -65,14 +66,15 @@ def _is_public_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
     )
 
 
-def _validate_fetch_url(url: str) -> None:
-    """Reject non-public destinations before a case URL is requested.
+def _validate_fetch_url(url: str) -> tuple[str, int, tuple[str, ...]]:
+    """Reject non-public destinations and return the addresses to pin.
 
     Every address returned by DNS must be public.  This blocks loopback,
     private, link-local (including the cloud metadata address), multicast,
     reserved, and IPv4-mapped private destinations.  The check is repeated for
-    every redirect hop by :func:`_fetch_with_redirects`; it is not a substitute
-    for network-level egress controls or DNS pinning.
+    every redirect hop by :func:`_fetch_with_redirects`, and the returned
+    addresses are pinned into the HTTP client so its connection cannot use a
+    later DNS answer.  Network-level egress controls remain defense in depth.
     """
     try:
         _require_http_url(url)
@@ -93,6 +95,7 @@ def _validate_fetch_url(url: str) -> None:
     if not addresses:
         raise FetchError(f"Could not resolve host {host!r} for {url!r}")
 
+    public_addresses: list[str] = []
     for info in addresses:
         raw_address = str(info[4][0])
         try:
@@ -105,13 +108,34 @@ def _validate_fetch_url(url: str) -> None:
             raise FetchError(
                 f"Refusing to fetch non-public address {address} for {url!r}"
             )
+        public_addresses.append(str(address))
+    return host, port, tuple(public_addresses)
+
+
+def _pinned_resolve_options(
+    host: str, port: int, addresses: tuple[str, ...]
+) -> dict[CurlOpt, list[str]] | None:
+    """Pin the validated addresses for *host* into libcurl."""
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        # IP literals connect directly; there is no DNS answer to rebind.
+        return None
+    resolve_host = host.encode("idna").decode("ascii")
+    pinned = ",".join(
+        f"[{address}]" if ":" in address else address for address in addresses
+    )
+    return {CurlOpt.RESOLVE: [f"{resolve_host}:{port}:{pinned}"]}
 
 
 def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Response", str]:
-    """Fetch *url*, validating the initial destination and every redirect hop."""
-    _validate_fetch_url(url)
+    """Fetch *url*, validating and pinning every redirect hop."""
+    host, port, addresses = _validate_fetch_url(url)
     current_url = url
     for _ in range(_MAX_REDIRECTS + 1):
+        resolve_options = _pinned_resolve_options(host, port, addresses)
         # The search layer already bypasses TLS-fingerprint/WAF challenges by
         # impersonating a real Chrome handshake via curl_cffi; the fetch layer
         # must do the same, otherwise enrichment/deep-read of protected pages
@@ -127,6 +151,7 @@ def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Respon
             stream=True,
             impersonate="chrome",
             allow_redirects=False,
+            curl_options=resolve_options,
             **http_proxy_kwargs(),
         )
         if response.status_code in _REDIRECT_STATUSES:
@@ -140,7 +165,7 @@ def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Respon
             current_url = urljoin(current_url, location)
             # Validate before issuing the next request, not after the body is
             # downloaded. A private hop must never receive a request at all.
-            _validate_fetch_url(current_url)
+            host, port, addresses = _validate_fetch_url(current_url)
             continue
         response.raise_for_status()
         return response, current_url
@@ -711,6 +736,10 @@ _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
         r"\bnot\s+precedential\b",
         r"\bunpublished\b",
         r"\bdo\s+not\s+cite\s+(?:this|as)\b",
+        # CAVC Rule 30(a) orders often use the passive phrasing "this action
+        # may not be cited as precedent", which the active "do not cite"
+        # marker above does not match.
+        r"\bmay\s+not\s+be\s+cited\s+as\s+precedent\b",
         r"\bdid\s+not\s+serve\s+as\s+precedent\b",
         r"\bno\s+precedential\s+(?:value|effect)\b",
         r"\b(?:this|the)\s+disposition\s+is\s+not\s+(?:precedential|[a-z]+\s+as\s+precedent)\b",
@@ -732,6 +761,23 @@ _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
 # opinion's body routinely *discusses* unpublished orders, so scanning the
 # whole document marks precedential decisions non-precedential.
 _PRECEDENTIAL_HEADER_CHARS = 1500
+
+
+_RULE_30A_PATTERN = re.compile(
+    r"\b(?:U\.?\s*S\.?\s*Vet\.?\s*App\.?\s*R\.?\s*30\s*\(\s*a\s*\)"
+    r"|Rule\s+30\s*\(\s*a\s*\))",
+    re.IGNORECASE,
+)
+
+
+def extract_rule_30a(text: str) -> bool:
+    """True when *text* carries the CAVC Rule 30(a) non-citation marker.
+
+    Rule 30(a) designates a single-judge disposition as non-precedential. The
+    marker is kept separate from the broader non-precedential detector so the
+    official Panel Opinions list can confirm or contradict it explicitly.
+    """
+    return bool(text and _RULE_30A_PATTERN.search(text))
 
 
 def extract_precedential_status(text: str) -> bool | None:
@@ -952,5 +998,10 @@ def extract_case_details(text: str) -> dict[str, str | list[str] | bool | None]:
         "appellant_role": extract_appellant_role(text),
         "legal_standard": extract_legal_standard(text),
         "citation_treatments": extract_citation_treatments(text),
-        "precedential": extract_precedential_status(text),
+        # Rule 30(a) is dispositive even when it appears beyond the header
+        # window used by the broader non-precedential detector.
+        "precedential": (
+            False if extract_rule_30a(text) else extract_precedential_status(text)
+        ),
+        "rule_30a": extract_rule_30a(text),
     }

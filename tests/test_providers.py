@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import requests
@@ -431,9 +431,10 @@ def test_courtlistener_search_rejects_empty_adapted_query(query, monkeypatch):
         lambda *args, **kwargs: called.append(1),
     )
 
-    with pytest.raises(SearchError, match="empty query after CourtListener adaptation"):
+    with pytest.raises(SearchError) as exc_info:
         CourtListenerProvider().search(query)
 
+    assert str(exc_info.value) == "empty query after CourtListener adaptation"
     assert called == []
 
 
@@ -457,8 +458,13 @@ def test_courtlistener_401_without_token_gets_actionable_hint(monkeypatch):
 
     monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
 
-    with pytest.raises(SearchError, match="COURTLISTENER_API_KEY"):
+    with pytest.raises(SearchError) as exc_info:
         CourtListenerProvider().search("tinnitus")
+
+    assert str(exc_info.value) == (
+        "CourtListener requires an API token (401 Unauthorized); "
+        "set COURTLISTENER_API_KEY."
+    )
 
 
 def test_search_all_uses_default_provider(monkeypatch):
@@ -3109,6 +3115,69 @@ def test_courtlistener_401_with_token_is_generic_error(monkeypatch):
     assert "COURTLISTENER_API_KEY" not in str(exc.value)
 
 
+def test_courtlistener_lookup_citations_posts_one_batched_request(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "33")
+    captured: dict[str, object] = {}
+
+    def fake_post(url, data=None, headers=None, timeout=None, **kwargs):
+        captured.update(url=url, data=data, headers=headers, timeout=timeout)
+        return FakeResponse(
+            [
+                {
+                    "citation": "30 Vet.App. 123",
+                    "normalized_citations": ["30 Vet.App. 123"],
+                    "status": 404,
+                    "error_message": "Citation not found",
+                },
+                {
+                    "citation": "576 U.S. 644",
+                    "normalized_citations": ["576 U.S. 644"],
+                    "status": 200,
+                    "error_message": "",
+                },
+            ]
+        )
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.post", fake_post)
+
+    results = CourtListenerProvider().lookup_citations(
+        "Smith v. Wilkie, 30 Vet.App. 123; Obergefell, 576 U.S. 644."
+    )
+
+    assert captured["url"] == CourtListenerProvider.CITATION_LOOKUP_URL
+    assert captured["data"] == {
+        "text": "Smith v. Wilkie, 30 Vet.App. 123; Obergefell, 576 U.S. 644."
+    }
+    assert captured["headers"]["Authorization"] == "Token secret-token"
+    assert captured["timeout"] == 33
+    assert [result["status"] for result in results] == [404, 200]
+
+
+def test_courtlistener_lookup_citations_empty_result_has_no_flags(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.post",
+        lambda *args, **kwargs: FakeResponse({}),
+    )
+
+    assert CourtListenerProvider().lookup_citations("No case citation here.") == []
+
+
+def test_courtlistener_lookup_citations_rejects_unexpected_response(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    monkeypatch.setattr(
+        "va_legal_agent.providers.requests.post",
+        lambda *args, **kwargs: FakeResponse({"detail": "not a list"}),
+    )
+
+    with pytest.raises(SearchError, match="unexpected response"):
+        CourtListenerProvider().lookup_citations("30 Vet.App. 123")
+
+
 def _usage_payload(daily_used=0, daily_limit=125, daily_reset="2026-08-18T05:12:28+00:00"):
     """A realistic api-usage payload: one row per scope/rate pair."""
     return {
@@ -4412,6 +4481,40 @@ def test_traverse_citations_deadline_equality_aborts_and_logs_count(monkeypatch,
 # ── BVA local-index provider ────────────────────────────────────────────
 
 
+def test_bva_sitemap_recent_leaves_uses_newest_index_years(monkeypatch):
+    index = [
+        ("99", "https://www.va.gov/vetapp99/sitemap.xml"),
+        ("26", "https://www.va.gov/vetapp26/sitemap.xml"),
+        ("25", "https://www.va.gov/vetapp25/sitemap.xml"),
+        ("24", "https://www.va.gov/vetapp24/sitemap.xml"),
+        ("23", "https://www.va.gov/vetapp23/sitemap.xml"),
+        ("22", "https://www.va.gov/vetapp22/sitemap.xml"),
+    ]
+    monkeypatch.setattr(
+        "va_legal_agent.providers._bva_sitemap_index", lambda: index
+    )
+    calls: list[str] = []
+
+    def fake_leaf(code):
+        calls.append(code)
+        if code == "25":
+            raise SearchError("leaf down")
+        if code == "22":
+            return []
+        return [(f"https://va.gov/vetapp{code}/Files1/{code}00001.txt", f"20{code}-08-01")]
+
+    monkeypatch.setattr(
+        "va_legal_agent.providers._bva_leaf_sitemap", fake_leaf
+    )
+
+    leaves = BvaSitemapProvider()._recent_leaves(5)
+
+    # 99 is outside the newest five; 25 failed and 22 was empty.
+    assert [year for _code, year, _leaf in leaves] == [2026, 2024, 2023]
+    assert calls == ["26", "25", "24", "23", "22"]
+    assert BvaSitemapProvider()._recent_leaves(0) == []
+
+
 class TestBvaLocalIndexPaths:
     def test_returns_corpus_and_manifest(self):
         c, m = _bva_local_index_paths("/tmp/bva_idx")
@@ -4423,6 +4526,14 @@ class TestBvaLocalIndexPaths:
         c, m = _bva_local_index_paths("idx")
         assert c == "idx/corpus.txt"
         assert m == "idx/manifest.json"
+
+    def test_year_shard_paths(self):
+        c, m = _bva_local_index_paths("/tmp/bva_idx", 2024)
+        assert c == "/tmp/bva_idx/corpus-2024.txt"
+        assert m == "/tmp/bva_idx/manifest-2024.json"
+        assert _bva_local_meta_path("/tmp/bva_idx", 2024) == (
+            "/tmp/bva_idx/index-2024.meta.json"
+        )
 
 
 class TestBvaLocalSearchCorpus:
@@ -4526,6 +4637,32 @@ class TestBvaLocalBuild:
         loaded_corpus, loaded_manifest = _bva_local_load(str(tmp_path))
         assert loaded_corpus == corpus_path
         assert len(loaded_manifest) == 2
+
+    def test_year_shard_build_and_load_roundtrip(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text",
+            lambda url: "The Board granted service connection for tinnitus.",
+        )
+        leaf = [
+            ("https://www.va.gov/vetapp24/Files1/24000001.txt", "2024-08-01"),
+            ("https://www.va.gov/vetapp24/Files1/24000002.txt", "2024-07-15"),
+        ]
+
+        corpus_path, manifest = _bva_local_build(
+            str(tmp_path), leaf, 0, year=2024
+        )
+
+        assert corpus_path.endswith("corpus-2024.txt")
+        assert len(manifest) == 2
+        assert not (tmp_path / "corpus.txt").exists()
+        loaded_corpus, loaded_manifest = _bva_local_load(str(tmp_path), 2024)
+        assert loaded_corpus == corpus_path
+        assert len(loaded_manifest) == 2
+        meta_path = _bva_local_meta_path(str(tmp_path), 2024)
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+        assert meta["year"] == 2024
+        assert meta["most_recent_lastmod"] == "2024-08-01"
 
     def test_max_files_caps_downloads(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
@@ -4640,6 +4777,14 @@ class TestBvaLocalBuild:
         assert (tmp_path / "index.meta.json").read_text() == old_meta
 
 
+def _stub_recent_leaves(monkeypatch, leaf, year=2026, code="26"):
+    """Point the local-index provider at one fake year leaf (or none)."""
+    monkeypatch.setattr(
+        "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+        lambda self, limit: [(code, year, leaf)] if leaf else [],
+    )
+
+
 class TestBvaLocalIndexProvider:
     def test_disabled_when_dir_empty(self, monkeypatch):
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", "")
@@ -4662,9 +4807,9 @@ class TestBvaLocalIndexProvider:
     def test_builds_on_first_query(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
                 ("https://va.gov/vetapp26/Files4/26000101.txt", "2026-08-02"),
             ],
@@ -4689,9 +4834,9 @@ class TestBvaLocalIndexProvider:
     def test_raises_on_no_results(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
             ],
         )
@@ -4709,9 +4854,9 @@ class TestBvaLocalIndexProvider:
     def test_query_minimization(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
             ],
         )
@@ -4735,9 +4880,9 @@ class TestBvaLocalIndexProvider:
     def test_stopword_only_query_raises(self, monkeypatch, tmp_path):
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
             ],
         )
@@ -4757,9 +4902,9 @@ class TestBvaLocalIndexProvider:
         """The centralized minimizer strips the site: prefix and keeps the issue."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
             ],
         )
@@ -4774,14 +4919,146 @@ class TestBvaLocalIndexProvider:
         results = BvaLocalIndexProvider().search("site:bva.va.gov tinnitus")
         assert len(results) == 1
 
+    def test_builds_last_five_year_shards_newest_first(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+
+        targets = [
+            (
+                f"{year % 100:02d}",
+                year,
+                [
+                    (
+                        f"https://www.va.gov/vetapp{year % 100:02d}/Files1/"
+                        f"{year % 100:02d}00001.txt",
+                        f"{year}-08-01",
+                    )
+                ],
+            )
+            for year in (2026, 2025, 2024, 2023, 2022)
+        ]
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+            lambda self, limit: targets[:limit],
+        )
+
+        def fake_fetch(url: str) -> str:
+            code = url.split("vetapp")[1][:2]
+            return f"20{code}: the Board granted service connection for tinnitus."
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+
+        assert len(results) == 5
+        assert [r["url"].split("vetapp")[1][:2] for r in results] == [
+            "26",
+            "25",
+            "24",
+            "23",
+            "22",
+        ]
+        assert sorted(p.name for p in tmp_path.glob("corpus-*.txt")) == [
+            f"corpus-{year}.txt" for year in (2022, 2023, 2024, 2025, 2026)
+        ]
+        for year in (2022, 2023, 2024, 2025, 2026):
+            assert (tmp_path / f"manifest-{year}.json").exists()
+            assert (tmp_path / f"index-{year}.meta.json").exists()
+
+    def test_rebuilds_only_missing_or_stale_shards(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text",
+            lambda url: "The Board granted service connection for tinnitus.",
+        )
+        leaf_2026 = [
+            ("https://www.va.gov/vetapp26/Files1/26000001.txt", "2026-08-01")
+        ]
+        _bva_local_build(str(tmp_path), leaf_2026, 0, year=2026)
+
+        targets = [
+            ("26", 2026, leaf_2026),
+            (
+                "25",
+                2025,
+                [("https://www.va.gov/vetapp25/Files1/25000001.txt", "2025-08-01")],
+            ),
+        ]
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+            lambda self, limit: targets[:limit],
+        )
+
+        import va_legal_agent.providers as prov
+
+        build_calls: list[int | None] = []
+        real_build = prov._bva_local_build
+
+        def counting_build(directory, leaf, max_files, year=None):
+            build_calls.append(year)
+            return real_build(directory, leaf, max_files, year=year)
+
+        monkeypatch.setattr(prov, "_bva_local_build", counting_build)
+
+        results = BvaLocalIndexProvider().search("tinnitus")
+
+        assert build_calls == [2025]
+        assert len(results) == 2
+
+    def test_max_files_caps_each_year_shard(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_FILES", "1")
+
+        targets = [
+            (
+                "26",
+                2026,
+                [
+                    ("https://www.va.gov/vetapp26/Files1/26000001.txt", "2026-08-02"),
+                    ("https://www.va.gov/vetapp26/Files1/26000002.txt", "2026-08-01"),
+                ],
+            ),
+            (
+                "25",
+                2025,
+                [
+                    ("https://www.va.gov/vetapp25/Files1/25000001.txt", "2025-08-02"),
+                    ("https://www.va.gov/vetapp25/Files1/25000002.txt", "2025-08-01"),
+                ],
+            ),
+        ]
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+            lambda self, limit: targets[:limit],
+        )
+        downloaded: list[str] = []
+
+        def fake_fetch(url: str) -> str:
+            downloaded.append(url)
+            return "The Board granted service connection for tinnitus."
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
+        )
+
+        BvaLocalIndexProvider().search("tinnitus")
+
+        assert len(downloaded) == 2
+        for year in (2025, 2026):
+            with open(tmp_path / f"manifest-{year}.json") as fh:
+                assert len(json.load(fh)) == 1
+
     def test_empty_leaf_raises(self, monkeypatch, tmp_path):
         """When the sitemap index is empty, search raises."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [],
-        )
+        _stub_recent_leaves(monkeypatch, [])
         with pytest.raises(SearchError, match="No BVA decisions indexed"):
             BvaLocalIndexProvider().search("tinnitus")
 
@@ -4805,9 +5082,9 @@ class TestBvaLocalIndexProvider:
         """A statute-only query keeps the site-stripped original from the central fallback."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
             ],
         )
@@ -5069,6 +5346,34 @@ class TestBvaLocalNeedsRebuild:
         assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
 
 
+    def test_year_shard_compares_only_its_own_leaf(self, monkeypatch, tmp_path):
+        meta = {
+            "build_time": "2000-01-01T00:00:00+00:00",
+            "most_recent_lastmod": "2024-08-01",
+        }
+        with open(_bva_local_meta_path(str(tmp_path), 2024), "w") as fh:
+            json.dump(meta, fh)
+
+        calls: list[str] = []
+
+        def fake_leaf(code):
+            calls.append(code)
+            return [
+                ("https://www.va.gov/vetapp24/Files1/24000001.txt", "2024-08-01")
+            ]
+
+        monkeypatch.setattr(
+            "va_legal_agent.providers._bva_leaf_sitemap", fake_leaf
+        )
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: pytest.fail("year shard must not use the current-year leaf"),
+        )
+
+        assert _bva_local_needs_rebuild(str(tmp_path), 1, year=2024) is False
+        assert calls == ["24"]
+
+
 class TestBvaLocalIndexAutoRebuild:
     def test_rebuilds_when_stale(self, monkeypatch, tmp_path):
         """Search triggers a rebuild when the meta reports the index is old."""
@@ -5082,7 +5387,7 @@ class TestBvaLocalIndexAutoRebuild:
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "0")  # disable age to test the sitemap path
         monkeypatch.setattr(
             "va_legal_agent.providers._bva_local_needs_rebuild",
-            lambda d, h: True,
+            lambda *args, **kwargs: True,
         )
 
         def fake_fetch(url: str) -> str:
@@ -5091,9 +5396,9 @@ class TestBvaLocalIndexAutoRebuild:
         monkeypatch.setattr(
             "va_legal_agent.providers._fetch_bva_decision_text", fake_fetch
         )
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [
+        _stub_recent_leaves(
+            monkeypatch,
+            [
                 ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-09-01"),
             ],
         )
@@ -5116,16 +5421,12 @@ class TestBvaLocalIndexAutoRebuild:
         ]
         _bva_local_build(str(tmp_path), leaf, 0)
 
-        # Now make needs_rebuild try to fetch the sitemap, but it fails.
-        monkeypatch.setattr(
-            "va_legal_agent.providers._bva_local_needs_rebuild",
-            lambda d, h: True,
-        )
-        def failing_leaf(self):
+        # Now make the sitemap fetch fail; the legacy index should still serve.
+        def failing_leaf(self, limit):
             raise SearchError("sitemap down")
 
         monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
             failing_leaf,
         )
 
@@ -5148,29 +5449,21 @@ class TestBvaLocalIndexAutoRebuild:
         ]
         _bva_local_build(str(tmp_path), leaf, 0)
 
-        # Now make needs_rebuild return True, but the sitemap is empty.
-        monkeypatch.setattr(
-            "va_legal_agent.providers._bva_local_needs_rebuild",
-            lambda d, h: True,
-        )
-        monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            lambda self: [],
-        )
+        # Now make the sitemap empty; the legacy index should still serve.
+        _stub_recent_leaves(monkeypatch, [])
 
         results = BvaLocalIndexProvider().search("tinnitus")
         assert len(results) == 1
 
-    def test_no_rebuild_when_fresh(self, monkeypatch, tmp_path):
-        """A fresh index is reused without re-downloading."""
+    def test_no_rebuild_when_shard_fresh(self, monkeypatch, tmp_path):
+        """A fresh shard is reused without re-downloading."""
         monkeypatch.setenv("SEARCH_PROVIDERS", "bvalocal")
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", str(tmp_path))
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "9999")
+        monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_YEARS", "1")
 
-        # Write a valid meta
-        _bva_local_write_meta(str(tmp_path), "2026-08-15")
-        # Write matching corpus/manifest
-        corpus_path, manifest_path = _bva_local_index_paths(str(tmp_path))
+        _bva_local_write_meta(str(tmp_path), "2026-08-15", year=2026)
+        corpus_path, manifest_path = _bva_local_index_paths(str(tmp_path), 2026)
         with open(corpus_path, "w") as fh:
             fh.write("tinnitus granted.\n\x00\n")
         with open(manifest_path, "w") as fh:
@@ -5179,22 +5472,26 @@ class TestBvaLocalIndexAutoRebuild:
                 fh,
             )
 
-        # Mock the sitemap to return newer content — but it shouldn't be
-        # called because age is under the max.
-        sitemap_calls = []
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+            lambda self, limit: pytest.fail("fresh shards must not hit the sitemap"),
+        )
+        build_calls = []
+        real_build = __import__(
+            "va_legal_agent.providers", fromlist=["_bva_local_build"]
+        )._bva_local_build
 
-        def spy_leaf(self):
-            sitemap_calls.append(1)
-            return []
+        def counting_build(directory, leaf, max_files, year=None):
+            build_calls.append(year)
+            return real_build(directory, leaf, max_files, year=year)
 
         monkeypatch.setattr(
-            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
-            spy_leaf,
+            "va_legal_agent.providers._bva_local_build", counting_build
         )
 
         results = BvaLocalIndexProvider().search("tinnitus")
         assert len(results) == 1
-        assert sitemap_calls == []  # never checked the sitemap!
+        assert build_calls == []  # fresh shard was not rebuilt
 
 
 class TestBvaLocalConcurrency:
@@ -5214,9 +5511,13 @@ class TestBvaLocalConcurrency:
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS", "0")
         monkeypatch.setattr(
             prov.BvaSitemapProvider,
-            "_most_recent_leaf",
-            lambda self: [
-                ("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01"),
+            "_recent_leaves",
+            lambda self, limit: [
+                (
+                    "26",
+                    2026,
+                    [("https://va.gov/vetapp26/Files4/26000100.txt", "2026-08-01")],
+                )
             ],
         )
         monkeypatch.setattr(
@@ -5228,9 +5529,9 @@ class TestBvaLocalConcurrency:
         build_calls: list[int] = []
         real_build = prov._bva_local_build
 
-        def counting_build(directory, leaf, max_files):
+        def counting_build(directory, leaf, max_files, year=None):
             build_calls.append(1)
-            return real_build(directory, leaf, max_files)
+            return real_build(directory, leaf, max_files, year=year)
 
         monkeypatch.setattr(prov, "_bva_local_build", counting_build)
 
@@ -5253,3 +5554,226 @@ class TestBvaLocalConcurrency:
         assert build_calls == [1]  # exactly one build despite 8 concurrent cold starts
         assert len(results) == 8
         assert all(len(r) == 1 for r in results)
+
+
+def test_bva_local_meta_timestamp_has_timezone(tmp_path):
+    _bva_local_write_meta(str(tmp_path), "2026-08-15")
+
+    with open(_bva_local_meta_path(str(tmp_path))) as fh:
+        meta = json.load(fh)
+
+    assert datetime.fromisoformat(meta["build_time"]).tzinfo is not None
+
+
+def test_bva_local_build_timestamp_has_timezone(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "va_legal_agent.providers._fetch_bva_decision_text",
+        lambda url: "tinnitus body",
+    )
+
+    _bva_local_build(
+        str(tmp_path),
+        [("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15")],
+        0,
+    )
+
+    with open(_bva_local_meta_path(str(tmp_path))) as fh:
+        meta = json.load(fh)
+
+    assert datetime.fromisoformat(meta["build_time"]).tzinfo is not None
+
+
+def test_fresh_naive_build_time_is_not_rebuilt(monkeypatch, tmp_path):
+    meta = {
+        "build_time": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
+        "most_recent_lastmod": "2026-08-15",
+    }
+    with open(_bva_local_meta_path(str(tmp_path)), "w") as fh:
+        json.dump(meta, fh)
+
+    sitemap_calls = []
+    monkeypatch.setattr(
+        "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+        lambda self: sitemap_calls.append(1) or [],
+    )
+
+    assert _bva_local_needs_rebuild(str(tmp_path), 24) is False
+    assert sitemap_calls == []
+
+
+class _FixedDateTime(datetime):
+    fixed = datetime(2026, 11, 14, 12, 0, 0, tzinfo=timezone.utc)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls.fixed
+
+
+def test_index_age_at_threshold_is_still_fresh(monkeypatch, tmp_path):
+    monkeypatch.setattr("va_legal_agent.providers.datetime", _FixedDateTime)
+    meta = {
+        "build_time": (_FixedDateTime.fixed - timedelta(hours=24)).isoformat(),
+        "most_recent_lastmod": "2026-08-15",
+    }
+    with open(_bva_local_meta_path(str(tmp_path)), "w") as fh:
+        json.dump(meta, fh)
+
+    sitemap_calls = []
+    monkeypatch.setattr(
+        "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+        lambda self: sitemap_calls.append(1)
+        or [("https://va.gov/vetapp26/Files4/26000099.txt", "2026-09-01")],
+    )
+
+    assert _bva_local_needs_rebuild(str(tmp_path), 24) is False
+    assert sitemap_calls == []
+
+
+def test_index_age_uses_hours_not_seconds(monkeypatch, tmp_path):
+    monkeypatch.setattr("va_legal_agent.providers.datetime", _FixedDateTime)
+    meta = {
+        "build_time": (_FixedDateTime.fixed - timedelta(hours=1)).isoformat(),
+        "most_recent_lastmod": "2026-08-15",
+    }
+    with open(_bva_local_meta_path(str(tmp_path)), "w") as fh:
+        json.dump(meta, fh)
+
+    sitemap_calls = []
+    monkeypatch.setattr(
+        "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+        lambda self: sitemap_calls.append(1)
+        or [("https://va.gov/vetapp26/Files4/26000099.txt", "2026-09-01")],
+    )
+
+    assert _bva_local_needs_rebuild(str(tmp_path), 24) is False
+    assert sitemap_calls == []
+
+
+def test_filter_excluded_terms_handles_missing_title_and_snippet():
+    results = [{}, {"title": "Tinnitus"}]
+
+    assert _filter_excluded_terms(results, "back") == results
+
+
+def test_courtlistener_header_enrichment_continues_after_skipped_result(monkeypatch):
+    header = "UNITED STATES COURT OF APPEALS\n\nNo. 18-3721"
+    items = [
+        _cl_result(
+            absolute_url="/opinion/1/first/",
+            opinions=[{"snippet": header, "id": 1}],
+        ),
+        _cl_result(
+            absolute_url="/opinion/2/second/",
+            opinions=[{"snippet": header, "id": 2}],
+        ),
+    ]
+    monkeypatch.setattr(
+        CourtListenerProvider,
+        "_get_json",
+        lambda self, url, params=None: {"results": items},
+    )
+    enriched = []
+
+    def fake_enrich(self, opinion_id, header_text):
+        enriched.append(opinion_id)
+        return f"holding for {opinion_id}"
+
+    monkeypatch.setattr(CourtListenerProvider, "_enrich_header_snippet", fake_enrich)
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert enriched == ["1", "2"]
+    assert [r["snippet"] for r in results] == ["holding for 1", "holding for 2"]
+
+
+def test_courtlistener_empty_snippet_stays_empty_when_enrichment_falls_back(
+    monkeypatch,
+):
+    item = _cl_result(opinions=[{"id": 12345}])
+    monkeypatch.setattr(
+        CourtListenerProvider,
+        "_get_json",
+        lambda self, url, params=None: {"results": [item]},
+    )
+    # Enrichment is best-effort; with no replacement excerpt it returns the
+    # original header, which must remain the empty string rather than "XXXX".
+    monkeypatch.setattr(
+        CourtListenerProvider,
+        "_enrich_header_snippet",
+        lambda self, opinion_id, header: header,
+    )
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert results[0]["snippet"] == ""
+
+
+def test_courtlistener_header_enrichment_skips_unenrichable_result_and_continues(
+    monkeypatch,
+):
+    header = "UNITED STATES COURT OF APPEALS\n\nNo. 18-3721"
+    items = [
+        _cl_result(
+            absolute_url="/opinion/1/first/",
+            opinions=[{"snippet": header}],  # no opinion id -> skipped
+        ),
+        _cl_result(
+            absolute_url="/opinion/2/second/",
+            opinions=[{"snippet": header, "id": 2}],
+        ),
+    ]
+    monkeypatch.setattr(
+        CourtListenerProvider,
+        "_get_json",
+        lambda self, url, params=None: {"results": items},
+    )
+    enriched = []
+
+    def fake_enrich(self, opinion_id, header_text):
+        enriched.append(opinion_id)
+        return "holding for 2"
+
+    monkeypatch.setattr(CourtListenerProvider, "_enrich_header_snippet", fake_enrich)
+
+    results = CourtListenerProvider().search("tinnitus")
+
+    assert enriched == ["2"]
+    assert results[1]["snippet"] == "holding for 2"
+
+
+def test_courtlistener_semantic_search_sets_semantic_params(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+    captured = {}
+
+    def fake_get(url, params=None, headers=None, timeout=None):
+        captured.update(url=url, params=params)
+        return FakeResponse({"results": [_cl_result()]})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    results = CourtListenerProvider().semantic_search(
+        "veterans law precedent on tinnitus and nexus", max_results=1
+    )
+
+    assert len(results) == 1
+    assert captured["params"]["semantic"] == "true"
+    assert captured["params"]["type"] == "o"
+    assert "tinnitus" in captured["params"]["q"]
+    assert "court_id:" in captured["params"]["q"]
+
+
+def test_courtlistener_semantic_search_rejects_empty_query():
+    with pytest.raises(SearchError, match="empty semantic query"):
+        CourtListenerProvider().semantic_search("   ")
+
+
+def test_courtlistener_semantic_search_error_mentions_semantic(monkeypatch):
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "0")
+
+    def fake_get(*args, **kwargs):
+        raise requests.ConnectionError("down")
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+
+    with pytest.raises(SearchError, match="semantic search failed"):
+        CourtListenerProvider().semantic_search("tinnitus")

@@ -4,8 +4,10 @@ import pytest
 
 from va_legal_agent.interpretation import (
     _COURT_ORDER,
+    ElementSpec,
     _build_element_library,
     _outcome_direction,
+    _phrase_is_affirmed,
     build_interpretive_analysis,
     build_statute_outcome_matrix,
     detect_claim_elements,
@@ -634,6 +636,7 @@ def test_build_analysis_reports_strengths_gaps_and_coverage(monkeypatch):
     assert result.interpretation_source == "template"
     assert "Smith v. Wilkie" in result.how_it_affects_va_claims
     assert result.likely_applicable_principles  # "competent evidence" principle found
+    assert result.next_steps
     assert all(step for step in result.next_steps)
 
 
@@ -735,10 +738,12 @@ def test_build_analysis_bare_condition_does_not_invent_elements():
     assert result.detected_elements == []
     assert result.coverage_score == 0.0
     assert result.coverage_confidence == "low"
+    assert result.gaps[0].startswith("No claim elements were detected")
     assert any("No claim elements were detected" in gap for gap in result.gaps)
     assert "No claim elements were detected from the issue." in result.how_it_affects_va_claims
     assert all("Caluza" not in step for step in result.next_steps)
     assert "XXXX" not in result.how_it_affects_va_claims
+    assert "XXNo claim elements" not in result.how_it_affects_va_claims
 
 
 def test_template_narrative_is_exact(monkeypatch):
@@ -1483,3 +1488,158 @@ def test_statute_outcome_matrix_treats_mixed_compound_as_unknown():
     assert rows[0].favorable == 0
     assert rows[0].unfavorable == 0
     assert rows[0].unknown == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("no nexus", False),
+        ("No nexus. The nexus is established.", True),
+        ("The nexus is established. No disability.", True),
+        ("nexus " + "x" * 70 + " not", False),
+        ("no " + " " * 78 + "nexus", True),
+    ],
+)
+def test_phrase_is_affirmed_uses_the_current_sentence_window(text, expected):
+    assert _phrase_is_affirmed(text, "nexus") is expected
+
+
+def test_detect_contradictions_continues_after_elementless_first_case():
+    cases = [
+        _case(
+            "NoElements",
+            outcome="granted",
+            snippet="purely procedural posture",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def test_detect_contradictions_continues_after_unshared_element_peer():
+    cases = [
+        _case("Granted", outcome="granted", statutes=["38 U.S.C. § 5107(b)"]),
+        _case(
+            "NoElements",
+            outcome="denied",
+            snippet="purely procedural posture",
+            statutes=["38 U.S.C. § 5107(b)"],
+        ),
+        _case("Denied", outcome="denied", statutes=["38 U.S.C. § 5107(b)"]),
+    ]
+
+    contradictions = detect_contradictions(cases)
+
+    assert [(c.case_a, c.case_b) for c in contradictions] == [("Granted", "Denied")]
+
+
+def _confidence_specs(
+    covered_weight: float, uncovered_weight: float
+) -> list[ElementSpec]:
+    return [
+        ElementSpec("nexus", ("nexus",), "d", "g", "s", covered_weight),
+        ElementSpec("rating", ("rating",), "d", "g", "s", uncovered_weight),
+    ]
+
+
+def _install_confidence_coverage(monkeypatch, specs, supporting_cases):
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.detect_claim_elements",
+        lambda issue: specs,
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation._cases_covering_element",
+        lambda spec, cases: (
+            [case.title for case in cases[:supporting_cases]]
+            if spec.name == "nexus"
+            else []
+        ),
+    )
+
+
+def test_high_confidence_accepts_exactly_two_supporting_cases(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.6, 0.4), 2)
+    cases = [_case(f"Case {i}", holding="holding") for i in range(10)]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == pytest.approx(0.60)
+    assert result.coverage_confidence == "high"
+
+
+def test_medium_confidence_includes_exactly_thirty_percent(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.3, 0.7), 1)
+    cases = [_case("Binding Case")] + [
+        _case(f"Case {i}", court="Board of Veterans' Appeals") for i in range(4)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == pytest.approx(0.30)
+    assert result.coverage_confidence == "medium"
+
+
+def test_medium_confidence_short_corpus_requires_a_binding_case(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.3, 0.7), 1)
+    cases = [_case("Only Case")]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "low"
+
+
+def test_medium_confidence_three_cases_require_binding_authority(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.3, 0.7), 1)
+    cases = [
+        _case(f"Case {i}", court="Board of Veterans' Appeals") for i in range(3)
+    ]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "low"
+
+
+def test_medium_confidence_accepts_exactly_three_binding_cases(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.3, 0.7), 1)
+    cases = [_case(f"Case {i}") for i in range(3)]
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_confidence == "medium"
+
+
+def test_low_confidence_label_is_exact():
+    result = build_interpretive_analysis(
+        "tinnitus",
+        "Compensation",
+        [_case("Doe v. VA", court="Board of Veterans' Appeals")],
+    )
+
+    assert result.coverage_confidence == "low"
+
+
+def test_outcome_direction_splits_only_on_a_literal_space():
+    assert _outcome_direction("granted\tin", "veteran") == 0
+    assert _outcome_direction("granted on appeal", "veteran") == 1
+
+
+
+def test_bare_condition_places_the_no_element_gap_before_missing_principles():
+    result = build_interpretive_analysis(
+        "tinnitus",
+        "Compensation",
+        [_case("Doe v. VA", snippet="procedural posture only")],
+    )
+
+    assert result.gaps[0].startswith("No claim elements were detected")
+    assert "No explicit legal principle" in result.gaps[1]

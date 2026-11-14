@@ -218,15 +218,18 @@ class Settings:
     # decisions per year, so the provider bounds its per-query file fetches
     # to the newest N and greps those for the issue phrase.
     search_bva_sitemap_scan_limit: int = 200
-    # On-disk directory where the bvalocal provider downloads the current
-    # year's full BVA decision corpus, builds a concatenated corpus + offset
-    # manifest, and runs subsequent queries against the local index (WAF-free,
-    # sub-second). The first query triggers the download if the index is
-    # absent or stale; set to empty to disable the local-index provider.
+    # On-disk directory where the bvalocal provider downloads the last
+    # ``search_bva_local_index_years`` BVA decision years, one shard per year,
+    # and runs subsequent queries against those shards (WAF-free, sub-second).
+    # The first query triggers downloads for missing/stale shards; set to empty
+    # to disable the local-index provider.
     search_bva_local_index_dir: str = ".bva_index"
+    # How many recent year sitemaps to index, newest-first. The default covers
+    # the last five years; the official sitemap may contain fewer years.
+    search_bva_local_index_years: int = 5
     # How many of the most recent decision files the local-index provider
-    # downloads on first build. 0 means download every current-year file
-    # (typically 40k+). Lower it to trade recall for faster first builds.
+    # downloads per year shard on build. 0 means download every file in each
+    # selected year. Lower it to trade recall for faster first builds.
     search_bva_local_index_max_files: int = 0
     # Maximum age (hours) of the local index before the bvalocal provider
     # re-checks the sitemap for newer decisions and auto-rebuilds.  0 disables
@@ -240,6 +243,28 @@ class Settings:
     # instead of grinding through 429s. The api-usage endpoint has its own
     # throttle, so the check itself doesn't burn the search budget.
     courtlistener_usage_guard: bool = True
+
+    # Selective CourtListener semantic search during gap refinement. Uses one
+    # natural-language query per gap round (never for the initial broad
+    # queries), so it costs at most one extra request per refinement round.
+    # Off by default because it consumes CourtListener quota.
+    courtlistener_semantic_gap_search: bool = False
+
+    # Validate CAVC decisions against the court's official Panel Opinions
+    # list. Panel-listed dockets are precedential; Rule 30(a) single-judge
+    # dispositions are not. Off by default because it fetches the list.
+    cavc_panel_validation: bool = False
+
+    # Verify cited authorities against eCFR, the Federal Register, and (when
+    # GOVINFO_API_KEY is set) GovInfo. Off by default because it makes
+    # external HTTP requests during analysis.
+    authority_verification: bool = False
+    # How far back to look for Federal Register rules affecting a cited CFR
+    # part.
+    federal_register_lookback_days: int = 365
+    # api.data.gov key for GovInfo's official U.S. Code / U.S. Courts
+    # Opinions search API. Optional; GovInfo checks are skipped without it.
+    govinfo_api_key: str | None = None
 
     # Multi-hop citation traversal over CourtListener's citation graph.
     # Off by default: it makes extra authenticated API calls per run, so
@@ -351,6 +376,12 @@ class Settings:
             search_bva_local_index_dir=os.getenv(
                 "SEARCH_BVA_LOCAL_INDEX_DIR", d.search_bva_local_index_dir
             ),
+            search_bva_local_index_years=env_int(
+                "SEARCH_BVA_LOCAL_INDEX_YEARS",
+                d.search_bva_local_index_years,
+                min_value=1,
+                max_value=35,
+            ),
             search_bva_local_index_max_files=env_int(
                 "SEARCH_BVA_LOCAL_INDEX_MAX_FILES",
                 d.search_bva_local_index_max_files,
@@ -365,6 +396,23 @@ class Settings:
             courtlistener_usage_guard=env_bool(
                 "COURTLISTENER_USAGE_GUARD", d.courtlistener_usage_guard
             ),
+            courtlistener_semantic_gap_search=env_bool(
+                "COURTLISTENER_SEMANTIC_GAP_SEARCH",
+                d.courtlistener_semantic_gap_search,
+            ),
+            cavc_panel_validation=env_bool(
+                "CAVC_PANEL_VALIDATION", d.cavc_panel_validation
+            ),
+            authority_verification=env_bool(
+                "AUTHORITY_VERIFICATION", d.authority_verification
+            ),
+            federal_register_lookback_days=env_int(
+                "FEDERAL_REGISTER_LOOKBACK_DAYS",
+                d.federal_register_lookback_days,
+                min_value=1,
+                max_value=3650,
+            ),
+            govinfo_api_key=os.getenv("GOVINFO_API_KEY") or None,
             citation_traversal=env_bool("CITATION_TRAVERSAL", d.citation_traversal),
             citation_traverse_limit=env_int(
                 "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit

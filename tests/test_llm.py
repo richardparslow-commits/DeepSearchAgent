@@ -10,6 +10,7 @@ from va_legal_agent.llm import (
     _build_messages,
     _build_reasoning_messages,
     _parse_reasoning_response,
+    call_openai,
     interpret_cases,
     llm_enabled,
     reason_cases,
@@ -674,3 +675,65 @@ def test_reason_cases_handles_missing_openai_package(monkeypatch, caplog):
         "(pip install openai). Skipping LLM reasoning."
         for r in caplog.records
     )
+
+
+def test_build_messages_numbers_cases_and_preserves_quotes():
+    first = _case()
+    first.title = 'First "Quoted" Case'
+    second = _case()
+    second.title = "Second Case"
+
+    messages = _build_messages("tinnitus", "Compensation", [first, second])
+    user = messages[1]["content"]
+
+    assert '<case index="1">' in user
+    assert '<case index="2">' in user
+    assert '"Quoted"' in user
+    assert "&quot;" not in user
+
+
+def test_reasoning_case_block_notes_are_exact():
+    unknown = _case()
+    unknown.precedential = None
+    non_precedential = _case()
+    non_precedential.precedential = False
+
+    messages = _build_reasoning_messages(
+        "tinnitus", "Compensation", [unknown, non_precedential], max_tokens=1000
+    )
+    user = messages[1]["content"]
+
+    assert (
+        "NOTE: precedential status unknown — verify publication before treating as binding"
+        in user
+    )
+    assert "NOTE: non-precedential — persuasive authority only" in user
+    assert "note: non-precedential" not in user
+    assert "XX" not in user
+
+
+def test_reasoning_case_block_joins_citation_treatments_with_semicolons():
+    case = _case()
+    case.citation_treatments = [
+        CitationTreatment(cited_case="Alpha v. VA", treatment="followed"),
+        CitationTreatment(cited_case="Beta v. VA", treatment="distinguished"),
+    ]
+
+    messages = _build_reasoning_messages(
+        "tinnitus", "Compensation", [case], max_tokens=1000
+    )
+    user = messages[1]["content"]
+
+    assert (
+        "Treatment of prior authority: Alpha v. VA: followed; "
+        "Beta v. VA: distinguished" in user
+    )
+    assert "XX; XX" not in user
+
+
+def test_call_openai_uses_empty_key_when_unset(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    fake = _install_fake_openai(monkeypatch, content="ok")
+
+    assert call_openai([{"role": "user", "content": "hi"}]) == "ok"
+    assert fake.client_kwargs["api_key"] == ""

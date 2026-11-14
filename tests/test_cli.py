@@ -17,7 +17,13 @@ from va_legal_agent.__main__ import (
     main,
     render_analysis,
 )
-from va_legal_agent.models import ClaimElement, Contradiction, LegalAnalysis, PrincipleFinding
+from va_legal_agent.models import (
+    AuthorityCheck,
+    ClaimElement,
+    Contradiction,
+    LegalAnalysis,
+    PrincipleFinding,
+)
 
 
 def _sample_analysis() -> LegalAnalysis:
@@ -2930,6 +2936,24 @@ def test_render_analysis_csv():
     )
 
 
+def test_render_analysis_citation_flags_across_formats():
+    analysis = _sample_analysis()
+    analysis.citation_flags = [
+        "Unresolved citation '30 Vet.App. 123': CourtListener found no matching case."
+    ]
+
+    text = render_analysis(analysis, "text")
+    assert "Citation checks:" in text
+    assert "- Unresolved citation '30 Vet.App. 123'" in text
+
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["citation_flags"] == analysis.citation_flags
+
+    rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
+    row = dict(zip(rows[0], rows[1]))
+    assert row["citation_flags"] == analysis.citation_flags[0]
+
+
 def test_render_analysis_json_default():
     analysis = _sample_analysis()
 
@@ -3917,3 +3941,38 @@ def test_matrix_rendering_in_text_output():
     assert "1" in text
     # The header line is present.
     assert _matrix_header() in text
+
+
+def test_render_analysis_authority_checks_across_formats():
+    analysis = _sample_analysis()
+    analysis.authority_checks = [
+        AuthorityCheck(
+            authority="38 C.F.R. § 3.303",
+            source="eCFR",
+            status="verified",
+            detail="Section 3.303 is present.",
+        ),
+        AuthorityCheck(
+            authority="CAVC docket 24-1234",
+            source="CAVC",
+            status="conflict",
+            detail="Panel list contradicts the Rule 30(a) marker.",
+        ),
+    ]
+    analysis.authority_flags = [
+        "Authority conflict: CAVC docket 24-1234 (CAVC) — check."
+    ]
+
+    text = render_analysis(analysis, "text")
+    assert "Authority checks:" in text
+    assert "- [verified] 38 C.F.R. § 3.303 (eCFR)" in text
+    assert "Authority flags:" in text
+
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["authority_flags"] == analysis.authority_flags
+    assert data["authority_checks"][0]["status"] == "verified"
+
+    rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
+    row = dict(zip(rows[0], rows[1]))
+    assert row["authority_flags"] == analysis.authority_flags[0]
+    assert json.loads(row["authority_checks"])[1]["status"] == "conflict"

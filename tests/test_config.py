@@ -38,8 +38,17 @@ _ENV_VARS = (
     "SEARCH_QUERY_VARIANTS_BY_PROVIDER",
     "SEARCH_MAX_RPM_BY_PROVIDER",
     "SEARCH_MAX_RESULTS",
+    "SEARCH_BVA_LOCAL_INDEX_DIR",
+    "SEARCH_BVA_LOCAL_INDEX_YEARS",
+    "SEARCH_BVA_LOCAL_INDEX_MAX_FILES",
+    "SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS",
     "COURTLISTENER_API_KEY",
     "COURTLISTENER_USAGE_GUARD",
+    "COURTLISTENER_SEMANTIC_GAP_SEARCH",
+    "CAVC_PANEL_VALIDATION",
+    "AUTHORITY_VERIFICATION",
+    "FEDERAL_REGISTER_LOOKBACK_DAYS",
+    "GOVINFO_API_KEY",
     "CITATION_TRAVERSAL",
     "CITATION_TRAVERSE_LIMIT",
     "ENRICH_CASE_LIMIT",
@@ -199,8 +208,14 @@ def test_settings_defaults(monkeypatch):
     assert settings.search_query_variants_by_provider == {}
     assert settings.search_max_rpm_by_provider == {}
     assert settings.search_max_results == 10
+    assert settings.search_bva_local_index_years == 5
     assert settings.courtlistener_api_key is None
     assert settings.courtlistener_usage_guard is True
+    assert settings.courtlistener_semantic_gap_search is False
+    assert settings.cavc_panel_validation is False
+    assert settings.authority_verification is False
+    assert settings.federal_register_lookback_days == 365
+    assert settings.govinfo_api_key is None
     assert settings.citation_traversal is False
     assert settings.citation_traverse_limit == 3
     assert settings.enrich_case_limit == 5
@@ -249,8 +264,14 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("SEARCH_QUERY_VARIANTS_BY_PROVIDER", "duckduckgo=2,bva=0")
     monkeypatch.setenv("SEARCH_MAX_RPM_BY_PROVIDER", "courtlistener=5,bva=10")
     monkeypatch.setenv("SEARCH_MAX_RESULTS", "25")
+    monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_YEARS", "3")
     monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
     monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    monkeypatch.setenv("CAVC_PANEL_VALIDATION", "1")
+    monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
+    monkeypatch.setenv("FEDERAL_REGISTER_LOOKBACK_DAYS", "90")
+    monkeypatch.setenv("GOVINFO_API_KEY", "gov-123")
     monkeypatch.setenv("CITATION_TRAVERSAL", "1")
     monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "5")
     monkeypatch.setenv("ENRICH_CASE_LIMIT", "4")
@@ -286,8 +307,14 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.search_query_variants_by_provider == {"duckduckgo": 2, "bva": 0}
     assert settings.search_max_rpm_by_provider == {"courtlistener": 5, "bva": 10}
     assert settings.search_max_results == 25
+    assert settings.search_bva_local_index_years == 3
     assert settings.courtlistener_api_key == "tok-123"
     assert settings.courtlistener_usage_guard is False
+    assert settings.courtlistener_semantic_gap_search is True
+    assert settings.cavc_panel_validation is True
+    assert settings.authority_verification is True
+    assert settings.federal_register_lookback_days == 90
+    assert settings.govinfo_api_key == "gov-123"
     assert settings.citation_traversal is True
     assert settings.citation_traverse_limit == 5
     assert settings.enrich_case_limit == 4

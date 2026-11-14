@@ -34,6 +34,10 @@ Usage::
 A partial local run can pass ``--allow-missing`` to keep missing modules visible
 without failing; CI never passes it, so an unmeasured module still fails the
 gate there.
+
+Every survivor report must also have a baseline entry. A report for a module
+that is absent from the baseline is not silently ignored: its identities are
+unbaselined, so the gate fails and names them for triage.
 """
 
 from __future__ import annotations
@@ -46,6 +50,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BASELINE_PATH = REPO_ROOT / ".mutation-baseline.json"
 SURVIVOR_DIR = Path("/tmp")
+SURVIVOR_GLOB = "mutmut_survivors_*.txt"
 HEADER_RE = re.compile(
     r"^### (?P<module>.+): (?P<count>\d+) survivors"
     r"(?: \(\d+ timeout\))?$"
@@ -88,6 +93,18 @@ def read_survivor_report(module: str) -> tuple[set[str], int]:
     return set(names), timeout_count
 
 
+def discover_survivor_reports() -> dict[str, Path]:
+    """Return the per-module survivor reports currently available."""
+    reports: dict[str, Path] = {}
+    prefix = "mutmut_survivors_"
+    for path in sorted(SURVIVOR_DIR.glob(SURVIVOR_GLOB)):
+        module = path.name[len(prefix) : -len(".txt")]
+        if module in reports:
+            raise ValueError(f"duplicate survivor report for {module!r}")
+        reports[module] = path
+    return reports
+
+
 def read_baseline() -> dict[str, set[str]]:
     """Read and validate the module -> survivor-name mapping."""
     raw = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
@@ -121,10 +138,38 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: invalid mutation baseline: {exc}", file=sys.stderr)
         return 1
 
+    try:
+        reports = discover_survivor_reports()
+    except (OSError, ValueError) as exc:
+        print(f"error: invalid survivor reports: {exc}", file=sys.stderr)
+        return 1
+
     failures: list[str] = []
     missing: list[str] = []
-    width = max(len(module) for module in baseline)
+    unbaselined_reports = sorted(set(reports) - set(baseline))
+    width = max(len(module) for module in set(baseline) | set(reports))
     print(f"{'module':<{width}}  survivors  names")
+
+    for module in unbaselined_reports:
+        try:
+            actual, timeout_count = read_survivor_report(module)
+        except (OSError, ValueError) as exc:
+            print(f"{module:<{width}}  {'INVALID':>9}  -")
+            failures.append(f"{module}: invalid survivor file: {exc}")
+            continue
+        print(f"{module:<{width}}  {len(actual):>9}  NOT IN BASELINE")
+        failures.append(
+            f"{module}: survivor report is not represented in "
+            ".mutation-baseline.json; unbaselined identities: "
+            f"{', '.join(sorted(actual)) or '-'}"
+        )
+        if timeout_count > 0:
+            failures.append(
+                f"{module}: {timeout_count} mutant(s) TIMED OUT (hung test run) - "
+                "a hang is never a triaged equivalent; make the killing test fail "
+                "fast so the mutant is killed instead of absorbed into the baseline"
+            )
+
     for module, expected in sorted(baseline.items()):
         try:
             actual, timeout_count = read_survivor_report(module)
@@ -158,8 +203,9 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(
                 f"{module}: survivor names changed{same_count} "
                 f"(+{len(added)} new, -{len(removed)} missing); "
-                f"new: {', '.join(sorted(added)) or '-'}; "
-                f"missing: {', '.join(sorted(removed)) or '-'}"
+                f"new: {', '.join(sorted(added)) or '-'} "
+                "(missing from .mutation-baseline.json); "
+                f"missing: {', '.join(sorted(removed)) or '-'} (baseline-only)"
             )
 
     if allow_missing and missing:

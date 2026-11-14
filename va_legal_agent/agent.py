@@ -10,6 +10,11 @@ import re
 from collections import Counter
 from urllib.parse import urlsplit
 
+from .authorities import (
+    authority_flags,
+    validate_cavc_panel_cases,
+    verify_analysis_authorities,
+)
 from .config import get_settings
 from .deep_read import deep_read_cases
 from .fetch import extract_case_details, fetch_case_details
@@ -545,6 +550,65 @@ def _observe(
     return uncovered, flags
 
 
+def _semantic_gap_enabled() -> bool:
+    """True when one CourtListener semantic search per gap round is allowed."""
+    settings = get_settings()
+    return bool(
+        settings.courtlistener_semantic_gap_search
+        and settings.courtlistener_api_key
+        and "courtlistener"
+        in resolve_search_providers(settings.search_providers)
+    )
+
+
+def _semantic_gap_query(issue: str, uncovered: tuple[str, ...]) -> str:
+    """Build a plain-language query for the current uncovered elements."""
+    elements = "; ".join(uncovered)
+    return (
+        f"Veterans benefits case law addressing {elements} in the context of "
+        f"{issue}."
+    )
+
+
+def _semantic_gap_cases(
+    issue: str,
+    uncovered: tuple[str, ...],
+    max_results: int,
+    deadline: float | None,
+) -> list[CaseRecord]:
+    """Run one selective CourtListener semantic query for a gap round.
+
+    Semantic search is deliberately limited to the refinement loop: it is
+    more expensive than keyword search and should not replace broad recall.
+    Failures are logged and ignored so a semantic outage cannot abort an
+    otherwise productive research round.
+    """
+    if not _semantic_gap_enabled():
+        return []
+    if deadline is not None and time.monotonic() >= deadline:
+        logger.warning("Semantic gap search skipped: wall-time budget exhausted.")
+        return []
+    query = _semantic_gap_query(issue, uncovered)
+    try:
+        found = CourtListenerProvider().semantic_search(query, max_results=max_results)
+    except SearchError as exc:
+        logger.warning("Semantic gap search failed for %r: %s", issue, exc)
+        return []
+    cases: list[CaseRecord] = []
+    for raw in found:
+        court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
+        case = normalize_case(raw, court_name, issue)
+        case.relevance_score = score_case_relevance(case, issue)
+        cases.append(case)
+    if cases:
+        logger.info(
+            "Semantic gap search added %d case(s) for uncovered=%s.",
+            len(cases),
+            list(uncovered),
+        )
+    return cases
+
+
 def research_issue(
     claim_issue: str,
     claim_type: str = "Compensation",
@@ -620,6 +684,7 @@ def research_issue(
             telemetry,
             deep_read=bool(deep_read if deep_read is not None else _settings.deep_read),
             deep_read_limit=deep_read_limit or _settings.deep_read_limit,
+            semantic_queries=1 if _semantic_gap_enabled() else 0,
         )
         logger.info(
             "Research gap detected: uncovered=%s search_flags=%s; refining queries.",
@@ -636,6 +701,9 @@ def research_issue(
             max_wall_seconds,
         )
         cases.extend(gap_cases)
+        cases.extend(
+            _semantic_gap_cases(claim_issue, uncovered, max_results, deadline)
+        )
         uncovered, flags = _observe(claim_issue, cases, telemetry)
         logger.info(
             "Research refinement complete: uncovered=%s search_flags=%s.",
@@ -690,6 +758,7 @@ def _check_courtlistener_budget_before_run(
     telemetry: list[dict[str, object]] | None = None,
     deep_read: bool = False,
     deep_read_limit: int = 0,
+    semantic_queries: int = 0,
 ) -> None:
     """Abort early when CourtListener's budget can't cover the planned run.
 
@@ -735,7 +804,7 @@ def _check_courtlistener_budget_before_run(
     dr_cost = 0
     if deep_read:
         dr_cost = max(deep_read_limit, 0)
-    estimated = search_cost + dr_cost
+    estimated = search_cost + dr_cost + max(semantic_queries, 0)
 
     # --- Daily window ---
     try:
@@ -860,6 +929,9 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
         status = details.get("precedential")
         if status is not None:
             case.precedential = bool(status)
+        if details.get("rule_30a"):
+            case.rule_30a = True
+            case.precedential = False
         # Populate appellant_role from enrichment so the contradiction detector
         # and impact notes are party-aware (e.g. "affirmed" when the Secretary
         # cross-appealed is favorable to the veteran, not unfavorable).
@@ -943,6 +1015,115 @@ def _resolve_superseded_cases(cases: list[CaseRecord]) -> list[CaseRecord]:
             if not cited.superseded_by:
                 cited.superseded_by = citing.title
     return cases
+
+
+def _citation_lookup_text(analysis: LegalAnalysis, cases: list[CaseRecord]) -> str:
+    """Collect the citations and analysis prose sent to one lookup request.
+
+    Case citation fields are the primary inputs; the narrative fields are
+    included so a citation invented in the analysis is checked too. Duplicate
+    fragments are dropped to keep the single request comfortably below the
+    endpoint's 250-citation cap.
+    """
+    fragments: list[str] = [case.citation for case in cases]
+    fragments.extend(
+        [
+            analysis.summary,
+            analysis.how_it_affects_va_claims,
+        ]
+    )
+    fragments.extend(analysis.likely_applicable_principles)
+    fragments.extend(analysis.next_steps)
+    fragments.extend(analysis.strengths)
+    fragments.extend(analysis.gaps)
+    fragments.extend(finding.principle for finding in analysis.principle_findings)
+    fragments.extend(
+        contradiction.statement for contradiction in analysis.contradictions
+    )
+    fragments.extend(
+        str(entry.get("summary") or "") for entry in analysis.deep_summaries
+    )
+    unique = dict.fromkeys(fragment.strip() for fragment in fragments if fragment and fragment.strip())
+    return "\n".join(unique)
+
+
+def _citation_flags_from_lookup(results: list[dict[str, object]]) -> list[str]:
+    """Turn per-citation lookup statuses into actionable output flags."""
+    flags: list[str] = []
+    seen: set[str] = set()
+    for item in results:
+        citation = str(item.get("citation") or "").strip()
+        if not citation:
+            normalized = item.get("normalized_citations")
+            if isinstance(normalized, list) and normalized:
+                citation = str(normalized[0]).strip()
+        citation = citation or "(unknown citation)"
+        try:
+            status = int(item.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        if status == 200:
+            continue
+        detail = str(item.get("error_message") or "").strip()
+        if status == 404:
+            flag = (
+                f"Unresolved citation '{citation}': CourtListener found no matching case; "
+                "verify it before relying on it."
+            )
+        elif status == 300:
+            flag = (
+                f"Ambiguous citation '{citation}': multiple CourtListener cases match; "
+                "disambiguate it before relying on it."
+            )
+        elif status == 400:
+            flag = (
+                f"Invalid citation '{citation}': CourtListener does not recognize the reporter; "
+                "verify the reporter and citation."
+            )
+        elif status == 429:
+            flag = (
+                f"Citation '{citation}' was not checked: CourtListener's 250-citation "
+                "request limit was exceeded."
+            )
+        elif status:
+            flag = f"Citation '{citation}' returned CourtListener lookup status {status}."
+        else:
+            flag = f"Citation '{citation}' returned no usable CourtListener lookup status."
+        if detail and status in (0, 400):
+            flag = f"{flag} ({detail})"
+        if flag not in seen:
+            flags.append(flag)
+            seen.add(flag)
+    return flags
+
+
+def check_analysis_citations(
+    analysis: LegalAnalysis, cases: list[CaseRecord]
+) -> list[str]:
+    """Flag unresolved or ambiguous citations with one batched lookup.
+
+    The check is best-effort: it runs only when ``COURTLISTENER_API_KEY`` is
+    configured, pre-flights the live daily window so it never spends the last
+    request blindly, and turns lookup/quota failures into explanatory flags
+    instead of failing the analysis. A single POST covers every citation in
+    the analysis, so the guardrail costs at most one request per analysis.
+    """
+    if not get_settings().courtlistener_api_key:
+        return []
+    text = _citation_lookup_text(analysis, cases)
+    if not text:
+        return []
+    try:
+        # The lookup itself consumes one main API request, so require at least
+        # that much headroom in the live daily window before sending it.
+        check_courtlistener_daily_budget(1)
+    except SearchError as exc:
+        return [f"CourtListener citation check skipped: {exc}"]
+    try:
+        results = CourtListenerProvider().lookup_citations(text)
+    except SearchError as exc:
+        return [f"CourtListener citation check failed: {exc}"]
+    return _citation_flags_from_lookup(results)
 
 
 def _build_analysis(
@@ -1030,7 +1211,18 @@ def analyze_cases_for_claim(
         deep_read=deep_read,
         deep_read_limit=deep_read_limit,
     )
-    return _build_analysis(claim_issue, claim_type, cases, telemetry)
+    settings = get_settings()
+    cavc_checks = (
+        validate_cavc_panel_cases(cases) if settings.cavc_panel_validation else []
+    )
+    analysis = _build_analysis(claim_issue, claim_type, cases, telemetry)
+    analysis.citation_flags = check_analysis_citations(analysis, cases)
+    authority_checks = list(cavc_checks)
+    if settings.authority_verification:
+        authority_checks.extend(verify_analysis_authorities(analysis, cases))
+    analysis.authority_checks = authority_checks
+    analysis.authority_flags = authority_flags(authority_checks)
+    return analysis
 
 
 if __name__ == "__main__":

@@ -1,13 +1,34 @@
+import ipaddress
 import logging
+import socket
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 
 import pytest
 
-from va_legal_agent.fetch import extract_case_details, extract_holding_sentence, extract_statutes
+import va_legal_agent.fetch as fetch_module
+from va_legal_agent.fetch import (
+    FetchError,
+    _fetch_with_redirects,
+    _is_public_ip,
+    _require_http_url,
+    _validate_fetch_url,
+    extract_case_details,
+    extract_decision_date,
+    extract_holding_sentence,
+    extract_statutes,
+    fetch_case_details,
+)
 from va_legal_agent.interpretation import InterpretiveAnalysis
 from va_legal_agent.llm import ReasoningResult
-from va_legal_agent.models import CaseRecord, Contradiction, PrincipleFinding
+from va_legal_agent.models import (
+    AuthorityCheck,
+    CaseRecord,
+    Contradiction,
+    LegalAnalysis,
+    PrincipleFinding,
+    StatuteOutcomeRow,
+)
 from va_legal_agent.planning import ResearchPlan, SubTask
 from va_legal_agent.search import SearchError
 from va_legal_agent.agent import (
@@ -17,8 +38,12 @@ from va_legal_agent.agent import (
     _dedupe_rank_and_enrich,
     _observe,
     _resolve_superseded_cases,
+    _semantic_gap_cases,
+    _semantic_gap_enabled,
+    _semantic_gap_query,
     analyze_cases_for_claim,
     build_case_queries,
+    check_analysis_citations,
     detect_court_name,
     enrich_top_cases,
     fetch_cases_for_issue,
@@ -809,6 +834,150 @@ def test_analyze_cases_for_claim_returns_structured_analysis(monkeypatch):
     assert analysis.strengths
 
 
+def test_check_analysis_citations_flags_unresolved_and_ambiguous(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {
+            "used": 0,
+            "limit": 125,
+            "remaining": 125,
+            "reset_at": None,
+        },
+    )
+    seen: list[str] = []
+
+    def fake_lookup(self, text):
+        seen.append(text)
+        return [
+            {"citation": "30 Vet.App. 123", "status": 404, "error_message": "not found"},
+            {"citation": "31 Vet.App. 456", "status": 300, "error_message": "ambiguous"},
+            {"citation": "576 U.S. 644", "status": 200, "error_message": ""},
+        ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider.lookup_citations", fake_lookup
+    )
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="See 31 Vet.App. 456.",
+        how_it_affects_va_claims="The Board must apply the rule.",
+    )
+    cases = [
+        CaseRecord(
+            title="Smith v. Wilkie",
+            court=COURT_CAVC,
+            citation="30 Vet.App. 123",
+        )
+    ]
+
+    flags = check_analysis_citations(analysis, cases)
+
+    assert len(flags) == 2
+    assert "Unresolved citation '30 Vet.App. 123'" in flags[0]
+    assert "Ambiguous citation '31 Vet.App. 456'" in flags[1]
+    assert all("576 U.S. 644" not in flag for flag in flags)
+    assert len(seen) == 1
+    assert "30 Vet.App. 123" in seen[0]
+    assert "31 Vet.App. 456" in seen[0]
+
+
+def test_check_analysis_citations_skips_when_daily_budget_spent(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    def no_budget(min_remaining):
+        raise SearchError(
+            "CourtListener daily request budget too low: 0 remaining, need 1 "
+            "for this run (used 125/125). Daily window resets at "
+            "2026-08-18T05:12:28+00:00."
+        )
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget", no_budget
+    )
+    called: list[str] = []
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider.lookup_citations",
+        lambda self, text: called.append(text) or [],
+    )
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="See 30 Vet.App. 123.",
+        how_it_affects_va_claims="",
+    )
+
+    flags = check_analysis_citations(
+        analysis,
+        [CaseRecord(title="Smith", court=COURT_CAVC, citation="30 Vet.App. 123")],
+    )
+
+    assert flags == [
+        "CourtListener citation check skipped: CourtListener daily request budget "
+        "too low: 0 remaining, need 1 for this run (used 125/125). Daily window "
+        "resets at 2026-08-18T05:12:28+00:00."
+    ]
+    assert called == []
+
+
+def test_check_analysis_citations_noop_without_api_key(monkeypatch):
+    called: list[str] = []
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider.lookup_citations",
+        lambda self, text: called.append(text) or [],
+    )
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="See 30 Vet.App. 123.",
+        how_it_affects_va_claims="",
+    )
+
+    flags = check_analysis_citations(
+        analysis,
+        [CaseRecord(title="Smith", court=COURT_CAVC, citation="30 Vet.App. 123")],
+    )
+
+    assert flags == []
+    assert called == []
+
+
+def test_analyze_cases_for_claim_attaches_citation_flags(monkeypatch):
+    results = [
+        {
+            "title": "Smith v. Wilkie",
+            "url": "https://uscourts.cavc.gov/smith",
+            "snippet": "service connection evidence nexus",
+            "citation": "30 Vet.App. 123",
+        }
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.check_courtlistener_daily_budget",
+        lambda min_remaining: {
+            "used": 0,
+            "limit": 125,
+            "remaining": 125,
+            "reset_at": None,
+        },
+    )
+    seen: list[str] = []
+
+    def fake_lookup(self, text):
+        seen.append(text)
+        return [
+            {"citation": "30 Vet.App. 123", "status": 404, "error_message": "not found"}
+        ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider.lookup_citations", fake_lookup
+    )
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert len(analysis.citation_flags) == 1
+    assert "30 Vet.App. 123" in analysis.citation_flags[0]
+    assert len(seen) == 1
+
+
 def test_analyze_cases_flows_llm_reasoning_contradictions(monkeypatch):
     results = [
         {
@@ -1178,6 +1347,52 @@ def test_analysis_summary_flags_unknown_precedential():
     assert "[precedential status unknown]" in analysis.summary
 
 
+def test_analysis_summary_status_markers_are_exact():
+    ordinary = CaseRecord(title="Ordinary", court=COURT_CAVC)
+    non_precedential = CaseRecord(
+        title="NonPrec", court=COURT_CAVC, precedential=False
+    )
+    unknown = CaseRecord(title="Unknown", court=COURT_CAVC, precedential=None)
+    superseded = CaseRecord(
+        title="Superseded", court=COURT_CAVC, superseded_by="Newer v. VA"
+    )
+
+    analysis = _build_analysis(
+        "tinnitus",
+        "Compensation",
+        [ordinary, non_precedential, unknown, superseded],
+        None,
+    )
+    lines = analysis.summary.splitlines()
+
+    assert not lines[0].endswith("XXXX")
+    assert lines[1].endswith(" [non-precedential]")
+    assert lines[2].endswith(" [precedential status unknown]")
+    assert lines[3].endswith(" [superseded by Newer v. VA]")
+    assert "XXXX" not in analysis.summary
+
+
+def test_build_analysis_carries_confidence_and_statute_matrix(monkeypatch):
+    row = StatuteOutcomeRow(
+        statute="38 U.S.C. § 5107(b)", court=COURT_CAVC, favorable=1
+    )
+    interpretive = InterpretiveAnalysis(
+        coverage_confidence="high",
+        statute_outcome_matrix=[row],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.build_interpretive_analysis",
+        lambda issue, claim_type, cases: interpretive,
+    )
+
+    analysis = _build_analysis(
+        "tinnitus", "Compensation", [CaseRecord(title="A", court=COURT_CAVC)], None
+    )
+
+    assert analysis.coverage_confidence == "high"
+    assert analysis.statute_outcome_matrix == [row]
+
+
 def test_enrich_populates_precedential_flag(monkeypatch):
     """Non-precedential marker is detected during enrichment."""
     case = CaseRecord(
@@ -1337,6 +1552,17 @@ def test_score_case_relevance_federal_circuit_court_only():
         snippet="The claim is denied.",
     )
     assert score_case_relevance(case, "tinnitus") == 0
+
+
+def test_score_case_relevance_semantic_threshold_is_inclusive(monkeypatch):
+    monkeypatch.setattr(
+        "va_legal_agent.agent._semantic_similarity",
+        lambda text, issue: 0.3,
+    )
+    case = CaseRecord(title="", court="", snippet="", holding="", impact="", issue="")
+
+    # 0.3 is the first bonus threshold; exactly 0.3 must still earn +2.
+    assert score_case_relevance(case, "tinnitus") == 2
 
 
 def test_normalize_case_applies_all_fallbacks():
@@ -3852,3 +4078,262 @@ def test_agent_main_guard_prints_analysis(monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "Smith v. McDonough" in out
+
+
+def test_fetch_with_redirects_closes_a_redirect_response_without_close(monkeypatch):
+    class RedirectResponse:
+        status_code = 302
+        headers = {"Location": "/next"}
+
+    class FinalResponse:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr(
+        fetch_module,
+        "_validate_fetch_url",
+        lambda url: ("example.com", 443, ("93.184.216.34",)),
+    )
+    if hasattr(fetch_module, "_pinned_resolve_options"):
+        monkeypatch.setattr(fetch_module, "_pinned_resolve_options", lambda *args: None)
+    responses = iter([RedirectResponse(), FinalResponse()])
+    seen = []
+
+    def fake_get(url, **kwargs):
+        seen.append(url)
+        return next(responses)
+
+    monkeypatch.setattr(fetch_module.cffi_requests, "get", fake_get)
+
+    response, final_url = _fetch_with_redirects("https://example.com/start", 5)
+
+    assert response.status_code == 200
+    assert final_url == "https://example.com/next"
+    assert seen == ["https://example.com/start", "https://example.com/next"]
+
+
+def test_is_public_ip_rejects_private_and_site_local_addresses():
+    assert _is_public_ip(ipaddress.ip_address("8.8.8.8")) is True
+    assert _is_public_ip(ipaddress.ip_address("10.0.0.1")) is False
+    assert _is_public_ip(ipaddress.ip_address("fec0::1")) is False
+    assert _is_public_ip(ipaddress.ip_address("::ffff:10.0.0.1")) is False
+
+
+def test_require_http_url_rejects_bad_scheme_or_missing_host():
+    with pytest.raises(FetchError):
+        _require_http_url("ftp://example.com")
+    with pytest.raises(FetchError):
+        _require_http_url("https://")
+    _require_http_url("https://example.com")
+
+
+def test_validate_fetch_url_requests_stream_socket_addresses(monkeypatch):
+    calls = []
+
+    def fake_getaddrinfo(host, port, **kwargs):
+        calls.append(kwargs)
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", port),
+            )
+        ]
+
+    monkeypatch.setattr(fetch_module.socket, "getaddrinfo", fake_getaddrinfo)
+
+    result = _validate_fetch_url("https://example.com")
+    if result is not None:  # older fetch.py validated without returning pins
+        assert result == ("example.com", 443, ("93.184.216.34",))
+    assert calls[0]["type"] == socket.SOCK_STREAM
+
+
+def test_extract_decision_date_continues_past_an_unparseable_match():
+    text = "No date: Feb 40, 2020. Decided March 15, 2011."
+    assert extract_decision_date(text) == "2011-03-15"
+
+
+def test_fetch_case_details_uses_the_html_title_for_metadata(monkeypatch):
+    html = (
+        "<html><head>"
+        "<title>Doe v. McDonough, 23 Vet.App. 1, decided March 15, 2011</title>"
+        "</head><body>No citation or date in the body. The Board denied the claim."
+        "</body></html>"
+    )
+
+    class HtmlResponse:
+        headers = {"Content-Type": "text/html"}
+        encoding = None
+
+    monkeypatch.setattr(
+        fetch_module,
+        "_fetch_with_redirects",
+        lambda url, timeout: (HtmlResponse(), "https://example.com/case"),
+    )
+    monkeypatch.setattr(
+        fetch_module, "_read_response_body", lambda response, max_bytes: html.encode()
+    )
+
+    details = fetch_case_details("https://example.com/case")
+
+    assert details["citation"] == "23 Vet.App. 1"
+    assert details["decision_date"] == "2011-03-15"
+
+
+def test_fetch_case_details_only_reads_real_meta_tags(monkeypatch):
+    html = (
+        "<html><head>"
+        '<div name="description" content="not metadata"></div>'
+        '<div property="og:description" content="also not metadata"></div>'
+        "</head><body>The Board denied the claim.</body></html>"
+    )
+
+    class HtmlResponse:
+        headers = {"Content-Type": "text/html"}
+        encoding = None
+
+    monkeypatch.setattr(
+        fetch_module,
+        "_fetch_with_redirects",
+        lambda url, timeout: (HtmlResponse(), "https://example.com/case"),
+    )
+    monkeypatch.setattr(
+        fetch_module, "_read_response_body", lambda response, max_bytes: html.encode()
+    )
+
+    assert fetch_case_details("https://example.com/case")["holding"] == ""
+
+
+def test_semantic_gap_enabled_requires_flag_key_and_provider(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    assert _semantic_gap_enabled() is True
+
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "0")
+    assert _semantic_gap_enabled() is False
+
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    monkeypatch.delenv("COURTLISTENER_API_KEY")
+    assert _semantic_gap_enabled() is False
+
+
+def test_semantic_gap_query_names_uncovered_elements():
+    query = _semantic_gap_query("tinnitus", ("nexus", "current diagnosis"))
+    assert "nexus" in query
+    assert "current diagnosis" in query
+    assert "tinnitus" in query
+
+
+def test_semantic_gap_cases_normalizes_results(monkeypatch):
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    seen = {}
+
+    class StubProvider:
+        def semantic_search(self, query, max_results=10, page=1):
+            seen["query"] = query
+            seen["max_results"] = max_results
+            return [
+                {
+                    "title": "Semantic Case",
+                    "url": "https://uscourts.cavc.gov/semantic",
+                    "snippet": "nexus evidence for tinnitus",
+                    "court": COURT_CAVC,
+                }
+            ]
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider", lambda: StubProvider()
+    )
+
+    cases = _semantic_gap_cases("tinnitus", ("nexus",), 4, None)
+
+    assert [case.title for case in cases] == ["Semantic Case"]
+    assert "nexus" in seen["query"]
+    assert seen["max_results"] == 4
+
+
+def test_research_issue_calls_semantic_search_only_in_gap_round(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "tok")
+    monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    states = iter([({"rating"}, []), (set(), [])])
+    monkeypatch.setattr(
+        "va_legal_agent.agent._observe",
+        lambda issue, cases, telemetry: next(states),
+    )
+    _stub_search(
+        monkeypatch,
+        results=[
+            {
+                "title": "Case A",
+                "url": "https://uscourts.cavc.gov/a",
+                "snippet": "service connection rating",
+            }
+        ],
+    )
+    semantic_queries = []
+
+    class StubProvider:
+        def semantic_search(self, query, max_results=10, page=1):
+            semantic_queries.append(query)
+            return []
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider", lambda: StubProvider()
+    )
+
+    research_issue("service connection and rating", max_wall_seconds=1.0)
+
+    assert len(semantic_queries) == 1
+    assert "rating" in semantic_queries[0]
+
+
+def test_analyze_cases_attaches_authority_checks(monkeypatch):
+    _stub_search(
+        monkeypatch,
+        results=[
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection evidence nexus",
+            }
+        ],
+    )
+    monkeypatch.setenv("CAVC_PANEL_VALIDATION", "1")
+    monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.validate_cavc_panel_cases",
+        lambda cases: [
+            AuthorityCheck(
+                authority="CAVC docket 24-1234",
+                source="CAVC",
+                status="conflict",
+                detail="Panel list contradicts Rule 30(a).",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.verify_analysis_authorities",
+        lambda analysis, cases: [
+            AuthorityCheck(
+                authority="38 C.F.R. § 3.303",
+                source="eCFR",
+                status="verified",
+                detail="Present.",
+            )
+        ],
+    )
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert [check.source for check in analysis.authority_checks] == ["CAVC", "eCFR"]
+    assert len(analysis.authority_flags) == 1
+    assert "Authority conflict" in analysis.authority_flags[0]
