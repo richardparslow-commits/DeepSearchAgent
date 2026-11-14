@@ -4788,6 +4788,12 @@ def _stub_recent_leaves(monkeypatch, leaf, year=2026, code="26"):
 class TestBvaLocalIndexProvider:
     def test_disabled_when_dir_empty(self, monkeypatch):
         monkeypatch.setenv("SEARCH_BVA_LOCAL_INDEX_DIR", "")
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._recent_leaves",
+            lambda self, limit: pytest.fail(
+                "disabled local index must not fetch the sitemap"
+            ),
+        )
         with pytest.raises(SearchError, match="disabled"):
             BvaLocalIndexProvider().search("tinnitus")
 
