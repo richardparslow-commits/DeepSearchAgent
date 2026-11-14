@@ -214,6 +214,7 @@ def test_extract_chunk_facts_header_but_empty_body():
     [
         "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus.",
         "BACKGROUND\nThe veteran served in Vietnam and was diagnosed with tinnitus.\n",
+        "BACKGROUND\r\nThe veteran served in Vietnam and was diagnosed with tinnitus.\r\n",
     ],
 )
 def test_extract_chunk_facts_body_at_end_of_chunk(text):
