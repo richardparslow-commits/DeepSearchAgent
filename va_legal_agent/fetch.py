@@ -763,19 +763,36 @@ _PRECEDENTIAL_MARKERS: tuple[re.Pattern[str], ...] = tuple(
 _PRECEDENTIAL_HEADER_CHARS = 1500
 
 
-_RULE_30A_PATTERN = re.compile(
+_RULE_30A_REFERENCE = (
     r"\b(?:U\.?\s*S\.?\s*Vet\.?\s*App\.?\s*R\.?\s*30\s*\(\s*a\s*\)"
-    r"|Rule\s+30\s*\(\s*a\s*\))",
+    r"|Rule\s+30\s*\(\s*a\s*\))"
+)
+_RULE_30A_NONCITATION = (
+    r"\bthis\s+(?:action|order|disposition|decision|appeal)\s+"
+    r"(?:may\s+not\s+be\s+cited(?:\s+as\s+precedent)?"
+    r"|is\s+not\s+to\s+be\s+cited(?:\s+as\s+precedent)?"
+    r"|(?:is|are)\s+not\s+citable(?:\s+as\s+precedent)?)\b"
+)
+# Both halves must occur in the same sentence and the non-citation clause must
+# refer to this disposition. A body discussion of the rule -- e.g. "Rule 30(a)
+# provides that single-judge decisions may not be cited" -- is not a statement
+# that this decision is non-citable.
+_RULE_30A_PATTERN = re.compile(
+    rf"(?:{_RULE_30A_REFERENCE}[^.]{{0,200}}{_RULE_30A_NONCITATION}"
+    rf"|{_RULE_30A_NONCITATION}[^.]{{0,200}}{_RULE_30A_REFERENCE})",
     re.IGNORECASE,
 )
 
 
 def extract_rule_30a(text: str) -> bool:
-    """True when *text* carries the CAVC Rule 30(a) non-citation marker.
+    """True when *text* carries the CAVC Rule 30(a) non-citation language.
 
-    Rule 30(a) designates a single-judge disposition as non-precedential. The
-    marker is kept separate from the broader non-precedential detector so the
-    official Panel Opinions list can confirm or contradict it explicitly.
+    Rule 30(a) designates a single-judge disposition as non-precedential. A
+    passing reference to the rule in the body is not enough: the same sentence
+    must also say the disposition may not be cited (or is not citable) as
+    precedent. The marker is kept separate from the broader non-precedential
+    detector so the official Panel Opinions list can confirm or contradict it
+    explicitly.
     """
     return bool(text and _RULE_30A_PATTERN.search(text))
 

@@ -19,11 +19,9 @@ network-free.
 
 from __future__ import annotations
 
-import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import unquote
 
 import requests
 from bs4 import BeautifulSoup
@@ -32,8 +30,6 @@ from .config import get_settings
 from .models import AuthorityCheck, CaseRecord, LegalAnalysis
 from .search import SearchError, http_proxy_kwargs
 from .topics import COURT_CAVC, COURT_FEDERAL_CIRCUIT
-
-logger = logging.getLogger(__name__)
 
 CAVC_PANEL_OPINIONS_URL = "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
 ECFR_TITLES_URL = "https://www.ecfr.gov/api/versioner/v1/titles.json"
@@ -88,23 +84,22 @@ def _normalize_cavc_docket(value: str) -> str:
 
 
 def parse_cavc_panel_dockets(html: str) -> set[str]:
-    """Extract panel-opinion dockets from the official CAVC opinions page."""
+    """Extract panel-opinion dockets from the official CAVC opinions page.
+
+    The docket lives in the link text of the page's case-number cell. Do not
+    scan filenames or the rest of the page: PDF names contain dates such as
+    ``8-19-2026``, and the page-wide fallback used to turn those into bogus
+    dockets like ``19-2026``.
+    """
     soup = BeautifulSoup(html or "", "html.parser")
     dockets: set[str] = set()
     for anchor in soup.find_all("a", href=True):
         href = str(anchor.get("href") or "")
-        if "/documents/" not in href:
+        # The live page uses relative hrefs such as "documents/Case.pdf".
+        if "documents/" not in href.lower():
             continue
-        # Docket numbers appear both in the link text and, often, the PDF
-        # filename; scan both so an unusual filename does not hide a docket.
-        for candidate in (anchor.get_text(" ", strip=True), unquote(href)):
-            match = _CAVC_DOCKET_RE.search(candidate)
-            if match is not None:
-                dockets.add(_normalize_cavc_docket(match.group(0)))
-    # Fallback for a table rendered without anchors (or a future page layout):
-    # every docket-shaped token on the page still identifies a panel decision.
-    for match in _CAVC_DOCKET_RE.finditer(soup.get_text(" ", strip=True)):
-        dockets.add(_normalize_cavc_docket(match.group(0)))
+        for match in _CAVC_DOCKET_RE.finditer(anchor.get_text(" ", strip=True)):
+            dockets.add(_normalize_cavc_docket(match.group(0)))
     dockets.discard("")
     return dockets
 
@@ -136,12 +131,13 @@ def fetch_cavc_panel_dockets() -> set[str]:
 def validate_cavc_panel_cases(cases: list[CaseRecord]) -> list[AuthorityCheck]:
     """Cross-check CAVC decisions against the official Panel Opinions list.
 
-    A docket on the panel list is a panel/full-court opinion. A Rule 30(a)
-    marker on a panel-listed docket is a conflict worth surfacing. A Rule
-    30(a) docket absent from the list is confirmed non-precedential. A docket
-    absent without a marker is left ``not_listed`` rather than assumed
-    non-precedential, because the list is not a complete historical docket
-    index.
+    A docket on the panel list is a panel/full-court opinion. Only a Rule
+    30(a) non-citation marker on a panel-listed docket is a conflict worth
+    surfacing; a generic non-precedential flag does not contradict the list by
+    itself. A Rule 30(a) docket absent from the list is confirmed
+    non-precedential. A docket absent without a marker is left ``not_listed``
+    rather than assumed non-precedential, because the list is not a complete
+    historical docket index.
     """
     cavc_cases = [case for case in cases if case.court == COURT_CAVC]
     if not cavc_cases:
@@ -161,12 +157,15 @@ def validate_cavc_panel_cases(cases: list[CaseRecord]) -> list[AuthorityCheck]:
 
     checks: list[AuthorityCheck] = []
     for case in cavc_cases:
-        docket = _normalize_cavc_docket(case.docket or case.url or case.title)
+        # Only an explicit docket is authoritative. URLs and titles can carry
+        # unrelated docket-shaped numbers (including dates), which used to
+        # manufacture panel conflicts.
+        docket = _normalize_cavc_docket(case.docket)
         if not docket:
             continue
         listed = docket in panel_dockets
         authority = f"CAVC docket {docket}"
-        if listed and (case.rule_30a or case.precedential is False):
+        if listed and case.rule_30a:
             case.cavc_panel_status = "conflict"
             checks.append(
                 AuthorityCheck(
@@ -175,16 +174,17 @@ def validate_cavc_panel_cases(cases: list[CaseRecord]) -> list[AuthorityCheck]:
                     status="conflict",
                     detail=(
                         "The docket appears on the official Panel Opinions list, "
-                        "but the decision carries a Rule 30(a) or "
-                        "non-precedential marker."
+                        "but the decision carries a Rule 30(a) non-citation "
+                        "marker."
                     ),
                     url=CAVC_PANEL_OPINIONS_URL,
                 )
             )
         elif listed:
             case.cavc_panel_status = "panel"
-            if case.precedential is None:
-                case.precedential = True
+            # The official list is authoritative: a panel-list entry overrides
+            # a generic non-precedential marker extracted from the body.
+            case.precedential = True
             checks.append(
                 AuthorityCheck(
                     authority=authority,
@@ -353,7 +353,9 @@ def verify_cfr_section(section: str) -> AuthorityCheck:
             found = True
             break
         metadata = str(element.attrib.get("hierarchy_metadata", ""))
-        if f"38 CFR {section}" in metadata:
+        # Guard against a prefix match: section 3.303 must not be satisfied by
+        # hierarchy text for 3.3030.
+        if re.search(rf"(?<!\d)38 CFR {re.escape(section)}(?!\d)", metadata):
             found = True
             break
     if not found:
@@ -475,19 +477,45 @@ class GovInfoClient:
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
             raise SearchError(f"GovInfo search failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise SearchError("GovInfo search returned an unexpected response.")
         results = payload.get("results") or []
         if not isinstance(results, list):
             raise SearchError("GovInfo search returned an unexpected response.")
         return [row for row in results if isinstance(row, dict)]
 
 
+GOVINFO_HOME_URL = "https://www.govinfo.gov/"
+_GOVINFO_USCODE_PACKAGE_RE = re.compile(r"USCODE-\d{4}-title38", re.IGNORECASE)
+# GovInfo files Federal Circuit opinions under the 13th-circuit code, not
+# "cafc".
+_GOVINFO_FEDERAL_CIRCUIT_PACKAGE_PREFIX = "uscourts-ca13-"
+
+
+def _govinfo_package_url(package: str) -> str:
+    return f"https://www.govinfo.gov/app/details/{package}"
+
+
+def _title_words(value: object) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+
+def _titles_match(expected: str, actual: object) -> bool:
+    """True when GovInfo's longer title contains the case name we searched."""
+    expected_words = _title_words(expected)
+    return bool(expected_words and expected_words in _title_words(actual))
+
+
 def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
+    """Verify the exact title-38 section granule, not just any search hit."""
     authority = f"38 U.S.C. § {section}"
-    citation = f"38 U.S.C. {section}"
+    # A subsection citation still lives in the section's granule.
+    base_section = section.split("(", 1)[0]
+    citation = f"38 U.S.C. {base_section}"
     try:
         results = client.search(
             f'collection:uscode citation:"{citation}"',
-            page_size=1,
+            page_size=5,
         )
     except SearchError as exc:
         return AuthorityCheck(
@@ -495,26 +523,41 @@ def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
             source="GovInfo",
             status="unavailable",
             detail=str(exc),
-            url="https://www.govinfo.gov/",
+            url=GOVINFO_HOME_URL,
         )
-    if not results:
+    granule_suffix = f"sec{base_section}".lower()
+    match = next(
+        (
+            row
+            for row in results
+            if _GOVINFO_USCODE_PACKAGE_RE.fullmatch(
+                str(row.get("packageId") or "")
+            )
+            and str(row.get("granuleId") or "").lower().endswith(granule_suffix)
+        ),
+        None,
+    )
+    if match is None:
         return AuthorityCheck(
             authority=authority,
             source="GovInfo",
             status="unresolved",
-            detail="GovInfo's U.S. Code collection returned no matching section.",
-            url="https://www.govinfo.gov/",
+            detail=(
+                "GovInfo's U.S. Code collection returned no exact title 38 "
+                f"section {base_section} match."
+            ),
+            url=GOVINFO_HOME_URL,
         )
-    package = str(results[0].get("packageId") or "")
+    package = str(match.get("packageId") or "")
     return AuthorityCheck(
         authority=authority,
         source="GovInfo",
         status="verified",
         detail=(
-            f"GovInfo U.S. Code collection matched {citation}"
-            + (f" (package {package})." if package else ".")
+            f"GovInfo U.S. Code matched title 38 section {base_section} "
+            f"(package {package})."
         ),
-        url="https://www.govinfo.gov/",
+        url=_govinfo_package_url(package),
     )
 
 
@@ -525,9 +568,9 @@ def _verify_federal_circuit_case(
     safe_title = re.sub(r'["()]', " ", case.title).strip()
     try:
         results = client.search(
-            'collection:(USCOURTS) circuit:federal courttype:appellate '
+            'collection:(USCOURTS) courtcode:ca13 courttype:appellate '
             f'title:("{safe_title}")',
-            page_size=1,
+            page_size=5,
         )
     except SearchError as exc:
         return AuthorityCheck(
@@ -535,26 +578,40 @@ def _verify_federal_circuit_case(
             source="GovInfo",
             status="unavailable",
             detail=str(exc),
-            url="https://www.govinfo.gov/",
+            url=GOVINFO_HOME_URL,
         )
-    if not results:
+    match = next(
+        (
+            row
+            for row in results
+            if str(row.get("packageId") or "")
+            .lower()
+            .startswith(_GOVINFO_FEDERAL_CIRCUIT_PACKAGE_PREFIX)
+            and _titles_match(case.title, row.get("title"))
+        ),
+        None,
+    )
+    if match is None:
         return AuthorityCheck(
             authority=authority,
             source="GovInfo",
             status="unresolved",
-            detail="GovInfo's U.S. Courts Opinions collection returned no match.",
-            url="https://www.govinfo.gov/",
+            detail=(
+                "GovInfo's U.S. Courts Opinions collection returned no exact "
+                "Federal Circuit case match."
+            ),
+            url=GOVINFO_HOME_URL,
         )
-    package = str(results[0].get("packageId") or "")
+    package = str(match.get("packageId") or "")
     return AuthorityCheck(
         authority=authority,
         source="GovInfo",
         status="verified",
         detail=(
-            "GovInfo U.S. Courts Opinions matched the case"
-            + (f" (package {package})." if package else ".")
+            "GovInfo U.S. Courts Opinions matched the case "
+            f"(package {package})."
         ),
-        url="https://www.govinfo.gov/",
+        url=_govinfo_package_url(package),
     )
 
 
@@ -584,7 +641,9 @@ def verify_analysis_authorities(
         for section in _extract_usc_sections(text):
             checks.append(_verify_us_code(section, client))
         federal_circuit_cases = [
-            case for case in cases if case.court == COURT_FEDERAL_CIRCUIT
+            case
+            for case in cases
+            if case.court == COURT_FEDERAL_CIRCUIT and case.title.strip()
         ][:3]
         for case in federal_circuit_cases:
             checks.append(_verify_federal_circuit_case(case, client))

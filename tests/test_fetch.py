@@ -2652,8 +2652,20 @@ def test_extract_rule_30a_marker():
     assert extract_rule_30a(
         "Pursuant to U.S. Vet. App. R. 30(a), this action may not be cited as precedent."
     )
-    assert extract_rule_30a("Rule 30(a) disposition.")
+    assert extract_rule_30a("Rule 30(a): this order is not citable as precedent.")
+    assert not extract_rule_30a("Rule 30(a) disposition.")
     assert not extract_rule_30a("38 C.F.R. § 30(a) does not apply.")
+
+
+def test_extract_rule_30a_ignores_body_discussion_of_the_rule():
+    """Only the order's own non-citation clause is a Rule 30(a) marker."""
+    from va_legal_agent.fetch import extract_rule_30a
+
+    assert not extract_rule_30a(
+        "Rule 30(a) provides that single-judge decisions may not be cited "
+        "as precedent."
+    )
+    assert not extract_rule_30a("X" * 2000 + "\nThe Court discusses Rule 30(a).")
 
 
 def test_extract_case_details_includes_rule_30a():

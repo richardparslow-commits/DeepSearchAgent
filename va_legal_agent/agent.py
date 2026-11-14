@@ -315,6 +315,14 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
     )
 
 
+def _case_from_raw(raw: dict[str, str], issue: str) -> CaseRecord:
+    """Normalize one provider row and score it against the issue."""
+    court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
+    case = normalize_case(raw, court_name, issue)
+    case.relevance_score = score_case_relevance(case, issue)
+    return case
+
+
 def _deadline_for(max_wall_seconds: float) -> float | None:
     """Return an absolute monotonic deadline for the budget, or None if disabled.
 
@@ -401,12 +409,7 @@ def _fanout_search(
                 errors.append(exc)
                 continue
             for result in found:
-                # Providers may label the court directly (e.g. CourtListener);
-                # otherwise fall back to URL-based detection.
-                court_name = result.get("court") or detect_court_name(result.get("url", ""))
-                case = normalize_case(result, court_name, claim_issue)
-                case.relevance_score = score_case_relevance(case, claim_issue)
-                cases.append(case)
+                cases.append(_case_from_raw(result, claim_issue))
         if budget_exhausted:
             logger.warning(
                 "Search wall-time budget of %ss exhausted for issue %r; "
@@ -594,12 +597,7 @@ def _semantic_gap_cases(
     except SearchError as exc:
         logger.warning("Semantic gap search failed for %r: %s", issue, exc)
         return []
-    cases: list[CaseRecord] = []
-    for raw in found:
-        court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
-        case = normalize_case(raw, court_name, issue)
-        case.relevance_score = score_case_relevance(case, issue)
-        cases.append(case)
+    cases = [_case_from_raw(raw, issue) for raw in found]
     if cases:
         logger.info(
             "Semantic gap search added %d case(s) for uncovered=%s.",
@@ -744,10 +742,7 @@ def research_issue(
                         traversed,
                     )
                     break
-                court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
-                found = normalize_case(raw, court_name, claim_issue)
-                found.relevance_score = score_case_relevance(found, claim_issue)
-                cases.append(found)
+                cases.append(_case_from_raw(raw, claim_issue))
                 traversed += 1
 
     return _dedupe_rank_and_enrich(cases, max_results, enrich, claim_issue, deep_read, deep_read_limit)

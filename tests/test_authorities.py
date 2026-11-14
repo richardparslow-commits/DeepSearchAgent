@@ -53,6 +53,17 @@ def test_parse_cavc_panel_dockets_extracts_links_and_dedupes():
     assert auth.parse_cavc_panel_dockets(html) == {"24-1234", "20-8342"}
 
 
+def test_parse_cavc_panel_dockets_ignores_page_dates():
+    """A filing date must not become a docket like ``19-2026``."""
+    html = (
+        '<table><tr>'
+        '<td><a href="documents/Case_24-1234 (8-19-2026).pdf">24-1234</a></td>'
+        '<td>8-19-2026</td></tr></table>'
+    )
+
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
 def test_validate_cavc_panel_cases_conflict_confirmation_and_not_listed(monkeypatch):
     monkeypatch.setattr(
         auth, "fetch_cavc_panel_dockets", lambda: {"24-1234", "24-5678"}
@@ -273,7 +284,12 @@ def test_federal_circuit_case_cross_check_uses_govinfo(monkeypatch):
 
     def fake_search(query, page_size=5):
         seen["query"] = query
-        return [{"packageId": "USCOURTS-cafc-1"}]
+        return [
+            {
+                "packageId": "USCOURTS-ca13-24-1234",
+                "title": "24-1234 - Veteran v. Secretary",
+            }
+        ]
 
     monkeypatch.setattr(client, "search", fake_search)
     case = CaseRecord(
@@ -284,8 +300,24 @@ def test_federal_circuit_case_cross_check_uses_govinfo(monkeypatch):
     check = auth._verify_federal_circuit_case(case, client)
 
     assert check.status == "verified"
+    assert check.url.endswith("/USCOURTS-ca13-24-1234")
     assert "collection:(USCOURTS)" in seen["query"]
-    assert "circuit:federal" in seen["query"]
+    assert "courtcode:ca13" in seen["query"]
+
+
+def test_federal_circuit_case_rejects_a_non_ca13_or_wrong_title_match(monkeypatch):
+    client = auth.GovInfoClient("demo-key")
+    case = CaseRecord(title="Veteran v. Secretary", court=COURT_FEDERAL_CIRCUIT)
+    rows = iter(
+        [
+            [{"packageId": "USCOURTS-ca13-1", "title": "Other v. Secretary"}],
+            [{"packageId": "USCOURTS-ca7-1", "title": "Veteran v. Secretary"}],
+        ]
+    )
+    monkeypatch.setattr(client, "search", lambda *args, **kwargs: next(rows))
+
+    assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
+    assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
 
 
 @pytest.fixture(autouse=True)
@@ -307,7 +339,7 @@ def test_fetch_cavc_panel_dockets_caches_a_successful_parse(monkeypatch):
         return FakeResponse(
             content=(
                 b'<a href="/documents/Case_24-1234.pdf">Case [24-1234]</a>'
-                b'<a href="/documents/Other_24-5678.pdf">Other</a>'
+                b'<a href="/documents/Other_24-5678.pdf">Other [24-5678]</a>'
             )
         )
 
@@ -365,6 +397,31 @@ def test_validate_cavc_panel_cases_panel_with_known_precedential_status(monkeypa
     assert checks[0].status == "verified"
     assert case.cavc_panel_status == "panel"
     assert case.precedential is True
+
+
+def test_validate_cavc_panel_cases_generic_nonprecedential_flag_is_not_conflict(
+    monkeypatch,
+):
+    """The official list overrides a generic non-precedential body marker."""
+    monkeypatch.setattr(auth, "fetch_cavc_panel_dockets", lambda: {"24-1234"})
+    case = _case(docket="24-1234", precedential=False, rule_30a=False)
+
+    checks = auth.validate_cavc_panel_cases([case])
+
+    assert case.cavc_panel_status == "panel"
+    assert checks[0].status == "verified"
+    assert case.precedential is True
+
+
+def test_validate_cavc_panel_cases_requires_an_explicit_docket(monkeypatch):
+    monkeypatch.setattr(auth, "fetch_cavc_panel_dockets", lambda: {"24-1234"})
+    case = _case(
+        docket="",
+        title="Smith v. Collins, 24-1234",
+        url="https://example.com/opinions/24-1234",
+    )
+
+    assert auth.validate_cavc_panel_cases([case]) == []
 
 
 def test_validate_cavc_panel_cases_rule_30a_unknown_sets_false(monkeypatch):
@@ -538,6 +595,24 @@ def test_verify_cfr_section_accepts_hierarchy_metadata(monkeypatch):
     assert check.status == "verified"
 
 
+def test_verify_cfr_section_rejects_a_longer_section_prefix(monkeypatch):
+    monkeypatch.setattr(auth, "_ecfr_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(
+        auth.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            content=(
+                b'<ROOT><DIV8 N="3.304" '
+                b'hierarchy_metadata="38 CFR 3.3030"></DIV8></ROOT>'
+            )
+        ),
+    )
+
+    check = auth.verify_cfr_section("3.303")
+
+    assert check.status == "unresolved"
+
+
 def test_verify_federal_register_part_reports_request_failure(monkeypatch):
     monkeypatch.setattr(
         auth.requests,
@@ -579,6 +654,18 @@ def test_govinfo_search_rejects_non_list_results(monkeypatch):
         auth.GovInfoClient().search("collection:uscode")
 
 
+def test_govinfo_search_rejects_a_non_object_payload(monkeypatch):
+    monkeypatch.setenv("GOVINFO_API_KEY", "demo-key")
+    monkeypatch.setattr(
+        auth.requests,
+        "post",
+        lambda *args, **kwargs: FakeResponse(payload=[{"bad": 1}]),
+    )
+
+    with pytest.raises(SearchError, match="unexpected response"):
+        auth.GovInfoClient().search("collection:uscode")
+
+
 def test_govinfo_search_returns_empty_list_for_null_results(monkeypatch):
     monkeypatch.setenv("GOVINFO_API_KEY", "demo-key")
     monkeypatch.setattr(
@@ -590,19 +677,42 @@ def test_govinfo_search_returns_empty_list_for_null_results(monkeypatch):
     assert auth.GovInfoClient().search("collection:uscode") == []
 
 
-def test_verify_us_code_verified_with_and_without_package(monkeypatch):
+def test_verify_us_code_requires_the_exact_title_38_granule(monkeypatch):
     client = auth.GovInfoClient("demo-key")
-    rows = iter([[{"packageId": "USCODE-2024-title38"}], [{}]])
+    rows = iter(
+        [
+            [
+                {
+                    "packageId": "USCODE-2024-title38",
+                    "granuleId": "USCODE-2024-title38-partII-chap11-sec1110",
+                }
+            ],
+            [
+                {
+                    "packageId": "USCODE-2024-title38",
+                    "granuleId": "USCODE-2024-title38-partII-chap11-sec9999",
+                }
+            ],
+            [
+                {
+                    "packageId": "USCODE-2024-title5",
+                    "granuleId": "USCODE-2024-title5-sec1110",
+                }
+            ],
+        ]
+    )
 
     monkeypatch.setattr(client, "search", lambda *args, **kwargs: next(rows))
 
-    first = auth._verify_us_code("1110", client)
-    second = auth._verify_us_code("5107", client)
+    verified = auth._verify_us_code("1110", client)
+    wrong_section = auth._verify_us_code("1110", client)
+    wrong_title = auth._verify_us_code("1110", client)
 
-    assert first.status == "verified"
-    assert "USCODE-2024-title38" in first.detail
-    assert second.status == "verified"
-    assert second.detail.endswith(".")
+    assert verified.status == "verified"
+    assert "USCODE-2024-title38" in verified.detail
+    assert verified.url.endswith("/USCODE-2024-title38")
+    assert wrong_section.status == "unresolved"
+    assert wrong_title.status == "unresolved"
 
 
 def test_verify_us_code_reports_unresolved_and_unavailable(monkeypatch):
