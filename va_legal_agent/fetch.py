@@ -7,11 +7,13 @@ cited VA statutes, and procedural outcome from HTML pages and PDF opinions.
 from __future__ import annotations
 
 import io
+import ipaddress
 import logging
 import re
+import socket
 from collections.abc import Callable
 from datetime import datetime
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -33,6 +35,116 @@ def _require_http_url(url: str) -> None:
     parsed = urlsplit(url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         raise FetchError(f"Refusing to fetch non-HTTP(S) URL: {url!r}")
+
+
+# Redirects are followed manually so every hop can be validated before the
+# next request.  Automatic redirect following would let a public URL become an
+# SSRF pivot to a private address after the initial URL check.
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+_MAX_REDIRECTS = 5
+
+
+def _is_public_ip(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether *address* is a globally routable, non-private address."""
+    if isinstance(address, ipaddress.IPv6Address):
+        # IPv4-mapped and 6to4 addresses can hide a private IPv4 destination
+        # behind an IPv6 spelling that is otherwise globally scoped.
+        if address.ipv4_mapped is not None:
+            return _is_public_ip(address.ipv4_mapped)
+        if address.sixtofour is not None and not _is_public_ip(address.sixtofour):
+            return False
+    return bool(
+        address.is_global
+        and not address.is_private
+        and not address.is_loopback
+        and not address.is_link_local
+        and not address.is_multicast
+        and not address.is_reserved
+        and not address.is_unspecified
+        and not getattr(address, "is_site_local", False)
+    )
+
+
+def _validate_fetch_url(url: str) -> None:
+    """Reject non-public destinations before a case URL is requested.
+
+    Every address returned by DNS must be public.  This blocks loopback,
+    private, link-local (including the cloud metadata address), multicast,
+    reserved, and IPv4-mapped private destinations.  The check is repeated for
+    every redirect hop by :func:`_fetch_with_redirects`; it is not a substitute
+    for network-level egress controls or DNS pinning.
+    """
+    try:
+        _require_http_url(url)
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        port = parsed.port
+    except (UnicodeError, ValueError) as exc:
+        raise FetchError(f"Refusing to fetch malformed URL: {url!r}") from exc
+    if not host:
+        raise FetchError(f"Refusing to fetch URL without a host: {url!r}")
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        raise FetchError(f"Could not resolve host {host!r} for {url!r}: {exc}") from exc
+    if not addresses:
+        raise FetchError(f"Could not resolve host {host!r} for {url!r}")
+
+    for info in addresses:
+        raw_address = str(info[4][0])
+        try:
+            address = ipaddress.ip_address(raw_address)
+        except ValueError as exc:
+            raise FetchError(
+                f"Refusing to fetch unparseable address {raw_address!r} for {url!r}"
+            ) from exc
+        if not _is_public_ip(address):
+            raise FetchError(
+                f"Refusing to fetch non-public address {address} for {url!r}"
+            )
+
+
+def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Response", str]:
+    """Fetch *url*, validating the initial destination and every redirect hop."""
+    _validate_fetch_url(url)
+    current_url = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        # The search layer already bypasses TLS-fingerprint/WAF challenges by
+        # impersonating a real Chrome handshake via curl_cffi; the fetch layer
+        # must do the same, otherwise enrichment/deep-read of protected pages
+        # (CAVC, law-blog mirrors, DDG result targets) gets a 403/challenge
+        # body that plain ``requests`` cannot pass. The impersonation also
+        # supplies a browser User-Agent, so the app's bot-identifying
+        # USER_AGENT is deliberately NOT sent here (overriding the
+        # impersonation would re-trigger the block, exactly as with the
+        # DuckDuckGo and BVA providers).
+        response = cffi_requests.get(
+            current_url,
+            timeout=timeout,
+            stream=True,
+            impersonate="chrome",
+            allow_redirects=False,
+            **http_proxy_kwargs(),
+        )
+        if response.status_code in _REDIRECT_STATUSES:
+            location = response.headers.get("Location")
+            # A test double or alternate client may not expose close(); the
+            # real curl_cffi response does, and this keeps the redirect path
+            # compatible without treating a missing close as a fetch error.
+            getattr(response, "close", lambda: None)()
+            if not location:
+                raise FetchError(f"Redirect from {current_url} has no Location header")
+            current_url = urljoin(current_url, location)
+            # Validate before issuing the next request, not after the body is
+            # downloaded. A private hop must never receive a request at all.
+            _validate_fetch_url(current_url)
+            continue
+        response.raise_for_status()
+        return response, current_url
+    raise FetchError(f"Exceeded {_MAX_REDIRECTS} redirects while fetching {url}")
 
 
 _MONTHS = (
@@ -749,35 +861,19 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     fields and discards the body, this returns the whole opinion text: every
     PDF page (subject to *max_pages*, 0 = all pages), the full HTML page text,
     or a plain-text decision verbatim. Raises :class:`FetchError` on network
-    or size-cap failure, or for a non-HTTP(S) URL.
+    or size-cap failure, for a non-HTTP(S) URL, or for a redirect to a
+    non-public address.
     """
-    _require_http_url(url)
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
     try:
-        # The search layer already bypasses TLS-fingerprint/WAF challenges by
-        # impersonating a real Chrome handshake via curl_cffi; the fetch layer
-        # must do the same, otherwise enrichment/deep-read of protected pages
-        # (CAVC, law-blog mirrors, DDG result targets) gets a 403/challenge
-        # body that plain ``requests`` cannot pass. The impersonation also
-        # supplies a browser User-Agent, so the app's bot-identifying
-        # USER_AGENT is deliberately NOT sent here (overriding the
-        # impersonation would re-trigger the block, exactly as with the
-        # DuckDuckGo and BVA providers).
-        response = cffi_requests.get(
-            url,
-            timeout=timeout,
-            stream=True,
-            impersonate="chrome",
-            **http_proxy_kwargs(),
-        )
-        response.raise_for_status()
+        response, final_url = _fetch_with_redirects(url, timeout)
         content = _read_response_body(response, settings.max_fetch_bytes)
     except (requests.RequestException, CffiRequestException) as exc:
         raise FetchError(f"Failed to fetch {url}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")
-    url_path = url.lower().split("?")[0]
+    url_path = final_url.lower().split("?")[0]
     looks_pdf = "pdf" in content_type.lower() or url_path.endswith(".pdf")
     if looks_pdf:
         return _extract_pdf_text(content, max_pages=max_pages)
@@ -793,36 +889,21 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
     """Fetch a case page or PDF and extract structured details.
 
     Extracts citation, decision date, holding, docket number, judge, cited
-    statutes, and procedural outcome where detectable. Network failures and
-    oversized responses raise FetchError; parse failures return empty fields.
+    statutes, and procedural outcome where detectable. Network failures,
+    oversized responses, non-public destinations, and redirects to
+    non-public destinations raise FetchError; parse failures return empty
+    fields.
     """
-    _require_http_url(url)
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
     try:
-        # The search layer already bypasses TLS-fingerprint/WAF challenges by
-        # impersonating a real Chrome handshake via curl_cffi; the fetch layer
-        # must do the same, otherwise enrichment/deep-read of protected pages
-        # (CAVC, law-blog mirrors, DDG result targets) gets a 403/challenge
-        # body that plain ``requests`` cannot pass. The impersonation also
-        # supplies a browser User-Agent, so the app's bot-identifying
-        # USER_AGENT is deliberately NOT sent here (overriding the
-        # impersonation would re-trigger the block, exactly as with the
-        # DuckDuckGo and BVA providers).
-        response = cffi_requests.get(
-            url,
-            timeout=timeout,
-            stream=True,
-            impersonate="chrome",
-            **http_proxy_kwargs(),
-        )
-        response.raise_for_status()
+        response, final_url = _fetch_with_redirects(url, timeout)
         content = _read_response_body(response, settings.max_fetch_bytes)
     except (requests.RequestException, CffiRequestException) as exc:
         raise FetchError(f"Failed to fetch {url}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")
-    url_path = url.lower().split("?")[0]
+    url_path = final_url.lower().split("?")[0]
     looks_pdf = "pdf" in content_type.lower() or url_path.endswith(".pdf")
     if looks_pdf:
         # Enrichment needs the whole opinion: a holding or disposition can sit
