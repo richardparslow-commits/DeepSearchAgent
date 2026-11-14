@@ -1,0 +1,2 @@
+# Benchmark fixtures are checksummed as raw bytes; never normalize or diff them.
+benchmarks/extraction/fixtures/*.txt -text -diff

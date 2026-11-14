@@ -7,6 +7,7 @@
 #   make test-config  fast slice: environment parsing and typed settings
 #   make test-core    fast slice: ranking, impact, interpretation, llm, topics
 #   make test-w       full suite with deprecation warnings promoted to errors
+#   make benchmark-extraction  real BVA/CAVC extraction benchmark
 #   make lint         ruff static checks
 #   make lint-fix     auto-fix what ruff can
 #   make coverage     full suite with coverage report
@@ -26,7 +27,7 @@ PYTEST = $(PYTHON) -m pytest
 ARGS =
 QUERY =
 
-.PHONY: test test-search test-fetch test-cli test-config test-core test-w lint lint-fix coverage mutate mutate-check smoke help
+.PHONY: test test-search test-fetch test-cli test-config test-core test-w benchmark-extraction lint lint-fix coverage mutate mutate-check smoke help
 
 test: ## Run the full test suite
 	$(PYTEST) -q $(ARGS)
@@ -48,6 +49,9 @@ test-core: ## Ranking, impact, interpretation, LLM, and topic tables
 
 test-w: ## Full suite with warnings promoted to errors
 	PYTHONWARNINGS=error $(PYTEST) -q $(ARGS)
+
+benchmark-extraction: ## Real BVA/CAVC extraction benchmark (known-miss baseline)
+	$(PYTHON) scripts/run_extraction_benchmark.py
 
 lint: ## Static checks with ruff (pyflakes + pycodestyle rules)
 	$(PYTHON) -m ruff check va_legal_agent tests scripts webapp.py

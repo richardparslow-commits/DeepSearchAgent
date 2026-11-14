@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "description": "Real BVA and CAVC decisions with document-level extraction gold fields.",
+  "cases": [
+    {
+      "id": "bva-a25049742",
+      "source": "BVA",
+      "url": "https://www.va.gov/vetapp25/Files6/A25049742.txt",
+      "format": "text/plain",
+      "retrieved": "2026-11-14",
+      "fixture": "fixtures/bva-a25049742.txt",
+      "sha256": "f7b4a2a8615865dc3320f38b8a3607847bc04792d16f0ad681f4907cecfd09a3",
+      "expected": {
+        "citation": "BVA Citation Nr. A25049742",
+        "decision_date": "2025-06-05",
+        "holding": "The Board finds that there is at least an approximate balance of positive and negative evidence as to whether the Veteran's current obstructive sleep apnea is related to his service-connected tinnitus.",
+        "legal_standard": "",
+        "outcome": "granted"
+      }
+    },
+    {
+      "id": "bva-a25110452",
+      "source": "BVA",
+      "url": "https://www.va.gov/vetapp25/Files12/A25110452.txt",
+      "format": "text/plain",
+      "retrieved": "2026-11-14",
+      "fixture": "fixtures/bva-a25110452.txt",
+      "sha256": "8b34e9912a795779b53b41b25a888e55b49c703cdacf27f97859eeed5c55e10a",
+      "expected": {
+        "citation": "BVA Citation Nr. A25110452",
+        "decision_date": "2025-12-23",
+        "holding": "The Board finds that the March 2022 VA examiner incorrectly relied upon the absence of a notation of tinnitus in the STRs in finding that the Veteran did not have tinnitus in service.",
+        "legal_standard": "",
+        "outcome": "granted"
+      }
+    },
+    {
+      "id": "cavc-adams-23-5064",
+      "source": "CAVC",
+      "url": "https://www.uscourts.cavc.gov/documents/AdamsMW_23-5064.pdf",
+      "format": "application/pdf (text snapshot)",
+      "retrieved": "2026-11-14",
+      "fixture": "fixtures/cavc-adams-23-5064.txt",
+      "sha256": "4a7c2d66bfd861aacbd2a500fa80ccb583e0535700feecb2207584780dc7aa09",
+      "expected": {
+        "citation": "",
+        "decision_date": "2025-07-08",
+        "holding": "we hold that the G.C. opinion's finding that obesity is not a \"disease\" for purposes of secondary service connection is an impermissible interpretation of the statute.",
+        "legal_standard": "de novo",
+        "outcome": "vacated and remanded"
+      }
+    },
+    {
+      "id": "cavc-westervelt-23-0024",
+      "source": "CAVC",
+      "url": "https://s.uscourts.cavc.gov/decisions/PANEL.CVA/WesterveltET_23-0024.pdf",
+      "format": "application/pdf (text snapshot)",
+      "retrieved": "2026-11-14",
+      "fixture": "fixtures/cavc-westervelt-23-0024.txt",
+      "sha256": "fdd035edbc8cd71c7c37beb5b17b526255b2477e4a1ccb4044c2133f3460b82b",
+      "expected": {
+        "citation": "",
+        "decision_date": "2025-04-08",
+        "holding": "We conclude that the Board was required to address the DRO's CUE finding separate and apart from assessing whether the veteran is entitled to a higher PTSD with TBI rating.",
+        "legal_standard": "de novo",
+        "outcome": "vacated and remanded"
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Known misses for the current production extractor. Remove an entry when the corresponding field starts matching.",
+  "field_count": 20,
+  "known_misses": [
+    "cavc-adams-23-5064.citation",
+    "cavc-adams-23-5064.outcome",
+    "cavc-westervelt-23-0024.citation",
+    "cavc-westervelt-23-0024.outcome"
+  ]
+}

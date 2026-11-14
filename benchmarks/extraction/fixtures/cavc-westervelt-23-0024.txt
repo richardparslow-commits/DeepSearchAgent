@@ -1,0 +1,381 @@
+ 
+UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS 
+ 
+No. 23-0024 
+ 
+EDWARD T. WESTERVELT, APPELLANT, 
+ 
+V. 
+ 
+DOUGLAS A. COLLINS, 
+SECRETARY OF VETERANS AFFAIRS, APPELLEE. 
+ 
+On Appeal from the Board of Veterans' Appeals 
+ 
+(Argued November 14, 2024 Decided April 8, 2025) 
+ 
+Kenneth M. Carpenter of Topeka, Kansas, with whom Richard L. Frankel and Jennifer L. 
+Stonage, both of Cherry Hill, New Jersey, were on the brief, for the appellant. 
+ 
+Ronen Z. Morris, with whom Madeleine Cardona, Appellate Attorney; Richard J. Hipolit, 
+Deputy General Counsel; Mary Ann Flynn, Chief Counsel; and Christopher W. Wallace , Deputy 
+Chief Counsel, were on the brief, all of Washington, D.C., for the appellee. 
+Before GREENBERG, MEREDITH, and TOTH, Judges. 
+TOTH, Judge: This case carries a complicated history and touches on the procedures VA 
+must follow when a decision review officer (DRO) revises a decision to be  less favorable to a 
+claimant. Army veteran Edward T. Westervelt was already in possession of a 70% rating for 
+traumatic brain injury (TBI) when the regional office (RO) awarded him a separate 30% rating for 
+PTSD. On review, a DRO found that it was clear and unmistakable error (CUE) to award a separate 
+rating for PTSD as the evidence of record showed that it was not possible to differentiate the PTSD 
+and TBI symptoms. To avoid pyramiding—i.e., double compensation for identical 
+symptomatology—the DRO revised the decision and combined the PTSD and TBI ratings , 
+resulting in a single 70% rating for both conditions.  
+Mr. Westervelt challenges this ruling and seeks reinstatement of his separate PTSD rating. 
+Across a series of appeals, both the Board and this Court have considered various allegations of 
+error. Here, we focus on whether the Board was required  to address the DRO 's CUE finding in 
+addition to assessing the appropriate rating for PTSD. We conclude that the Board was required to 
+address the DRO's CUE finding separate and apart from assessing whether the veteran is entitled 
+to a higher PTSD with TBI rating. But t he Board has yet to address these intertwined issues in a 
+Case: 23-24    Page: 1 of 12      Filed: 04/08/2025
+2 
+single decision, and without a clear picture of the relationship between the Board's CUE 
+determination and its ultimate merits decision, the Court cannot effectively review the issues on 
+appeal. See King v. Shulkin, 29 Vet.App. 174, 182 (2017) ( judicial review is frustrated whenever 
+"the Court is uncertain about the bases for the Board's decision").  
+The Court remands for the Board to adequately address all issues presented on the record, 
+to include both the preliminary CUE finding and whether Mr. Westervelt is entitled to a higher 
+evaluation for his PTSD, via a separate rating or otherwise.1  
+ 
+I. BACKGROUND 
+A. 
+ A veteran dissatisfied with an Agency decision  can initiate appellate review by filing a 
+Notice of Disagreement (NOD). 38 U.S.C. § 7105. Mr. Westervelt's claim was filed under the 
+legacy system, the appeals system in place before the enactment of the Veterans Appeals 
+Improvement and Modernization Act of 2017. Under the legacy system , if the claimant files a 
+timely NOD, VA  reassesses the claim and , if this initial reassessment fails to " resolve the 
+disagreement by either granting the benefit sought or through withdrawal of the [NOD], [the] 
+agency shall prepare a statement of the case [(SOC)]." 38 U.S.C. § 7105(d) ( 2012 & Supp. IV 
+2017).  
+A regulation, 38 C.F.R. § 3.2600, provides a specific process for Agency review of benefit 
+claims decisions in the legacy system.  Subsection (a) explains that a claimant who filed an NOD 
+has a right to DRO review of that decision. 2 It directs the DRO to consider all evidence of record 
+and review the Agency decision de novo. Subsection (d) authorizes  the DRO to grant the benefit 
+sought but prohibits any  revision that is unfavorable to a claimant. Subsection (e) provides an 
+exception to this, however, and allows  a reviewer to reverse or revise the decision under review 
+on grounds of CUE, even if the result is disadvantageous to the claimant. 38 C.F.R. § 3.2600(e) 
+ 
+1 In the decision on appeal, the Board also granted a 50% rating for migraine headaches for the period on 
+appeal. Record (R.) at 5. This is a favorable finding that the Court may not disturb. See Medrano v. Nicholson, 
+21 Vet.App. 165, 170 (2007), aff'd in part, dismissed in part sub nom. Medrano v. Shinseki, 332 F. App'x 625 (Fed. Cir. 
+2009); see also Bond v. Derwinski , 2 Vet.App. 376, 377 (1992) (per curiam order) ("This Court's jurisdiction is 
+confined to the review of final Board . . . decisions which are adverse to a claimant.").  To the extent that the Board 
+denied entitlement to a rating in excess of 50% for headaches, the appellant does not challenge that finding, and the 
+Court therefore deems any appeal of that matter abandoned. See Pederson v. McDonald, 27 Vet.App. 276, 285 (2015) 
+(en banc).  
+2 The regulation also permits review by a  veterans service center manager or pension management center 
+manager. 38 C.F.R. § 3.2600(a) (2024). 
+Case: 23-24    Page: 2 of 12      Filed: 04/08/2025
+3 
+(citing 38 C.F.R. § 3.105(a)). Further, per subsection (f), unless a claimant withdraws the NOD or 
+the DRO grants the benefit in full, VA will proceed with the traditional appellate process by issuing 
+an SOC.  
+The CUE standard is spelled out in § 3.105(a). It provides that CUE "is a very specific and 
+rare kind of error . . . of fact or of law, that when called to the attention of later reviewers compels 
+the conclusion, to which reasonable minds could not differ, that the result would have  been 
+manifestly different but for the error." 38 C.F.R. § 3.105(a)(1)(i) (2024). The regulation continues: 
+"If it is not absolutely clear that a different result would have ensued, the error complained of 
+cannot be clear and unm istakable." Id. This Court has articulated that a valid showing of CUE 
+must satisfy three elements: (1) the adjudicator either ignored the correct facts of record or 
+incorrectly applied statutes or regulations in effect at the time; (2) the alleged error was 
+undebatable, not merely a disagreement as to how the facts were weighed or the law was applied; 
+and (3) the commission of the alleged error, at the time it was made, manifestly changed the 
+outcome of the decision at issue. Young v. Wilkie, 31 Vet.App. 51, 56 (2019). 
+A final layer of relevant law implicates how VA rates impairments that present similar or 
+overlapping symptomatology. As a starting point , VA's rating schedule requires that separate 
+conditions or manifestations of the same condition be rated separately, unless otherwise provided 
+in the ratings schedule . See 38 C.F.R. § 4.25(b) (2024). However, VA's " anti-pyramiding" 
+provision instructs adjudicators to avoid "evaluation of the same disability under various 
+diagnoses." 38 C.F.R. § 4.14 (2024). Read in concer t with each other, these regulations establish 
+that separate ratings are required for separate conditions unless  their symptomatology is 
+duplicative or overlapping. See Esteban v. Brown, 6 Vet.App. 259, 262 (1994).  
+B. 
+ This case bears a long and complex history, a full account of which helps to frame the 
+issues on appeal. Mr. Westervelt served in the Army from 2000 to 2004, which included a tour of 
+duty in Iraq. During his deployment, he and some fellow soldiers were performing tests on the 
+weapons system of a Bradley Fighting Vehicle. R. at 291. He  was standing atop the vehicle, his 
+head close to the gun's barrel, when the gun accidentally fired. Id. He fell from the vehicle and lost 
+consciousness. R. at 291-92. Ultimately, he suffered a TBI and developed PTSD from this event. 
+ In 2007, Mr. Westervelt sought service connection for these conditions. The RO denied his 
+PTSD claim but granted the TBI claim and assigned a 10% rating effective November 30, 2007. 
+Case: 23-24    Page: 3 of 12      Filed: 04/08/2025
+4 
+R. at 2241-43. A couple years later, the RO increased his TBI rating to 70%, effective April 21, 
+2009. R. at 2116-20. This action increased his combined rating to 90%, based on his TBI rating as 
+well as his ratings for  tinnitus and bilateral lower extremity and lumbar conditions not at issue 
+here.3  
+ In March 2016, the veteran again sought service connection for PTSD. As support , he 
+submitted an August 2016 private opinion from Dr. Haynes. R. at 1359-60. Dr. Haynes opined that 
+it was not possible to differentiate the symptoms attributable to Mr. Westervelt's TBI from those 
+attributable to his PTSD; yet he opined that it was possible to differentiate the  portion of the 
+veteran's occupational and social impairment caused by the TBI. Id.  
+In May 2017, VA obtained new exams for the veteran's PTSD and TBI. The PTSD 
+examiner, Dr. Bolger, opined that it was not possible, or at least would be speculative, to 
+differentiate which of the veteran's symptoms are attributable to TBI and which are attributable to 
+PTSD because he "did not assess the Veteran for symptoms of a [TBI]." R. at 1076. Dr. Bolger 
+also opined that it was not possible to differentiate what portion of the veteran's occupational and 
+social impairment was caused by his TBI because "the component symptoms of [his PTSD and 
+TBI] were reported to be intermingled." R. at 1077. The TBI examiner, Dr. Heath, likewise opined 
+that she could not "delineate the contribution of [the veteran's PTSD] from TBI wi thout mere 
+speculation since the 2 disorders are concomitant." R. at 420. 
+In July 2017, the RO granted service connection for PTSD and assigned a 30% rating, 
+effective March 30, 2016. R. at 1025-27. In its decision, it listed both the 2016 private opinion and 
+the 2017 VA exams as evidence considered. R. at 1025- 26. (Importantly, awarding this separate 
+rating did not impact Mr. Westervelt's combined 90% rating or his monthly compensation.) The 
+veteran filed an NOD as to the evaluation level assigned for his PTSD and selected the DRO review 
+process. R. at 1002-03.  
+In May 2018, the DRO found that the award of a separate rating for PTSD in the 2017 RO 
+decision was CUE because " [t]he VA examiner stated that i[t] was not possible to differentiate 
+ 
+3 A quick note about how VA combines evaluations  for multiple conditions : The combined ratings table 
+provides that, after individual conditions are "separately" rated, the disabilities are then all combined "as described 
+in paragraph (a)." 38 C.F.R. § 4.25(b). VA first considers the condition with the highest rating and then conditions with 
+lower ratings "in order of severity" according to the formula set out in the table. 38 C.F.R. § 4.25(a). Doing so avoids 
+impermissibly awarding an aggregate disability rating greater than 100%. See Moody v. Wilkie, 30 Vet.App. 329, 336 
+(2018). This "combined rating" governs a veteran's monthly compensation rate. See 38 U.S.C. § 1114 (Rates of 
+wartime disability compensation); 38 U.S.C. § 1134 (Rates of peacetime disability compensation). 
+Case: 23-24    Page: 4 of 12      Filed: 04/08/2025
+5 
+TBI symptoms from PTSD symptoms." R. at 859. In other words, awarding separate ratings for 
+TBI and PTSD violated the rule against pyramiding because the veteran's symptoms were 
+duplicative or overlapping. See Esteban, 6 Vet.App. at 262. The decision maintained that service 
+connection for PTSD was warranted with a February 2016 effective date but explained that PTSD 
+would be evaluated with TBI and that the already assigned 70% rating would be continued. 
+Notably, the DRO informed the veteran that these actions would not affect his overall combined 
+evaluation or his monthly compensation payments. R. at 863. 
+VA then issued an SOC, listing the issue as "[e]valuation of [PTSD] with [TBI] (previously 
+evaluated under DC 8045- 9304) currently evaluated as 70 percent disabling." R. at 819. In its 
+reasons or bases section, the SOC explained that the 2017 rating decisi on committed CUE in 
+assigning a separate 30% rating for PTSD because the VA examiner could not differentiate TBI 
+symptoms from PTSD symptoms. R. at 843. Mr. Westervelt submitted his VA Form 9 and noted 
+that he wanted to "appeal all of the issues listed on the [SOC] and any supplemental [SOC]." R. at 
+798. He wrote that VA failed to consider that the 2016 private examiner opined that his PTSD and 
+TBI symptoms were distinguishable. Id. He also submitted another NOD form, listing the 2018 
+DRO decision as the decision with which he disagreed and again stating that VA failed to consider 
+the 2016 private opinion. R. at 769-70. 
+In 2019, the Board issued the first of two decisions it would render on this claim: It found 
+that a separate rating for PTSD was not warranted because the evidence did not support that the 
+veteran's PTSD symptoms were distinguishable from his TBI symptoms. R. at 207-18. Turning to 
+his 70% rating for PTSD with TBI, the Board denied a higher rating, relying in part on a 2018 VA 
+exam and a 2019 private exam. R. at 218-23. It made no mention of the DRO's CUE determination.  
+Mr. Westervelt appealed to this Court, which held in a single-judge decision that the Board 
+erred by applying the wrong standard in reviewing the DRO's 2018 decision. Westervelt v. 
+McDonough, No. 20-2077, 2022 U.S. App. Vet. Claims LEXIS 152 (Feb. 2, 2022). Specifically, 
+the Court said that the Board should have reviewed the CUE findings made in the DRO decision, 
+which means that the Board should have looked only to the evidence of record at the time of the 
+2017 RO decision. Id. at *6-8. So, the Court said, the Board erred when it considered evidence 
+beyond that which was in the file at the time of the 2017 RO decision and by not assessing whether 
+there was CUE in that RO decision. Id. 
+Case: 23-24    Page: 5 of 12      Filed: 04/08/2025
+6 
+On remand, the Board performed this analysis and issued the decision now on appeal. It 
+agreed with the DRO —the RO committed CUE in the 2017 rating decision when it assigned 
+separate ratings for PTSD and TBI because the assignment of separate ratings violat ed the rule 
+against pyramiding. R. at 19.  
+C.  
+This brings us to Mr. Westervelt's current appeal. During initial briefing, the parties argued 
+over the validity of the Board's CUE finding. The appellant contended that the Board erred by 
+conducting a de novo review of the record evidence (i.e., assessing anew its probative value) rather 
+than performing the more restrictive three -part CUE analysis. T he Secretary countered that the 
+Board did not reweigh the evidence before the 2017 RO but merely provided an explanation for 
+its findings consistent with its duty to provide an adequate statement of reasons or bases. In a single 
+judge decision, the Court favored the Secretary's position. The Court emphasized that it reviews 
+the Board's CUE determinations under an "arbitrary, capricious, an abuse of discretion, or 
+otherwise not in accordance with law" standard and, under that standard, found no error. Westervelt 
+v. McDonough, U.S. Vet. App. No. 23- 0024 (Apr. 16, 2024) (mem. dec.) (quoting 38 U.S.C. 
+§ 7261(a)(3)(A)). 
+Mr. Westervelt moved for reconsideration or,  alternatively, for a panel decision. His 
+motion suggested that the " arbitrary and capricious " standard of review was not appropriate for 
+unfavorable VA-initiated CUE determinations. The Court then referred this case to a panel. The 
+panel sought supplemental briefing from the parties as to the proper standard of review for VA -
+initiated CUE determinations. New counsel entered appearances for the veteran and for the 
+Secretary, and their responses to the Court's order changed the course of this appeal. Both parties 
+now argue , albeit for different reason s, that answering the standard of review question is not 
+necessary as the Board should not have addressed CUE in the first place. 
+ Mr. Westervelt's supplemental brief alleges that the Board lacked jurisdiction to review the 
+DRO's CUE determination because it was a separate decision from the 2017 RO decision that was 
+subject to its own NOD, SOC, and VA Form 9. Under this reasoning, the PTSD rating was the 
+only issue on appeal because the original NOD was filed in response to the denial of a rating higher 
+than 30% for PTSD. However, just before oral argument, he submitted a motion contradicting that 
+position, arguing that the 2018 DRO decision was a new decision that replaced the  2017 RO 
+decision, ending the appeal of the 2017 RO decision "as a matter of law." Appellant's Nov. 7, 2024, 
+Case: 23-24    Page: 6 of 12      Filed: 04/08/2025
+7 
+Motion at 2. He argues that the NOD he submitted in May 2018 initiated an appeal of the 2018 
+DRO decision and, in response to that NOD, VA should have issued an SOC. And because no 
+SOC was issued, any appeal of the DRO's decision remains pending.  
+ The Secretary contends that the CUE determination was not on appeal to the Board because 
+the DRO decision revised the 2017 RO decision and so the SOC only needed to cover the issue of 
+the proper rating for PTSD with TBI. Per the Secretary, the effect of the DRO's revision is that the 
+2017 RO decision granted service connection for PTSD with TBI with a 70% evaluation as of the 
+date it was issued; and, because the veteran did not raise any argument in his Form 9 related to the 
+CUE determination or the DRO's revision of the 2017 RO decision, the Board need not have 
+addressed CUE. Further,  the Secretary asserts that,  unlike other VA  adjudicators who are  
+constrained by § 3.2600(a), the Board can reject an RO's favorable findings without finding CUE.  
+ 
+II. ANALYSIS 
+A. CUE Was Before the Board 
+ In the early days of the Court, we disclaimed  Mr. Westervelt 's argument that multiple 
+NODs could be operative when pertaining to a single claim. Hamilton v. Brown, 4 Vet.App. 528, 
+537 (1993) (en banc), explains that an NOD "carries out the function of initiating an appeal to the 
+[Board]." So, after an NOD for a claim is filed, no subsequent NOD is operative for that claim 
+unless  
+(a) the NOD has been withdrawn; or (b) the appeal has been closed by the RO due 
+to the claimant's failure to file a timely [VA Form 9] after issuance of the SOC (that 
+is, the RO decision becomes final); or (c) the full benefits sought on appeal have 
+been granted by the RO; or (d) a final appellate decision has been issued by the 
+Board. 
+Id. The Court continued, observing that 38 U.S.C. § 7105(d)(1) directs an RO, after receiving an 
+NOD, to undertake "'such development or review action as it deems proper'" prior to issuing an 
+SOC. Id. (quoting 38 U.S.C. § 7105(d)(1) (1988 & Supp. IV 1993)). Considering that an NOD is 
+only operative when it prevents a claim from becoming final, "it is obvious that RO re -review 
+under section 7105(d)(1) could not give rise to another NOD because an NOD would already have 
+been filed initiating a review of that claim, and the appeal would proceed to the [Board] pursuant 
+to that NOD." Id. 
+Case: 23-24    Page: 7 of 12      Filed: 04/08/2025
+8 
+ Section 7105(d)'s implementing regulation, 38 C.F.R. § 3.2600, provides for precisely the 
+kind of RO re-review discussed in Hamilton. The claimant can elect for another round of Agency 
+review in the NOD, this time by a more senior adjudicator who affords no deference to the rating 
+decision on review. Critically, subsection (f) reiterates Hamilton's sentiment: unless a claimant 
+withdraws the NOD as a result of the DRO's review, VA proceeds with the traditional appellate 
+process by issuing an SOC, and DRO review does not limit or otherwise alter a claimant's appeal 
+rights. Meaning, a claimant need not file an NOD with the DRO's decision to continue  the appeal 
+or prevent finality. And t hat's what happened here : the DRO decision did not grant the benefit 
+sought, so VA pushed the appeal forward and issued an SOC. So, under Hamilton, Mr. Westervelt's 
+2018 NOD form was inoperable and did not initiate a new appeal.  
+But he also contends that, because his 2017 NOD responded to the denial of a separate 
+rating in excess of 30% for PTSD, only an SOC listing that specific issue could be valid, and 
+because the May 2018 SOC instead addressed the issue of a rating higher than 70% for PTSD 
+combined with a TBI, the SOC was invalid and deprived the Board of jurisdiction. See 38 U.S.C. 
+§ 7105(d)(1)(A) (2012 & Supp. IV 2017) (stating that an SOC shall include "[a] summary of the 
+evidence in the case pertinent to the issue or issues with which disagreement has been expressed"). 
+But t his argument falters  because, when the DRO revises a prior RO decision for CUE, it's 
+effective as of the date of the original erroneous decision. 38 U.S.C. § 5109A(b) ; see 38 C.F.R. § 
+3.105(a) (2017);4 see also Young v. Shinseki , 25 Vet.App. 201, 203 (2012) (en banc order) (per 
+curiam) ("It is well settled that the Court has jurisdiction to determine whether the Board had 
+jurisdiction to take the action it takes in a decision ."); Evans (James) v. Shinseki, 25 Vet.App. 7, 
+10 (2011) ("[T]he Court exercises de novo review over Board determinations that are critical to its 
+jurisdiction."). This is why the 2017 RO decision, once revised, presented the issue of whether a 
+rating in excess of 70% for PTSD with TBI was warranted. What's more, an NOD with a rating 
+decision assigning an evaluation level necessarily "initiate[s] appellate review of the claim 
+concerning the element of compensation level." Dunlap v. Nicholson, 21 Vet.App. 112, 117 (2007) 
+(citing Grantham v. Brown, 114 F.3d 1156, 1158-59 (Fed. Cir. 1997)). Here, the NOD expressed 
+disagreement with the evaluation level of his PTSD—that issue remained the same, it was merely 
+characterized differently by virtue of the DRO's decision.  
+ 
+4 This provision now appears in § 3.105(a)(1)(ii) (2024). 
+Case: 23-24    Page: 8 of 12      Filed: 04/08/2025
+9 
+The Secretary takes a different tack, arguing that the CUE issue was not before the Board 
+because it was not addressed in the SOC nor were any CUE-related arguments raised in the Form 
+9. But t his misreads the record : It's true that, under the "Issue" heading, the SOC listed only 
+"evaluation of [PTSD] with [TBI] (previously evaluated under DC 8045-9304) currently evaluated 
+as 70 percent disabling." R. at 819. But in its "Reasons and Bases" section, the SOC plainly repeats 
+the determination of the DRO —"Rating Decision dated July 25, 2017[,] was clearly and 
+unmistakably erroneous in assigning a separate 30 [%] evaluation for [PTSD]. The VA examiner 
+stated that [it] was not possible to differentiate TBI symptoms from PTSD symptoms." R. at 843. 
+Moreover, Mr. Westervelt's VA Form 9 indicated that he wanted to appeal all issues listed on the 
+SOC. And he made a specific allegation of error that implicates the DRO's CUE finding: "VA 
+failed to consider evidence from Dr. Abrams" that the veteran's  PTSD and TBI symptoms were 
+distinguishable. R. at 798. There is no factual basis for the Secretary's argument that the DRO's 
+CUE determination was not before the Board. 
+Ultimately, both arguments stumble against the Board's duty to address all material issues 
+of fact or law in the record before it, including any issue or theory explicitly raised by the claimant 
+or reasonably raised by the record. 38 U.S.C. § 7104(d)(1); Robinson, 21 Vet.App. at 552-56. Mr. 
+Westervelt received an SOC that discussed the DRO's CUE finding as a prerequisite to its denial 
+of a higher rating for PTSD with TBI; he submitted a VA Form 9 that sought to appeal all issues 
+in the SOC; and he specifically alleg ed error regarding evidence he believed demon strated 
+entitlement to separate ratings. Based on this record, the issue of the DRO's CUE determination 
+was before the Board under its jurisdictional statute and our interpretation of that statute in 
+Robinson. As explained below, however, the Board also needs to conduct a related de novo 
+assessment of the appropriate ratings for the entire period on appeal, which could impact or obviate 
+the need for the Court to review the Board's CUE findings, so the Court will not now review that 
+portion of the Board's analysis. 
+B. PTSD Rating Was Before the Board 
+ Next, we note that the decision before us is not complete—specifically, the Board was also 
+required to address the propriety of the veteran's PTSD rating (the issue on direct appeal via the 
+2017 NOD) in addition to addressing CUE.  
+ The Secretary contends that the Board needn't have addressed the proper rating for the 
+veteran's PTSD in the decision on appeal because the Court's 2022 memorandum decision affirmed 
+Case: 23-24    Page: 9 of 12      Filed: 04/08/2025
+10 
+that portion of the 2019 Board decision that denied a rating higher than 70% before remanding the 
+CUE matter. See Oral Argument at 39:00- 43:00, Westervelt v. McDonough , U.S. Vet. App. No. 
+23-0024 (oral argument held Nov. 14, 2024), available at 
+https://www.youtube.com/watch?v=cDtBK1I_fj0; see also Secretary's Supplemental  Brief at 12 
+n.10. However, several aspects of the memorandum decision counsel against  this reading:  the 
+decretal paragraph of that decision contains no limiting language ; the Court did not  deem the 
+higher rating issue abandoned; and the decision vacated the Board's decision in full and remanded 
+the whole of the PTSD claim for readjudication. R. at 129. We decline to read into the single judge 
+decision a  summary affirmance of d iscrete Board analys es pertaining to a complex rating 
+evaluation. See 38 U.S.C. § 7252. In short, t he Board's obligation to address the PTSD rating 
+matter was not extinguished when we remanded for it to address the preliminary issue of CUE.  
+Regrettably, we must remand this case again for the Board to assess all issues before it , 
+including whether there was CUE in the 2017 RO decision and, subsequently, the higher rating 
+issue on direct appeal. These two issues are highly related. For example, how the Board comes out 
+on the CUE determination affects where it begins its assessment of the higher rating question—if 
+there was CUE in the 2017 RO decision, then the Board will consider whether a rating higher than 
+70% for PTSD with TBI is warranted. I f there was no CUE in the 2017 RO decision, then the 
+Board will consider whether a separate rating higher than 30% for PTSD is warranted. What's 
+more, regardless of how it comes out on the CUE issue, the Board has the authority to grant a 
+separate rating for PTSD in the first instance via its de novo review of the entire record, thus 
+obviating any need for  our review of the Board's CUE findings. See 38 U.S.C. § 7104(a); 
+Anderson v. Shinseki, 22 Vet.App. 423, 427- 28 (2009). At bottom, it is in the interest of judicial 
+efficiency for the Court to remand this claim for a complete Board decision. See Smith v. Gober, 
+236 F.3d 1370, 1372 (Fed. Cir. 2001) (holding that claims that are inextricably intertwined should 
+be adjudicated together).  
+Though this procedural ordeal adds time to an already lengthy appeal, it presents an 
+opportunity to the appellant. Because the Board must complete its review of the claim on direct 
+appeal, he can submit additional evidence and argument on remand in support of a separate rating 
+for PTSD. See Kutscherousky v. West, 12 Vet.App. 369, 372-73 (1999); see also Kay v. Principi, 
+16 Vet.App. 529, 534 (2002).  
+ 
+Case: 23-24    Page: 10 of 12      Filed: 04/08/2025
+11 
+C. Appellant's Remaining Arguments 
+Mr. Westervelt makes two additional arguments that were resolved by our decision in 
+Young. He contends that the DRO wasn't permitted to revise the 2017 RO decision because CUE 
+revision is only initiable against final decisions. We rejected this argument in Young, holding that 
+§ 3.2600(e) expressly provides for CUE-based revision of non-final decisions. 31 Vet.App. at 53. 
+Next, he argues that he was not afforded the procedural rights set out in § 3.105(e) for reduction 
+cases. Again, we held in Young that those procedural protections do not apply in cases where the 
+DRO revises a prior decision to be less favorable. We explained that DRO CUE findings are 
+revisions "based on the evidence of record at the time the original decision was made," not 
+reductions "based on later evidence showing a change in the veteran's condition." Id. at 56. Further, 
+"the plain meaning of  § 3.105(e) is that notice is warranted only when there is a  reduction in 
+'compensation payments currently being made.'" Tatum v. Shinseki, 24 Vet.App. 139, 143 (2010) 
+(quoting 38 C.F.R. § 3.105(e)). Even if § 3.105(e) applied to DRO revisions, it is not applicable in 
+this case because it is undisputed there was no reduction in compensation payments being made to 
+Mr. Westervelt. Accordingly, these arguments fail.  
+Additional assertions are scattered about the veteran's supplemental brief, including that he 
+did not receive notice of the DRO's decision compliant with 38 U.S.C. § 5104. He offers no 
+argument in support of these contentions, so the Court does not address  them. See 
+Locklear v. Nicholson, 20 Vet.App. 410, 416 (2006) (holding that the Court will not entertain 
+underdeveloped arguments); see also Evans (Walter) v. West, 12 Vet.App. 22, 31 (1998) (noting 
+that the Court does not consider "vague assertion[s]" or "unsupported contention[s]"). 
+Finally, we reiterate that, because we are vacating and remanding the Board's decision, we 
+need not resolve the question of what standard of review we should apply in cases of VA-initiated 
+unfavorable CUE proceedings. We leave that question for another day.  
+ 
+III. CONCLUSION 
+ The April 16, 2024, memorandum decision is WITHDRAWN , and this opinion is issued 
+in its stead. The appeal of that part of the October 18, 2022, Board decision that denied entitlement 
+to a rating in excess of 50% for migraine headaches is DISMISSED. Based on the foregoing, that 
+part of the Board's decision finding CUE in the July 2017 rating decision that assigned a separate 
+30% rating for PTSD is VACATED, and the matter is REMANDED for further adjudication 
+Case: 23-24    Page: 11 of 12      Filed: 04/08/2025
+12 
+consistent with this opinion. The appellant's November 7, 2024, motion to reverse the Board's 
+decision based on lack of subject matter jurisdiction is denied. The appellant's May 7, 2024, motion 
+for reconsideration and in the alternative by panel is denied as moot.  
+Case: 23-24    Page: 12 of 12      Filed: 04/08/2025

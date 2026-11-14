@@ -1,0 +1,70 @@
+Citation Nr: A25049742
+Decision Date: 06/05/25	Archive Date: 06/05/25
+
+DOCKET NO. 220606-252507
+DATE: June 5, 2025
+
+ORDER
+
+Entitlement to service connection for obstructive sleep apnea is granted as secondary to service-connected tinnitus.
+
+FINDING OF FACT
+
+The Veteran's current obstructive sleep apnea is attributable to his service-connected tinnitus.
+
+CONCLUSION OF LAW
+
+The criteria for entitlement to service connection for obstructive sleep apnea as proximately due to the Veteran's service-connected tinnitus have been met.  38 U.S.C. §§ 1101, 1110, 5107; 38 C.F.R. §§ 3.102, 3.303, 3.310.
+
+REASONS AND BASES FOR FINDING AND CONCLUSION
+
+The Veteran had active duty service in the United States Air Force from July 1990 to July 1994.
+
+This matter comes to the Board of Veterans' Appeals (Board) on appeal from a May 2022 rating decision.  As this rating decision constitutes an initial decision, the modernized review system, also known as the Appeals Modernization Act (AMA), applies.
+
+The record shows that the agency of original jurisdiction (AOJ) previously issued a December 2021 rating decision that confirmed and continued a prior denial of service connection for sleep apnea.  In January 2022, the Veteran submitted a VA Form 20-0996, Decision Review Request: Higher-Level Review (HLR), and requested review of the December 2021 rating decision.  In February 2022, the AOJ issued an HLR decision in which it stated that a duty to assist error had been identified during the HLR of the Veteran's claim related to sleep apnea.  In the subsequent May 2022 rating decision on appeal, the AOJ found that new and relevant evidence had been received and denied the service connection claim based on the evidence of record at the time of that decision.
+
+In the June 6, 2022 VA Form 10182, Decision Review Request: Board Appeal (Notice of Disagreement), the Veteran elected the Evidence Submission docket.
+
+Therefore, the Board may only consider the evidence of record at the time of the May 2022 AOJ decision on appeal, as well as any evidence submitted by the Veteran [or representative] with, or within 90 days from receipt of, the VA Form 10182.  38 C.F.R. § 20.303.  If evidence was submitted either (1) during the period after the AOJ issued the decision on appeal and prior to the date the Board received the VA Form 10182, or (2) more than 90 days following the date the Board received the VA Form 10182, the Board did not consider it in its decision.  38 C.F.R. §§ 20.300, 20.303, 20.801. 
+
+If the Veteran would like the Department of Veterans Affairs (VA) to consider any evidence that was submitted that the Board could not consider, the Veteran may file a Supplemental Claim (VA Form 20-0995) and submit or identify this evidence.  38 C.F.R. § 3.2501.  If the evidence is new and relevant, VA will issue another decision on the claim[s], considering the new evidence in addition to the evidence previously considered.  Id.  Specific instructions for filing a Supplemental Claim are included with this decision.
+
+1.  Entitlement to service connection for sleep apnea, to include as secondary to service-connected tinnitus.
+
+Service connection may be granted for a disability resulting from disease or injury incurred in or aggravated by active service.  38 U.S.C. §§ 1110, 1131; 38 C.F.R. § 3.303(a).  To establish a right to compensation for a present disability, a Veteran must show:  (1) the existence of a present disability; (2) in-service incurrence or aggravation of a disease or injury; and (3) a causal relationship between the present disability and the disease or injury incurred or aggravated during service-the so-called "nexus" requirement.  Holton v. Shinseki, 557 F.3d 1362, 1366 (Fed. Cir. 2009) (quoting Shedden v. Principi, 38 F.3d 1163, 1167 (Fed. Cir. 2004)).  The absence of any one element will result in denial of service connection.
+
+Service connection may also be granted for any disease initially diagnosed after service when all of the evidence, including that pertinent to service, establishes that the disease was incurred in service.  38 C.F.R. § 3.303(d).
+
+Service connection may also be granted where a disability is proximately due to or the result of a service-connected disease or injury.  38 C.F.R. § 3.310.  The Board notes that the Federal Circuit recently addressed the issue of causation in Spicer v. McDonough, 61 F.4th 1360, (Fed. Cir. 2023).  In Spicer, a veteran sought service connection for bilateral knee arthritis as secondary to his service-connected leukemia.  He asserted that the medication he took for leukemia precluded him from undergoing knee surgery to improve his condition.  Thus, he argued that his leukemia was the cause of his current functional impairment of the knee.  
+
+The narrow question before the Court was whether the "but-for" causation requirement in 38 U.S.C. § 1110 was limited to a pure etiological link or whether it encompassed situations where a service-connected disease or injury impedes treatment of a separate disability.  The Court adopted the latter viewpoint.  The Court explained that the phrase "resulting from" in the statute refers to "but-for" causation and is not limited to a single cause and effect, but rather contemplates multi-causal links, including action and inaction.  The Court then held that VA's application of 38 C.F.R. § 3.310(b), which addresses the aggravation prong of secondary service connection, was unlawful to the extent that it rejected the veteran's theory of service connection.  It is clear from the Court's holding that causation and aggravation can be established without demonstrating a pathological link between the claimed and service-connected disabilities.
+
+Regarding the Veteran's service connection claim for sleep apnea, the record has raised different theories of entitlement, including the theory that the claimed sleep apnea is secondary to the Veteran's service-connected tinnitus disability.
+
+The Veteran's service treatment records (STRs) are silent for any complaint, treatment, or diagnosis related to sleep apnea.
+
+In the May 2022 rating decision on appeal, the AOJ made the favorable finding that the Veteran had been diagnosed with obstructive sleep apnea based on the findings in a June 2021 VA examination.  38 C.F.R. § 3.104(c).  The June 2021 VA examiner noted that the date of onset for the Veteran's obstructive sleep apnea was in 2013.
+
+The Board will first determine whether secondary service connection may be established based on the causation prong of 38 C.F.R. § 3.310.  In June 2022, Dr. B., MD, provided a positive medical opinion addressing the Veteran's claim.  Dr. B. noted that prior to providing the opinion, Dr. B. reviewed the Veteran's pertinent medical records, relevant medical literature, and Dr. B. interviewed the Veteran.  Dr. B. opined in part that the Veteran's sleep apnea is more likely than not caused by the Veteran's service-connected tinnitus.
+
+In the rationale, Dr. B. noted that VA examiners often opine that a veteran's elevated body mass index (BMI) is the cause of sleep apnea.  Dr. B. explained that although obesity is one of the major causes of obstructive sleep apnea in the general population, it is not the only cause.  There are other causes of sleep apnea, such as posttraumatic stress disorder (PTSD), traumatic brain injury (TBI), mood disorder, and tinnitus, which are conditions that are far more prevalent in veterans than in the general public.  Dr. B. discussed several medical studies in support of her conclusion, including information from one study indicating that while sleep diseases (SDB) also include insomnia, a large percentage of tinnitus patients suffer from obstructive sleep apnea.  The study yielded the conclusion that tinnitus and SDB may be two sides of the same coin; tinnitus causes obstructive sleep apnea, and obstructive sleep apnea aggravates tinnitus.  That is, they are either co-morbidities or etiologically related.  Dr. B. also observed that the service-connected disability of tinnitus is known to interrupt and disrupt REM sleep; and Dr. B. pointed to the definition from Dorland's Medical Dictionary for obstructive sleep apnea as "[s]leep apnea resulting from collapse or obstruction of the airway with the inhibition of muscle tone that occurs during REM sleep."  Dr. B.'s conclusion provides probative value as it addresses the medical issue in this case and was based on an analysis of the evidence and current medical understanding.  See Monzingo v Shinseki, 26 Vet. App. 97, 106 (2012) (providing that an examination is not rendered inadequate where the rationale provided by an examiner did not explicitly lay out the examiner's journey from facts to a conclusion); see also Acevedo v. Shinseki, 25 Vet. App. 289, 294 (2012) (stating that medical reports must be read as a whole and in the context of the evidence of record).  The record also shows that Dr. B. provided a similar positive opinion in support of this theory of secondary service connection in July 2021.  The Board additionally notes that the Veteran's current representative, who is also a Doctor of Medicine (MD), provided a positive opinion dated in April 2021 in support of this theory of secondary of service connection.  As discussed further below, however, the Board finds that Dr. B.'s June 2022 opinion alone provides sufficient probative evidence to support a grant of service connection.
+
+The Board also acknowledges that different VA examiners have provided negative opinions addressing the causation prong of secondary service connection in relation to the Veteran's tinnitus disability.  The June 2021 VA examiner opined that the Veteran's current obstructive sleep apnea is less likely than not proximately due to or the result of the Veteran's service-connected tinnitus.  A review of the available records revealed no objective evidence of any direct, causal relationship between the Veteran's tinnitus and development of obstructive sleep apnea.  The primary risk factor for the development of obstructive sleep apnea present in this case is obesity.  The examiner noted that the Veteran's BMI was noted as 34.7 in 2006 prior to the initial sleep study consultation; and at 37.6 at the time of the polysomnogram (PSG).
+
+In December 2021, a different VA examiner also provided a negative opinion, opining that the claimed condition was less likely that not proximately due to, or the result of, the Veteran's service-connected condition.  In the rationale, the examiner noted that while tinnitus can certainly cause disordered sleep, there is no reasonable mechanism by which tinnitus can cause obstructive sleep apnea.  The examiner noted that an argument can be made in the setting of central sleep apnea, but the Veteran had pure obstructive sleep apnea, which is an anatomic disease involving redundant tissue in the soft palate and hypopharynx.  Tinnitus can make obstructive sleep apnea worse, but it cannot cause it.  Therefore, in the examiner's opinion, the Veteran's claimed obstructive sleep apnea is less likely than not to be the result of the Veteran's service-connected tinnitus.  The examiner indicated that he had reviewed literature and the Veteran's sleep study before adding that no other records were required for this opinion.  The Board notes that although an additional VA medical opinion was provided in March 2022, this opinion provides little to no probative value to the current analysis as it was limited to addressing the aggravation prong secondary service connection.
+
+The Board finds that the June 2021 and December 2021 VA medical opinions provide probative value as the examiners supported their conclusions with complete rationales that reflected a consideration of relevant clinical findings and/or medical principles.  As noted above, Dr. B.'s June 2022 positive opinion is also entitled to probative weight.  Based on the foregoing, the Board finds that there is at least an approximate balance of positive and negative evidence as to whether the Veteran's current obstructive sleep apnea is related to his service-connected tinnitus.  As the reasonable doubt created by this approximate balance in the evidence must be resolved in favor of the Veteran, entitlement to service connection for obstructive sleep apnea is granted as secondary to service-connected tinnitus.  38 C.F.R. §§ 3.102, 3.310.  As the Board is granting secondary service connection on this basis, it is unnecessary to discuss any other theory of entitlement advanced. 
+
+ 
+
+GAYLE STROMMEN
+
+Veterans Law Judge
+
+Board of Veterans' Appeals
+
+Attorney for the Board	K.C. Spragins, Counsel
+
+The Board's decision in this case is binding only with respect to the instant matter decided. This decision is not precedential and does not establish VA policies or interpretations of general applicability. 38 C.F.R. § 20.1303. 
+

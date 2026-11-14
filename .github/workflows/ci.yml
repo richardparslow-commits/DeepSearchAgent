@@ -40,5 +40,8 @@ jobs:
       - name: Tests with warnings as errors
         run: make test-w
 
+      - name: Real-document extraction benchmark
+        run: make benchmark-extraction
+
       - name: Coverage gate (line + branch, must stay at 100%)
         run: make coverage ARGS="--cov-fail-under=100"

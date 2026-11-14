@@ -1,0 +1,828 @@
+ 
+ 
+UNITED STATES COURT OF APPEALS FOR VETERANS CLAIMS 
+ 
+No. 23-5064 
+ 
+MILLARD W. ADAMS, APPELLANT, 
+ 
+V. 
+ 
+DOUGLAS A. COLLINS, 
+SECRETARY OF VETERANS AFFAIRS, APPELLEE. 
+ 
+On Appeal from the Board of Veterans' Appeals 
+ 
+(Argued January 13, 2025 Decided July 8, 2025) 
+ 
+John D. Niles, of Topeka, Kansas, for the appellant. 
+ 
+Gilles Sadak, with whom Richard J. Hipolit, Acting General Counsel; Mary Ann Flynn, 
+Chief Counsel; and James B. Cowden, Deputy Chief Counsel, all of Washington, D.C., were on 
+the brief for the appellee. 
+Before PIETSCH, GREENBERG, and JAQUITH, Judges. 
+PIETSCH, Judge, filed the opinion of the Court. JAQUITH, Judge, filed an opinion 
+concurring in part and dissenting in part. 
+PIETSCH, Judge: In 2017, VA's General Counsel (G.C.) issued a precedent opinion that 
+prohibits service connection for obesity, both as directly related to service and as secondary to a 
+service-connected disability, finding that it is neither a disability nor a disease for purposes of 38 
+U.S.C. § 1110 and 38 C.F.R. § 3.310. See VA Gen. Coun. Prec. 1-2017, at 1-7 (Jan. 6, 2017) 
+[hereinafter G.C. Prec. 1-2017]. On May 4, 2023, the Board of Veterans' Appeals (Board) cited 
+the G.C. opinion to deny appellant Millard W. Adams's claim for service connection for obesity, 
+including as secondary to service-connected post-traumatic stress disorder (PTSD). See Record 
+(R.) at 5-13.  
+In this timely appeal over which the Court has jurisdiction, see 38 U.S.C. §§ 7272(a), 
+7266(a), Mr. Adams challenges the G.C.'s interpretation of section 1110 as excluding obesity from 
+those conditions that may be compensated by VA. For the reasons that follow, we hold that the 
+G.C. opinion's finding that obesity is not a disability for purposes of section 1110 is not a 
+persuasive interpretation of the statute, but we also hold that the G.C.'s finding that obesity is not 
+a "disease" for purposes of section 1110 is a persuasive interpretation of the statute. Because direct 
+Case: 23-5064    Page: 1 of 24      Filed: 07/08/2025
+ 
+2 
+service connection requires that a disability result from a "disease" or an "injury" incurred in the 
+line of duty, we decline to disturb the part of the G.C. opinion that prohibits service connection for 
+obesity as directly related to service. Yet in the context of secondary service connection, whether 
+a section 1110 disability is itself a "disease" or an "injury" incurred in the line of duty is irrelevant. 
+See Spicer v. McDonough, 61 F.4th 1360, 1364 (Fed. Cir. 2023); Allen v. Brown, 7 Vet.App. 439, 
+448 (1995) (en banc). 
+Thus, we hold that the G.C. opinion's finding that obesity is not a "disease" for purposes of 
+secondary service connection is an impermissible interpretation of the statute. We will vacate the 
+part of the Board's decision that denied service connection for obesity as secondary to service-
+connected PTSD, and we will remand this matter to the Board for further proceedings.  
+The May 2023 Board decision also dismissed a claim for a disability rating higher than 
+20% for diabetes mellitus, as well as claims for earlier effective dates for the awards of service 
+connection for diabetic neuropathy of the right and left lower extremities. See R. at 9-10. Mr. 
+Adams does not challenge the Board's dismissal of those claims; thus, the Court deems those issues 
+abandoned and will dismiss those appeals. See Pederson v. McDonald, 27 Vet.App. 276, 285 
+(2015) (en banc).  
+The Board decision also remanded the issue of entitlement to service connection for 
+obstructive sleep apnea as secondary to PTSD. See R. at 10-13. Thus, that matter is not presently 
+before the Court. See Breeden v. Principi, 17 Vet.App. 475, 478 (2004) (per curiam order) (stating 
+that a Board remand is not a final decision over which this Court has jurisdiction). 
+ 
+I. BACKGROUND 
+A. Law and Regulations 
+ Section 1110 provides VA compensation "[f]or disability resulting from personal injury 
+suffered or disease contracted in the line of duty." 38 U.S.C. § 1110. In the context of secondary 
+service connection, "[section] 1110 plainly requires compensation when a service-connected 
+disease or injury is a but-for cause of a present-day disability," including the "natural progression 
+of a condition not caused by a service-connected injury or disease, but that nonetheless would have 
+been less severe were it not for the service-connected disability." Spicer, 61 F.4th at 1364.  
+VA's current policy is to prohibit service connection for obesity on the basis that it is not a 
+disability, disease, or injury contemplated in section 1110. See G.C. Prec. 1-2017, at 1-7. The G.C. 
+Case: 23-5064    Page: 2 of 24      Filed: 07/08/2025
+ 
+3 
+opinion observes that the term "disease" is not defined in title 38 and cites gap-filling authority 
+delegated to the Secretary by Congress to determine what conditions qualify as "diseases" for 
+purposes of section 1110. Id. at 3 (first citing O'Bryan v. McDonald, 771 F.3d 1376, 1378 (Fed. 
+Cir. 2014); and then citing Terry v. Principi, 340 F.3d 1378, 1383 (Fed. Cir. 2003)). The opinion 
+discusses VA's history of defining "disease" as it was defined in the 26th edition of Dorland's 
+Illustrated Medical Dictionary–"any deviation from or interruption of the normal structure or 
+function of any part, organ, or system of the body that is manifested by a characteristic set of 
+symptoms and signs and whose etiology, pathology, and prognosis may be known or unknown." 
+Id. (first citing VA Gen. Coun. Prec. 82-90 (Jul. 18, 1990); and then citing VA Gen. Coun. Prec. 
+2-93 (Jan. 13, 1993)). G.C. Prec. 1-2017 also discusses medical treatises that consider whether 
+obesity is a "disease," and G.C. Prec. 1-2017 finds no consensus among medical authorities that 
+obesity satisfies the definition of "disease." Id. at 4-6. The G.C. opinion notes that some of these 
+treatises state that "research has not yet found a true causal connection between obesity and 
+morbidity and/or mortality." Id. at 6. 
+ The G.C. opinion also finds that obesity is not a "disability" for purposes of section 1110. 
+Id. at 7. The opinion defines "disability" as the average impairment of earning capacity and finds 
+that obesity is generally an excess accumulation of body fat and does not usually result in 
+impairment. Id. But the opinion acknowledges evidence that "severe obesity, i.e., BMI [body mass 
+index] greater than 40, impairs physical and social function." Id.   
+ Addressing secondary service connection specifically, the G.C. opinion finds that obesity 
+is not a disability for purposes of 38 C.F.R. § 3.310(a) because VA has not included obesity on the 
+rating schedule. Id. (citing 38 C.F.R. § 3.310(a) (2016)). Citing the medical treatises and lack of 
+medical consensus on whether obesity is a "disease," the G.C. opinion then finds that obesity is 
+neither a "disease" nor an "injury" for purposes of § 3.310(a) and (b).1  Id. 
+One year after the G.C. issued G.C. Prec. 1-2017, the Federal Circuit issued its decision in 
+Saunders v. Wilkie, holding that the "plain language of [section] 1110," as well as dictionary 
+definitions of "disability," compelled the conclusion that "'disability' in section 1110 refers to the 
+functional impairment of earning capacity, not the underlying cause of said disability." 886 F.3d 
+1356, 1361 (Fed. Cir. 2018), rev'g Saunders v. McDonald, No. 15-0975, 2016 WL 3002862 (Vet. 
+ 
+1 The Federal Circuit has since determined that §3.310(b) is "unlawful as inconsistent with [section] 1110." 
+Spicer, 61 F.4th at 1366.  
+Case: 23-5064    Page: 3 of 24      Filed: 07/08/2025
+ 
+4 
+App. May 25, 2016) (mem. dec.), aff'd, 2016 WL 4258493 (Vet. App. Aug. 12, 2016)  (affirmed 
+by a three-judge panel). Saunders v. Wilkie concluded that pain can be compensated by VA even 
+in the absence of an underlying diagnosis, if the pain results in functional impairment and meets 
+the two other requirements for service connection—specifically, that the injury or disease be 
+incurred in the line of duty, and that there be a nexus between the in-service event and the current 
+disability. 886 F.3d at 1368-69.  
+B. Procedural History 
+The facts are not in dispute. Mr. Adams served in the U.S. Air Force from October 1966 to 
+September 1970. R. at 14,868. He filed a claim for service connection for obesity as secondary to 
+his service-connected PTSD in March 2016, R. at 12,496-506, submitting a November 2009 article 
+that links cortisol, a hormone whose levels are said to increase with stress, with weight gain. R. at 
+12,478-81. VA denied Mr. Adams's claim in April 2016. R. at 12,354.  
+Mr. Adams filed a supplemental claim for service connection for obesity in December 
+2019. R. at 7585-86. Records obtained in connection with this claim include an August 2016 VA 
+treatment record states that Mr. Adams has "core weakness and postural changes due to obesity." 
+R. at 3284. In a January 2020 rating decision, VA determined that Mr. Adams had not submitted 
+new and relevant evidence to reopen his finally adjudicated March 2016 claim. 2 R. at 6906-13. In 
+August 2020, Mr. Adams filed a VA Form 10182 to appeal that decision, electing to have a hearing 
+before the Board. R. at 6887. A July 2022 VA treatment record describes Mr. Adams as "obese, 
+uses rollator." R. at 144. Mr. Adams testified at a hearing before the Board in January 2023. R. at 
+2565.  
+The Board issued the decision on appeal in May 2023. R. at 5-13. It found that "obesity is 
+not a disease or disability for VA purposes and is not subject to service connection." R. at 9 (citing 
+Marcelino v. Shulkin, 29 Vet.App. 155, 158 (2018)). The Board then noted the G.C. opinion's 
+conclusion that "obesity per se is not a disease or injury for purposes of 38 U.S.C. §§ 1110 and 
+1131, and, therefore, may not be service connected on a direct or secondary basis." R. at 9. The 
+Board also characterized the G.C. opinion as finding that "particularities of body type, such as 
+being overweight or underweight, do not, of themselves, constitute disease or disability subject to 
+ 
+2 VA issued another rating decision in March 2020 because the January 2020 rating decision did not consider 
+certain laws and regulations that applied to Mr. Adams's claim. R. at 6907. But VA's finding that Mr. Adams had not 
+submitted new and relevant evidence remained unchanged. Id. 
+Case: 23-5064    Page: 4 of 24      Filed: 07/08/2025
+ 
+5 
+service connection." Id. Additionally, the Board found that the record did not show that Mr. 
+Adams's obesity functionally impaired earning capacity, and though Mr. Adams was obese, his 
+"obesity is not considered a disease or injury." Thus, the Board concluded, service connection for 
+obesity as either directly related to service or as secondary to a service-connected disability was 
+not warranted.  
+ 
+II. PARTIES' ARGUMENTS 
+A. Appellant's Arguments 
+Mr. Adams argues that G.C. Prec. 1-2017's general prohibition on service connection for 
+obesity on both direct and secondary bases is invalid in light of Saunders. First, Mr. Adams argues, 
+Saunders invalidates the G.C. opinion's reliance on gap-filling authority to determine the sorts of 
+conditions that qualify as a "disease" or an "injury" for purposes of section 1110. Appellant's Brief 
+(Br.) at 12. Mr. Adams notes that in Saunders, the Federal Circuit arrived at its conclusion by 
+characterizing the word "disability" as unambiguous; thus, he argues, there is no gap to fill. Id. He 
+distinguishes O'Bryan by arguing that O'Bryan is limited only to those disabilities that the 
+Secretary "has by regulation interpreted not to constitute a section 1110 disability, disease, or 
+injury—such as congenital or developmental defects." Id.  
+Second, Mr. Adams challenges the G.C. opinion's reliance on the absence of obesity from 
+the rating schedule. Id. at 13 (citing G.C. Prec. 1-2017, at 5-6). Mr. Adams notes that pain is also 
+not listed in the rating schedule, but that Saunders still found that pain can be a disability under 
+section 1110 if it causes functional impairment. Id. (citing Saunders, 886 F.3d at 1368). Thus, in 
+his view, Saunders "reflects the understanding that has always been correct: whether [the rating 
+schedule] lists a particular condition does not affect whether that condition is service-connectible." 
+Id. Instead, he argues, the question is simply whether a disability results in functional impairment. 
+Id.  
+Mr. Adams acknowledges G.C. Prec. 1-2017's finding that obesity is not a disease or injury 
+for purposes of section 1110, but he argues that under Saunders, "the operative language for service 
+connection is 'disability' rather than its cause." Id. (citing Saunders, 886 F.3d at 1362-63). Thus, 
+Mr. Adams asserts, anything causing functional impairment can be service connected, and 
+"whether a condition such as obesity is itself a 'disease' simply does not matter." Id. at 13-14. 
+Case: 23-5064    Page: 5 of 24      Filed: 07/08/2025
+ 
+6 
+Third, Mr. Adams argues that the G.C. opinion is invalid because to support its conclusion 
+that obesity is not a "disease" for purposes of section 1110, the G.C. opinion relies on medical 
+literature stating that obesity does not cause "morbidity and/or mortality" in all patients. Id. at 14 
+(citing G.C. Prec. 1-2017, at 6-7). Mr. Adams argues that under Saunders, the only question is 
+whether a disability causes functional impairment, not whether it results in morbidity or mortality. 
+Id. 
+Mr. Adams finds additional support for his position in Spicer, because that decision affirms 
+that "disability" for purposes of section 1110 means "functional impairment." Id. (citing 61 F.4th 
+1363-64). He also asserts that Spicer affirms that Saunders found section 1110 unambiguous. Id. 
+(citing Spicer, 61 F.4th at 1363). Additionally, he asserts that Spicer holds that claims for 
+secondary service connection, such as the claim under consideration, arise under section 1110. Id. 
+(citing Spicer, 61 F.4th at 1366). In Mr. Adams's view, Spicer confirms that "[section] 1110 is 
+unambiguous and leaves no gap" for VA to fill as to whether obesity can be service connected. Id. 
+All that matters is whether obesity results in functional impairment. Id.  
+Mr. Adams asserts that the Board's error was prejudicial because the record includes 
+evidence that his obesity causes functional impairment. Id. at 15-18. Mr. Adams points to a VA 
+treatment record describing "core weakness and postural changes due to obesity," with "symptoms 
+more pronounced with trunk extension." Id. at 16 (citing R. at 144). He also argues that symptoms 
+documented in clinical notes, such as "fatigability, weakness, and … postural changes … are all 
+hallmarks of disability" that result from obesity. Id. (citing 38 C.F.R. §§ 4.1, 4.3, 4.45 (2024)).  
+B. Secretary's Arguments 
+The Secretary asserts that VA has the authority to determine what it will compensate as a 
+service-connected disability under 38 U.S.C. § 1155, authorizing VA to create a rating schedule, 
+and under 38 U.S.C. § 501(a), authorizing the Secretary to "prescribe all rules and regulations 
+which are necessary or appropriate to carry out the laws administered by the Department." 
+Secretary's Br. at 5-6. Because of this authority, the Secretary argues, VA's "determinations as to 
+what disabilities it includes in the rating schedule [are] precluded from judicial review." Id. at 6 
+(first citing Wanner v. Principi, 370 F.3d 1124, 1131 (Fed. Cir. 2004); and then citing Palczewski 
+v. Nicholson, 21 Vet.App. 174, 179-80 (2007) (observing that in reviewing a regulation that defines 
+when hearing loss may be a disability, the Court must review the regulation with "substantial 
+deference" to the Secretary's interpretation)). The Secretary then appears to challenge this Court's 
+Case: 23-5064    Page: 6 of 24      Filed: 07/08/2025
+ 
+7 
+jurisdiction to consider this matter, pointing out that in Marcelino, this Court found that 
+"'reviewing what should be considered a disability is no different from direct review of the content 
+of the rating schedule," a task that the Court has no authority to engage in. Id. at 7 (quoting 
+Marcelino, 29 Vet.App. at 158).  
+The Secretary also argues that Saunders is distinguishable because it does not mention 
+obesity, instead finding that pain can be a disability under section 1110 if it causes functional 
+impairment.3 Id. at 8. Moreover, the Secretary asserts, Mr. Adams has not shown that his obesity 
+causes pain that results in functional impairment. Id. at 9. The Secretary dismisses as "lay 
+hypothesizing" Mr. Adams's argument that symptoms such as fatigability, weakness, and postural 
+changes are hallmarks of disability, and the Secretary contends that the Board was not obligated 
+to specifically address this evidence. Id. at 9-10. And even if Saunders does apply, the Secretary 
+argues, the G.C. opinion "specifically found based on a review of scientific research, that obesity 
+does not produce impairment resulting in reductions of earning capacity." Id. at 11. The Secretary 
+also asserts that Mr. Adams relies on Spicer only because Spicer cites Saunders with approval. Id. 
+Additionally, the Secretary argues, VA properly exercised its gap-filling authority. Id. at 12. 
+C. Appellant's Reply to the Secretary 
+In his reply brief, Mr. Adams disagrees with the Secretary that Palczewski requires this 
+Court to afford substantial deference to his determination as to what constitutes a disability for 
+purposes of section 1110. Reply Br. at 9. First, Mr. Adams characterizes Saunders as holding that 
+section 1110 is not ambiguous and he argues that "Palczewski thus does not survive Saunders." Id. 
+Second, he points to the U.S. Supreme Court's recent decision in Loper Bright Enterprises v. 
+Raimondo, and notes that its holding significantly affects the deference that courts are to afford 
+agency determinations. Id. (citing Loper Bright, 603 U.S. 369, 412-13 (2024)). Thus, Mr. Adams 
+argues, Palczewski deference is "no longer tenable." Id.  
+At oral argument, Mr. Adams responded to the Secretary's argument that the G.C. opinion 
+determined that obesity does not result in the functional impairment of earning capacity : Mr. 
+Adams noted that the opinion does, in fact, appear to acknowledge that obesity can functionally 
+ 
+3 At oral argument, the Secretary acknowledged authority holding that Saunders does not apply only to pain. 
+Oral Argument (OA) at 33:45-34:57, Adams v. Collins, U.S. Vet. App. No. 23-5064 (argued Jan. 13, 2025), 
+http://www.uscourts.cavc.gov/oral.arguments.audio.php (discussing Martinez-Bodon v. Wilkie, 32 Vet.App. 393, 398 
+(2020) ("[W]e hold that Saunders is not limited to pain"), aff'd sub nom. Martinez-Bodon v. McDonough, 28 F.4th 
+1241 (Fed. Cir. 2022)). In light of this concession, the Court will not discuss this argument further.  
+Case: 23-5064    Page: 7 of 24      Filed: 07/08/2025
+ 
+8 
+impair certain people who suffer from "severe" obesity, defined as BMI of 40 or greater. G.C. 
+Prec. 1-2017, at 6. The Secretary responded that the G.C. opinion describes "obesity as an 
+intermediate step" to service connection, allowing compensation for disabilities for which obesity 
+is a link in the causal chain. OA at 35:37-37:46. The Secretary asserted that this view is consistent 
+with VA's position that obesity is merely the "excess accumulation of body fat" that can impair 
+other body functions, but that obesity does not by itself result in the functional impairment of 
+earning capacity. Id.  
+ 
+III. ANALYSIS 
+Establishing service connection generally requires medical or, in certain circumstances, lay 
+evidence of (1) a current disability, (2) an in-service incurrence or aggravation of a disease or 
+injury, and (3) a nexus between the claimed in-service disease or injury and the present disability. 
+38 U.S.C § 1110; see Shedden v. Principi, 381 F.3d 1163, 1166-67 (Fed. Cir. 2004). We reiterate 
+that the G.C. opinion finds that obesity is neither a "disability" nor a "disease" for purposes of 
+section 1110, and thus that service connection for obesity cannot be established.  
+Under 38 U.S.C. § 7104(c), the precedent opinions of the VA General Counsel are binding 
+on the Board. Thus, in Mr. Adams's appeal, the Board was required to follow G.C. Prec. 1-2017. 
+But unlike the Board, this Court is not bound by VA General Counsel precedent opinions. See 38 
+U.S.C. § 7261(a)(3). Though this Court generally reviews VA's statutory interpretation de novo, 
+see DeBeaord v. Principi, 18 Vet.App. 357, 363 (2004), we recognize that opinions of the General 
+Counsel "constitute a body of experience and informed judgment," Osman v. Peake, 22 Vet.App. 
+252, 256 (2008). VA's interpretation of a statute in a G.C. opinion is entitled to respect to the extent 
+that the interpretation has "'the power to persuade.'" Wanless v. Shinseki, 23 Vet.App. 143, 150 
+(2009) (quoting Skidmore v. Swift & Co., 323 U.S. 134, 140 (1944)). The weight the Court affords 
+General Counsel opinions "depends heavily on their thoroughness, reasoning, and consistency 
+with earlier and later pronouncements on the specific issue." Osman, 22 Vet.App. at 256 (citing 
+Skidmore, 323 U.S. at 140).  
+A. The Court's Jurisdiction to Review the Question Presented 
+The Secretary noted in his brief that VA has the authority to determine the content of the 
+rating schedule, and that this Court does not have the authority to review the content of the rating 
+schedule. Id. at 5-6 (first citing Wanner, 370 F.3d at 1131; and then citing Palczewski, 21 Vet.App. 
+Case: 23-5064    Page: 8 of 24      Filed: 07/08/2025
+ 
+9 
+at 179-80). He also points to this Court's holding in Marcelino, finding that an argument that 
+obesity should be considered a disability under the rating schedule is not one that can be reviewed 
+by this Court. Id. at 7 (citing Marcelino, 29 Vet.App. at 157-58).  
+The Secretary's argument fails to account for the Federal Circuit's decision in Larson v. 
+McDonough, holding that asking whether obesity can be a disability for purposes of section 1110 
+is not a request for the Court to review the rating schedule but is instead a request to establish 
+service connection under that statute. 10 F.4th 1325, 1329 (Fed. Cir. 2021). Larson held that such 
+questions are controlled by Saunders, rather than Wanner, and Larson reversed a determination by 
+this Court that we lacked jurisdiction to review the Board's determination that obesity does not 
+constitute a disability for purposes of section 1110. Id. at 1329-30.  
+Mr. Adams does not ask this Court to review the content of the rating schedule; instead, he 
+challenges the G.C. opinion's finding that obesity is not a disability for purposes of section 1110. 
+Thus, this matter is controlled by Saunders, rather than Wanner. See Larson, 10 F.4th at 1329-30. 
+The Court is therefore satisfied that we may review the question that Mr. Adams has presented to 
+us, and we reject the Secretary's arguments to the contrary.  
+B. The G.C. Opinion’s Finding That Obesity Is Not a Disability 
+We turn now to the first question before us: In G.C. Prec. 1-2017, did the G.C., for purposes 
+of VA compensation, persuasively interpret section 1110 as excluding obesity from those 
+conditions that may be considered "disabilities."  See Wanless, 23 Vet.App. at 150. We find that 
+the G.C. did not persuasively interpret the statute. 
+"As in any case of statutory construction, our analysis begins with the language of the 
+statute." Hughes Aircraft Co. v. Jacobson, 525 U.S. 432, 438 (1999). Saunders, which holds that 
+"disability" in the context of section 1110 means "functional impairment of earning capacity," 
+extensively analyzes "disability" for purposes of section 1110 and guides our analysis here. 
+Saunders, 886 F.3d at 1363. The G.C. opinion, issued before Saunders, defines "disability" for 
+purposes of section 1110 as "'average impairments of earning capacity resulting from such injuries 
+in civil occupations.'" G.C. Prec. 1-2017, at 7 (quoting 38 U.S.C. § 1155). The Court discerns no 
+material difference between the G.C. opinion's definition of "disability" as "average impairment 
+of earning capacity" and Saunders's definition of "disability" as "functional impairment of earning 
+capacity." Notably, Saunders cites section 1155's definition of "disability" as "average impairment 
+of earning capacity" as an indication that VA's regulations support its definition of "disability" as 
+Case: 23-5064    Page: 9 of 24      Filed: 07/08/2025
+ 
+10 
+referring to "functional impairment." Saunders, 886 F.3d at 1362. Thus, the G.C. opinion's 
+definition of "disability" is consistent with Saunders, and is therefore a permissible interpretation. 
+But the G.C. opinion goes on to find that obesity does not meet the definition of "disability" 
+because obesity does not impair most obese individuals. G.C. Prec. 1-2017, at 7. The opinion 
+acknowledges "evidence that severe obesity, i.e., BMI of greater than 40, impairs physical and 
+social function." Id. The opinion then describes obesity as "excess accumulation of body fat" and 
+cites medical studies finding that most obese people are not impaired as a result of their obesity. 
+Id. Thus, the opinion concludes, VA "need not consider obesity itself as meeting the criteria to be 
+considered a 'disability' for purposes of relevant statutes and regulations." Id.   
+In its opinion the G.C. does not attempt to reconcile the apparent contradiction between 
+acknowledging that obesity can physically and socially impair some people, and concluding that 
+obesity does not meet the criteria to be considered a disability. It appears that the opinion interprets 
+section 1110 as excluding obesity from the conditions that may be considered a disability under 
+that statute, just because some, but not all, obese people are not functionally impaired by their 
+obesity. This interpretation does not comport with Saunders's definition of "disability." Nothing 
+in Saunders, or in any subsequent authority that addresses Saunders, stands for the proposition that 
+a condition is not disability for purposes of section 1110 when only some, but not all, people with 
+that condition are impaired by it.  
+Because the G.C. opinion does not reconcile its contradictory findings or comport with 
+Saunders's definition of "disability," we reject the opinion's interpretation of section 1110 as 
+excluding obesity from the conditions that may be considered a "disability." See Theiss v. Principi, 
+18 Vet.App. 204, 211 (2004) (rejecting a G.C. opinion's definition of a term for "faulty reasoning"). 
+We hold that obesity may be a disability for purposes of section 1110 if it results in the functional 
+impairment of earning capacity, see Saunders, 886 F.3d at 1362-63, and that deciding whether a 
+claimant's obesity causes functional impairment requires an "individualized assessment" of the 
+"degree of impairment" caused by a claimant's obesity, see Wait v. Wilkie, 33 Vet.App. 8, 16 
+(2020). 
+C. The G.C. Opinion's Finding that Obesity Is Not a Disease 
+i. Reliance on VA's Gap-Filling Authority 
+ Before discussing the persuasive value of the G.C.'s opinion that obesity is not a disease 
+for purposes of section 1110 and § 3.310(a) and (b), we must first address Mr. Adams's challenge 
+Case: 23-5064    Page: 10 of 24      Filed: 07/08/2025
+ 
+11 
+to VA's authority to determine whether a condition is a "disease" for purposes of section 1110. See 
+Appellant's Br. at 12. The G.C. opinion notes that the word "disease" is not defined in section 1110 
+and observes that Congress delegated to VA the authority to fill the gap as to the sorts of conditions 
+that may be considered a disease under that statute. G.C. Prec. 1-2017, at 3. Mr. Adams challenges 
+VA's reliance on gap-filling authority to ascertain whether obesity is a disease for purposes of 
+section 1110. Appellant's Br. at 12. He argues that because Saunders found that the "disability" in 
+section 1110 is unambiguous, there is "no pertinent gap for the Secretary to fill." Id. He also 
+characterizes Spicer as holding that section 1110 is unambiguous because Spicer cites Saunders 
+with approval. Id. at 14.  
+The Court is not persuaded. The G.C. opinion cited gap-filling authority to ascertain 
+whether obesity is a disease, not whether it is a disability for purposes of section 1110. See G.C. 
+Prec. 1-2017, at 3. Mr. Adams does not explain how Saunders's analysis of the word "disability," 
+or Spicer's citation to that part of Saunders, has any bearing on VA's authority to fill the statute's 
+gap in defining "disease." Mr. Adams appears to believe that because Saunders interpreted the 
+word "disability" as unambiguous, see Saunders, 886 F.3d at 1362, then all of section 1110 is 
+unambiguous.  
+This reading of Saunders is far too broad. Saunders is concerned only with the definition 
+of "disability"; it does not concern "disease" or "injury." In fact, in Saunders the Federal Circuit 
+expressly rejected authority this Court had relied on in deciding Ms. Saunders's appeal by finding 
+that the authority "reads out the distinction Congress made in section 1110 between the 
+requirement for a disability and the requirement for in-service incurrence or aggravation of a 
+disease or injury." Id. at 1366 (citing Sanchez-Benitez v. West (Sanchez-Benitez I), 13 Vet.App. 
+282, 285 (1999)). Saunders notes further that reading out the requirement for a disease or injury 
+"eviscerates the nexus requirement" and is therefore "illogical." Id.   
+Our reading of Saunders is also consistent with this Court's decision in Wait, characterizing 
+Saunders as drawing "a distinction between the term 'disability' and 'disease or injury.'" 33 
+Vet.App. at 14. Thus, the Court is not convinced that Saunders's interpretation of "disability" in 
+section 1110 prevents the Secretary from exercising gap-filling authority to determine the 
+conditions that may be a "disease" or an "injury" for purposes of section 1110.   
+ 
+ 
+Case: 23-5064    Page: 11 of 24      Filed: 07/08/2025
+ 
+12 
+ii. Direct Service Connection 
+The G.C. opinion notes that some medical authorities, including the American Medical 
+Association (AMA), and other Federal agencies have described obesity as a "disease." G.C. Prec. 
+1-2017, at 4. Yet the opinion goes on to find that "these statements were made for a variety of 
+purposes other than disability compensation," and that these statements "do not compel the same 
+result by VA." Id. The opinion then notes that there is no apparent consensus among medical 
+authorities that obesity is a disease, and the opinion points out disagreement within the AMA that 
+obesity is appropriately characterized as a disease. Id. Additionally, the opinion finds, classifying 
+obesity as a disease "for purposes of promoting understanding, prevention, and treatment of 
+conditions that jeopardize a person's health" does not also mean that obesity should also be 
+classified as a disease for purposes of VA compensation. Id. at 5.  
+ Critically, Mr. Adams does not challenge any of those findings. Instead, he argues that 
+"whether a condition such as obesity is itself a 'disease' simply does not matter." Appellant's Br. at 
+14. In his view, all that matters is whether a condition functionally impairs earning capacity. Id. at 
+13-14. If so, he believes, the condition should be compensated under section 1110. Id.   
+In the direct-service-connection context, Mr. Adams asks the Court to effectively read out 
+of section 1110 its requirement that a disability—i.e., a condition resulting in functional 
+impairment of earning capacity—result from a disease or injury that is contracted in the line of 
+duty. This we cannot do. The Court must give effect to all terms and avoid rendering any 
+"'inoperative or superfluous, void or insignificant.'" Roper v. Nicholson, 20 Vet.App. 173, 178 
+(2006) (quoting 2A NORMAN J. SINGER, SUTHERLAND STATUTES AND STATUTORY CONSTRUCTION 
+§ 46:06 (6th ed. 2000)), aff'd, 240 F. App'x 422 (Fed. Cir. 2007); see Marx v. Gen. Revenue Corp., 
+568 U.S. 371, 386 (2013) (stating that the "canon against surplusage is strongest when an 
+interpretation would render superfluous another part of the same statutory scheme"). Additionally, 
+the Federal Circuit has held that "[s]ection[] 1110 … make[s] it clear that if a disability cannot be 
+attributed to an 'injury' or a 'disease' incurred or aggravated in the line of duty, the disability is not 
+compensable." Terry, 340 F.3d at 1382 (emphasis added). Thus, in the context of direct service 
+connection, Mr. Adams has not presented the Court with a valid reason to invalidate the Secretary's 
+interpretation of section 1110 as excluding obesity from the conditions that may be considered a 
+"disease."  
+Case: 23-5064    Page: 12 of 24      Filed: 07/08/2025
+ 
+13 
+And in the absence of such an argument, the Court finds that the Secretary's interpretation 
+of section 1110 as excluding obesity from the conditions that may be considered a "disease" is 
+persuasive and entitled to respect. See Wanless, 23 Vet.App. at 150. The interpretation is supported 
+by references to literature showing that there is no medical consensus that obesity should be 
+classified as a disease,4 and Mr. Adams does not challenge the G.C. opinion's reliance on such 
+literature. Moreover, the G.C. opinion's interpretation is not inconsistent with any other position 
+taken by the Secretary on the question of whether obesity is properly classified as a "disease," and 
+the Secretary has the authority to fill the gap in section 1110 by determining which conditions may 
+be considered a disease for purposes of that statute. See Skidmore, 323 U.S. at 140; see also 
+Wanless, 23 Vet.App. at 150-51 (holding that the VA G.C. opinion interpreting section 5313 was 
+entitled to respect where the interpretation was accompanied by supporting rationale and not 
+inconsistent with previous VA positions); Osman, 22 Vet.App. at 259-60 (rejecting VA G.C. 
+interpretation that was inconsistent with a prior interpretation).  
+iii. Secondary Service Connection 
+But in the context of secondary service connection, Mr. Adams is correct that whether 
+obesity is itself a disease or an injury for purposes of section 1110 "simply does not matter." 
+Appellant's Br. at 14. This Court explained in Allen that 
+the term "disability" as used in [section] 1110 refers to impairment of earning 
+capacity, and . . . such definition mandates that any additional impairment of 
+earning capacity resulting from an already service-connected condition, regardless 
+of whether or not the additional impairment is itself a separate disease or injury 
+caused by the service-connected condition, shall be compensated.  
+ 
+7 Vet.App. at 448 (1995) (emphasis added). Additionally, Spicer holds that "[section] 1110 plainly 
+requires compensation when a service-connected disease or injury is a but-for cause of a present-
+day disability," including additional disability that results from "the natural progression of a 
+condition not caused by a service-connected injury or disease, but that nonetheless would have 
+ 
+4  Our dissenting colleague disagrees that the G.C. opinion's findings as to this medical literature are 
+persuasive, and he presents a litany of more recent medical literature, as well as findings by other Federal agencies 
+and a recent executive order, all describing obesity as a disease. See infra at 21-22. But whether the Court can take 
+judicial notice of this extrarecord evidence is an open question. See Euzebio v. McDonough, 989 F.3d 1305, 1323 
+(Fed. Cir. 2021). It is important to note again that Mr. Adams himself does not challenge the G.C. opinion's reliance 
+on such literature, and we do not believe it is prudent to consider a legal theory that was not advanced by the appellant 
+when such consideration requires us to rely on evidence not presented to us. See Davis v. United States, 512 U.S. 452, 
+464 (1994) (Scalia, J., concurring) (observing that "refusal to consider arguments not raised is a sound prudential 
+practice," but that "there are times when prudence dictates the contrary"). 
+Case: 23-5064    Page: 13 of 24      Filed: 07/08/2025
+ 
+14 
+been less severe were it not for the service connected disability." 61 F.4th at 1364. Thus, Allen and 
+Spicer clarify that in the context of secondary service connection, whether a condition such as 
+obesity is itself a "disease" or an "injury" for purposes of section 1110 is irrelevant. All that is 
+required to establish entitlement to secondary service connection is evidence that a condition 
+results in a "disability," defined as functional impairment of earning capacity, and a "but-for" 
+relationship between the disability and the service-connected disease or injury. See Spicer, 61 F.4th 
+at 1364. In the context of secondary service connection, the requirement in section 1110 that a 
+"disease or injury" result from the line of duty has already been fulfilled by virtue of the award of 
+service connection for the condition that caused the additional disability. 
+Before the Federal Circuit's decision in Spicer, secondary service connection was 
+considered a product of regulation, rather than statute. See Frost v. Shulkin, 29 Vet.App. 131, 137 
+(2017) (observing that "[s]secondary service connection for VA benefit purposes is not addressed 
+in any statute"). For that reason, the G.C. opinion addresses whether a disability can be a "disease" 
+for purposes of secondary service connection in the context of 38 C.F.R. § 3.310(a) and (b). See 
+G.C. Prec. 1-2017, at 7. Thus, we must assess the level of deference to afford the Agency's 
+interpretation of the regulation. See Cathedral Candle Co. v. U.S. Int'l Trade Comm'n, 400 F.3d 
+1352, 1364 (Fed. Cir. 2005) (holding that an agency's interpretation of its own regulations is 
+entitled to broad deference unless "'it is plainly erroneous or inconsistent with the regulation'" 
+(quoting Bowles v. Seminole Rock & Sand Co., 325 U.S. 410, 414 (1945))). "[C]ourts should defer 
+to an agency's interpretation of its own ambiguous regulation so long as that interpretation is not 
+inconsistent with the language of the regulation or otherwise plainly erroneous and represents the 
+agency's considered view on the matter." Mulder v. Gibson, 27 Vet.App. 10, 16 (2014) (citing 
+Smith v. Nicholson, 451 F.3d 1344, 1349 (Fed. Cir. 2006) (citing Auer v. Robbins, 519 U.S. 452, 
+461-62 (1997))). 
+Referring to medical treatises and other evidence the G.C. opinion relied on to find that 
+obesity is not a disease for purposes of section 1110, which the opinion calls "the reasons noted 
+above," the G.C. finds that obesity is not a disease for purposes of § 3.310(a). Id. We will not defer 
+to the opinion's interpretation because it is inconsistent with the language of the regulation. The 
+regulation provides for compensation for disabilities that are due to a service-connected disease or 
+injury. See 38 C.F.R. § 3.310(a). In such situations, the veteran is required only to establish that 
+his or her condition meets the section 1110 definition of "disability," and that but-for the service-
+Case: 23-5064    Page: 14 of 24      Filed: 07/08/2025
+ 
+15 
+connected disease or injury, the veteran would not have the disability. See Spicer, 61 F.4th at 1364. 
+The regulation contains no requirement that the disability also be a "disease" or an "injury" for 
+purposes of section 1110. The opinion's brief finding that obesity is not a disease "[f]or the reasons 
+noted above" fails to account for the fact that in the context of secondary service connection, a 
+"disease" refers to a condition that has already been found to be related to service. See G.C. Prec. 
+1-2017, at 7. The Court cannot find that this arbitrary and dismissive finding "'reflect[s] the 
+agency's fair and considered judgment on the matter in question.'" Cathedral Candle Co., 400 F.3d 
+at 1364 (quoting Auer, 519 U.S. at 462). As a result, the G.C. opinion's interpretation of § 3.310(a) 
+is "unworthy of deference." See Auer, 519 U.S. at 462.  
+The G.C. opinion also finds that obesity is not a disease for the purposes of §3.310(b), see 
+G.C. Prec. 1-2017, at 7; yet in Spicer, the Federal Circuit held that §3.310(b) is "unlawful as 
+inconsistent with [section] 1110." Spicer, 61 F.4th at 1366. We therefore reject the G.C. opinion's 
+finding that obesity is not a disease for the purposes of secondary service connection by 
+aggravation, because the finding is inconsistent with Spicer. 
+D. Application to Mr. Adams's Appeal 
+Before the Board, Mr. Adams argued that his obesity is secondary to his service-connected 
+PTSD. R. at 8. The Board found the record devoid of any evidence that Mr. Adams's obesity 
+resulted in the functional impairment of earning capacity. R. at 9. Mr. Adams argues that the Board 
+overlooked evidence that his obesity does, in fact, result in functional impairment of earning 
+capacity. Appellant's Br. at 16. He points specifically to the August 2016 VA treatment record 
+finding that he has "core weakness and postural changes due to obesity" that are "more pronounced 
+with trunk extension." R. at 3284. He also characterizes the July 2022 VA treatment record 
+describing him as "obese" and reports that he "uses rollator" as evidence of fatigability, and argues 
+that "[f]atigability, weakness, and manifestations leading to postural changes or symptoms more 
+pronounced on movement are all hallmarks of disability." Appellant's Br. at 16-17 (citing R. at 
+144).   
+The Board must provide a statement of its reasons or bases for its determinations that is 
+adequate to enable an appellant to understand the precise basis for the Board's decision as well as 
+to facilitate review in this Court. 38 U.S.C. § 7104(d)(1); Allday v. Brown, 7 Vet.App. 517, 527 
+(1995); Gilbert v. Derwinski, 1 Vet.App. 49, 56-57 (1990). To comply with this requirement, the 
+Board must analyze the credibility and probative value of the evidence, account for the evidence 
+Case: 23-5064    Page: 15 of 24      Filed: 07/08/2025
+ 
+16 
+it finds persuasive or unpersuasive, and provide its reasons for rejecting any material evidence 
+favorable to the claimant. Caluza v. Brown, 7 Vet.App. 498, 506 (1995), aff'd per curiam, 78 F.3d 
+604 (Fed. Cir. 1996) (table). The Court finds that the Board provided an inadequate statement of 
+reasons or bases for finding that Mr. Adams's obesity does not result in the functional impairment 
+of earning capacity, because it overlooked favorable material evidence—specifically, the August 
+2016 VA treatment record that attributes weakness and postural changes directly to Mr. Adams's 
+obesity. See R. at 3284; Caluza, 7 Vet.App. at 506. Although the Secretary disagrees that the Board 
+was obligated to discuss this evidence, see Secretary's Br. at 10-11, his post hoc rationalizations 
+cannot make up for the Board's lack of adequate reasons or bases. See Simmons v. Wilkie, 30 
+Vet.App. 267, 277 (2018) (holding that the "Court cannot accept the Secretary's post hoc 
+rationalizations" to cure the Board's reasons-or-bases errors). Remand is therefore warranted so 
+that the Board can provide an adequate statement of reasons or bases for finding whether Mr. 
+Adams's obesity results in the functional impairment of earning capacity. If the Board answers this 
+question affirmatively, it must then make factual determinations whether Mr. Adams's service-
+connected PTSD is a but-for cause of his obesity. See Spicer, 61 F.4th at 1364.  
+To the extent that the Board also denied service connection for obesity on a direct basis, 
+the Court leaves this finding, consistent with our findings above, undisturbed. See R. at 9. We 
+remind the Board that "[a] remand is meant to entail a critical examination of the justification for 
+the [Board's] decision." Fletcher v. Derwinski, 1 Vet.App. 394, 397 (1991); see also Andrews v. 
+McDonough, 34 Vet.App. 151, 161 (2021). Additionally, on remand the Board must treat this 
+matter in an expeditious manner, in accordance with 38 U.S.C. § 7112(a). 
+ 
+IV. CONCLUSION 
+After considering the parties' pleadings and reviewing the record, the Court VACATES the 
+part of the Board's May 4, 2023, decision that denied service connection for obesity as secondary 
+to service-connected PTSD, and REMANDS that matter for further proceedings consistent with 
+this decision. The remainder of the appeal is DISMISSED. 
+ 
+ 
+ 
+Case: 23-5064    Page: 16 of 24      Filed: 07/08/2025
+ 
+17 
+JAQUITH, Judge, concurring in part and dissenting in part: I completely agree with the 
+majority's holding (1) that "the G.C. opinion's finding that obesity is not a disability for purposes 
+of section 1110 is not a persuasive interpretation of the statute," ante at 1; (2) "reject[ing] the G.C. 
+opinion's finding that obesity is not a disease for the purpose of secondary service connection by 
+aggravation," ante at 15; and (3) that "the Board provided an inadequate statement of reasons or 
+bases for finding that Mr. Adams's obesity does not result in the functional impairment of earning 
+capacity, because the Board overlooked favorable material evidence," ante at 16; so I agree that 
+this matter must be remanded. But I cannot join in either the majority's deference to the General 
+Counsel's opinion that "obesity is not a 'disease' for purposes of section 1110" or the majority's 
+conclusion that G.C. Prec. 1-2017 “prohibits service connection for obesity as directly related to 
+service,” ante at 1-2. In my view, the Board's denial of both direct and secondary service 
+connection for Mr. Adams' obesity is based on flawed analysis that fails to consider (or even 
+mention) watershed precedential cases, so the Board's denial of both bases for service connection 
+should be vacated and the matter remanded. 
+My bottom line is that the Court should vacate the Board's May 4, 2023, decision that 
+denied service connection for obesity—both secondary and direct service connection—in 
+accordance with the Board's unitary treatment of service connection. The Board did not address 
+secondary and direct service connection separately. Regarding obesity, the Board's order says only 
+that "[e]ntitlement to service connection for obesity, to include as secondary to service connected 
+post[-]traumatic stress disorder (PTSD) is denied." R. at 5. The Board's all-encompassing 
+conclusion of law likewise says flatly that "[t]he criteria for service connection for obesity have 
+not been met." R. at 6. And the Board's reasons or bases for its order and conclusion assert that 
+"[t]he general requirements for direct and secondary service connection notwithstanding, obesity 
+is not considered a disease or disability for VA purposes and is not subject to service connection," 
+citing only Marcelino v. Shulkin, 29 Vet.App. 155 (2018), and G.C. Prec. 1-2017. R. at 9. But the 
+Board's reliance on Marcelino is misplaced. In that case, the Court said nothing resembling the 
+Board's assertion, instead holding only that the Court did not "have jurisdiction to entertain the 
+argument that obesity should be considered a disability under the rating schedule." 29 Vet.App. at 
+158.  
+The Federal Circuit decided otherwise in Larson v. McDonough, holding that a veteran 
+seeking to establish service connection for obesity under section 1110 is not asking the Court to 
+Case: 23-5064    Page: 17 of 24      Filed: 07/08/2025
+ 
+18 
+invalidate or revise any portion of the rating schedule, so the Court has jurisdiction to review the 
+Board's denial of such a claim. 10 F.4th 1325, 1329-30 (Fed. Cir. 2021). The Larson court also 
+held that obesity was analogous to the pain at issue in Saunders v. Wilkie, which held that pain 
+may constitute a disability under section 1110 without an identified disease or injury, because pain 
+can constitute or cause functional impairment. Larson, 10 F.4th at 1329; Saunders, 886 F.3d 1356, 
+1362-68 (Fed. Cir. 2018). Here, the majority relies on Larson and Saunders but neither notes nor 
+acts on the fact that Board did not factor either case into its decision. In short, the Board relied on 
+a case that was wrong and ignored two cases that are of paramount importance. I agree with our 
+distinguished colleagues who have persuasively determined in other cases that such a Board failure 
+warrants vacating the Board decision and remanding the matter for the Board to consider Larson 
+and Saunders in the first instance. See Kedrowski v. McDonough, No. 22-5633, 2024 WL 557956, 
+at *3 (Vet. App. Feb. 13, 2024) ("[I]t remains for the Board to resolve whether Saunders and 
+Larson undermine the continuing validity of Precedent Opinion 1-2017's conclusion that obesity 
+is not a disability for VA compensation purposes."); Shillingburg v. McDonough, No. 21-3081, 
+2022 WL 3909054, at *3 (Vet. App. Aug. 31, 2022).  
+In my view, because the Board's decision addressed direct and secondary service 
+connection together, citing Marcelino, the Court's remand here should require the Board to address 
+whether Saunders and Larson undermine the continuing validity of G.C. Prec. 1-2017's categorical 
+exclusion of obesity as a disease and disability permitting compensation. Although the G.C. 
+opinion binds the Board, that does not mean the Board's consideration of the issues is futile. See 
+Wolfe v. McDonough, 28 F.4th 1348, 1358 (Fed. Cir. 2022). The factual setting is key to making 
+correct decisions on the law, so the Board's consideration of all of the relevant record—including 
+the veteran's testimony that his weight increased from 125 pounds to 230 pounds while he was on 
+active duty, R. at 2574, his testimony that his weight gain was related to his PTSD, R. at 2567-75, 
+the objective evidence of his height (72 inches), weight (276 pounds), and BMI of 38, R. at 93, 
+and the VA physical therapist's assessment that the veteran's chronic lower back pain was related 
+to his "core weakness and postural changes due to obesity," R. at 3284—could be informative. 
+Considering pertinent facts and governing law can make a difference! 
+G.C. Prec. 1-2017 suffers from the same shortcoming as the Board decision: G.C Prec. 1-
+2017 did not contemplate the holdings and analysis by the Federal Circuit in Saunders and Larson. 
+Indeed, it would have required prescience, or at least unbiased foresight, for VA's General Counsel 
+Case: 23-5064    Page: 18 of 24      Filed: 07/08/2025
+ 
+19 
+to anticipate such future court decisions. In this case, the Court's majority concludes that G.C. Prec. 
+1-2017 does not comport with Saunders. Ante at 10. The majority highlights G.C. Prec. 1-2017's 
+contradictory finding that obesity cannot constitute a disability while acknowledging that  people 
+with severe obesity are physically and socially impaired by their condition. Ante at 10-11. The 
+majority rejects G.C. Prec. 1-2017's "arbitrary and dismissive finding" that obesity is not a disease 
+for purposes of 38 C.F.R. § 3.310 as inconsistent with the language of the regulation and 
+inconsonant with Spicer v. McDonough, 61 F.4th 1360, 1364 (Fed. Cir. 2023), which holds that a 
+veteran is entitled to compensation for functional impairment resulting from service, even as only 
+one of many causal links. Ante at 15.  
+Last year, the Supreme Court emphasized that courts must exercise their independent 
+judgment to discern the best meaning of statutes and " may not defer to an agency interpretation 
+of the law simply because a statute is ambiguous." Loper Bright Enterprises v. Raimondo, 603 
+U.S. 369, 412-13 (2024). At the same time, the Supreme Court said that "[c]areful attention to the 
+judgment of the Executive Branch may help inform that [judicial] inquiry," id., and the Court 
+recalled that "'[t]he weight of such a judgment in a particular case'" would "'depend upon the 
+thoroughness evident in its consideration, the validity of its reasoning, its consistency with earlier 
+and later pronouncements, and all those factors which give it power to persuade, if lacking power 
+to control,'" id. at 388 (quoting Skidmore v. Swift & Co., 323 U.S. 134, 140 (1944)). This Court 
+has applied that Skidmore standard. See Ante at 9; see, e.g., Wanless v. Shinseki, 23 Vet.App. 143, 
+150 (2009), aff'd, 618 F.3d 1333 (Fed. Cir. 2010). In my view, the significant shortcomings the 
+majority has identified in G.C. Prec. 1-2017 demonstrate that G.C. Prec. 1-2017 does not have 
+persuasive power.  
+G.C. Prec. 1-2017 acknowledges that although Congress left a gap in title 38 by not 
+defining "disease," VA has not filled the gap by defining "disease" in a regulation. G.C. Prec. 1-
+2017, at 3. The G.C. opinion also notes that VA has, in a regulation, specifically listed defects, 
+disorders, and deficiencies that are not diseases. Id.; see 38 C.F.R. § 3.303(c) (2024). Obesity is 
+not listed (as not being a disease). G.C. Prec. 1-2017 also notes that the General Counsel had 
+previously endorsed a medical dictionary's definition of "disease" as "any deviation from or 
+interruption of the normal structure or function of a part, organ, or system of the body that is 
+manifested by a characteristic symptoms and signs and whose etiology, pathology, and prognosis 
+may be known or unknown." Id. (citing Disease, DORLAND'S ILLUSTRATED MED. DICTIONARY 385 
+Case: 23-5064    Page: 19 of 24      Filed: 07/08/2025
+ 
+20 
+(26th ed. 1974)). That dictionary currently defines "disease" virtually identically. See Disease, 
+DORLAND'S ILLUSTRATED MED. DICTIONARY 521 (33rd ed. 2020).5 But the G.C. opinion curiously 
+says that "[a]lthough [the General Counsel's prior] opinions cite definitions of 'disease' from 
+various authorities, they do not interpret VA statutes or regulations as establishing a specific 
+definition of that term." G.C. Prec. 1-2017, at 4. Importantly, the G.C. opinion neither explains 
+how obesity does not constitute a deviation from or interruption of the normal structure or function 
+of the body, nor endorses a different standard for assessing obesity. Id. Instead, the G.C. opinion 
+says that prior General Counsel opinions "do not describe a standard for distinguishing disease 
+from things[] like obesity," and the G.C. opinion offers unsupported assertions that it is VA's 
+"longstanding policy" that obesity per se is not a disease, id. at 1, and that obesity has not 
+traditionally been considered a disease, id. at 4. 
+There is no evidence in the G.C. opinion, the Board decision, or the record of any such 
+tradition or policy. Just as VA has not defined "disease" by regulation, VA has not regulated 
+whether obesity is a disease. In this case, the regional office erroneously asserted that "[o]ur 
+regulations state: 1) Direct basis—Obesity per se is not a disease or injury for the purposes of 38 
+U.S.C 1110 and 38 U.S.C. 1131 and therefore may not be service connected on a direct basis." R. 
+at 7101. There was and is no such regulation, yet the Board did not address this glaring error—
+instead attributing the same exact words to G.C. Prec. 1-2017. R. at 9. VA has excluded from 
+CHAMPVA 6  coverage, for survivors and dependents of certain veterans, of "[n]onsurgical 
+treatment of obesity or morbid obesity for dietary control or weight reduction (with the exception 
+of gastric bypass, gastric stapling, or gastroplasty procedures in connection with morbid obesity 
+when determined to be medically necessary) including prescription medications."7 38 C.F.R. § 
+ 
+5 Black's Law Dictionary defines "disease" as "[a] deviation from the healthy and normal functioning of the body" and 
+"[a]ny disorder." Disease, BLACK'S LAW DICTIONARY (12th ed. 2024). 
+6 "CHAMPVA" is the acronym for Civilian Health and Medical Program of the Department of Veterans Affairs. 
+CHAMPVA is a special program for survivors and dependents of certain veterans. See 38 C.F.R. §§ 17.270-17.279 
+(2024). 
+7 Notably, "changes in the prevailing medical consensus towards recognizing obesity as a disease" have led the U.S. 
+Department of Health's Centers for Medicare & Medicaid Services (CMS) to propose reinterpreting statutory 
+exclusions to provide Medicare prescription drug benefits under Part D and Medicaid coverage of anti-obesity 
+medications "when used for weight loss or chronic weight management for the treatment of obesity." Medicare and 
+Medicaid Programs; Contract Year 2026 Policy and Technical Changes to the Medicare Advantage Program, 
+Medicare Prescription Drug Benefit Program, Medicare Cost Plan Program, and Programs of All-Inclusive Care for 
+the Elderly, 89 Fed. Reg. 99,340-01, 99,341 (Dec. 10, 2024). The CMS proposal is "based on the distinction between 
+obesity as a disease and overweight, which is not recognized as a disease." Id. at 99,377. The comments to the proposed 
+rule include one by the American College of Cardiology expressing that acknowledging that obesity is a chronic 
+Case: 23-5064    Page: 20 of 24      Filed: 07/08/2025
+ 
+21 
+17.272(a)(22) (2024). And, by regulation, obesity warrants a 30% disability rating for a veteran 
+with Cushing's syndrome.8 38 C.F.R. § 4.119, Diagnostic Code 7907 (2024). Add that the G.C. 
+opinion acknowledges that the rating schedule is not exhaustive, see 38 C.F.R. § 4.20 (2024), but 
+inconsistently asserts that obesity is categorically excluded because it is unlisted. 9 G.C. Prec. 1-
+2017 at 6. The Secretary has not used his regulatory authority to address whether obesity is a 
+disease—for purposes of disability compensation or otherwise—so his General Counsel's 
+interpretation is not entitled to deference, even under the pre-Loper regime. See, e.g., Cook v. 
+Snyder, 28 Vet.App. 330, 339 (2017), aff'd sub nom. Cook v. Wilkie, 908 F.3d 813 (Fed. Cir. 2018). 
+G.C. Prec. 1-2017 does not acknowledge that since 2006, 42 U.S.C. § 3002 has included 
+obesity as a chronic disease for purposes of Federal disease prevention and health promotion 
+services for older Americans. 42 U.S.C. § 3002(14)(D) (added by the Americans Act Amendments 
+of 2006, Pub.L. 109-365, sec. 101(a)(2)). 
+G.C. Prec. 1-2017 does acknowledge that the American Medical Association, the Social 
+Security Administration (SSA), the National Heart, Lung & Blood Institute, the Internal Revenue 
+Service (IRS), and the American Association of Clinical Endocrinologists have stated that obesity 
+is a disease.10 Id. Yet G.C. Prec. 1-2017 dismisses those statements as "made for a variety of 
+purposes other than disability compensation" and says they "do not compel the same result by 
+VA"—without explaining why, including why the medical determinations do not apply to 
+disability compensation decisions. G.C. Prec. 1-2017 also relies heavily on two reports by AMA 
+councils—without explaining why councils that "provide information and recommend policies" to 
+the AMA11 are more persuasive than the decisions the AMA actually makes after considering such 
+information and policies. In that regard, it is noteworthy that the AMA reaffirmed its recognition 
+ 
+disease "is long overdue," and that "obesity is a multifactorial disease that significantly contributes to elevated blood 
+pressure, dyslipidemia, and hyperglycemia, each of which are key risk factors for the development of [cardiovascular 
+disease]." https://www.regulations.gov/comment/CMS-2024-0345-27198 (last accessed May 12, 2025). 
+8 "Cushing's syndrome" is "a complex of symptoms caused by hyperadrenocorticism due either to a neoplasm of the 
+adrenal cortex or adenohypophysis, or to excessive intake of glucocorticoids." Cushing, DORLAND'S ILLUSTRATED 
+MED. DICTIONARY 1797 (33rd ed. 2020). 
+9 In Saunders, the Federal Circuit rejected the Secretary's similar argument that without an identified condition, pain 
+cannot be a disability under section 1110 and VA's regulations. See 886 F.3d at 1362-68.    
+10 See, e.g., Rev. Rul. 2002-19, 2002-1 C.B. 778 (“Obesity is medically accepted to be a disease in its own right.”); 
+SSR 02-1p; Titles II and XVI: Evaluation of Obesity, 67 Fed. Reg. 57,859-02, 57,860 (Sep. 12, 2002) (Obesity is a 
+complex, chronic disease characterized by excessive accumulation of body fat.”). 
+11 Councils–American Medical Association, https://www.ama-assn.org/councils (last visited May 9, 2025). 
+Case: 23-5064    Page: 21 of 24      Filed: 07/08/2025
+ 
+22 
+of obesity as a disease in 2023.12 Moreover, in the 8 years since G.C. Prec. 1-2017, the U.S. Centers 
+for Disease Control and Prevention (CDC) has declared that, "Obesity is a common, serious, and 
+costly chronic disease."13 The World Health Organization (WHO) says that, "Obesity is a chronic 
+complex disease defined by excessive fat deposits that can impair health." 14  The American 
+Association of Clinical Endocrinology states that "[o]besity is a biological, preventable, and 
+treatable disease that means a person has too much body fat." 15  And the Obesity Medicine 
+Association defines "obesity" as a "chronic, relapsing, multi-factorial, neurobehavioral disease, 
+wherein an increase in body fat promotes adipose tissue dysfunction and abnormal fat mass 
+physical forces, resulting in adverse metabolic, biomechanical, and psychosocial health 
+consequences." 16  As the Supreme Court of Washington concluded en banc: "There is an 
+overwhelming consensus in the medical community that obesity is a disease in and of itself." 17 
+Finally, Executive Order 14212, issued just a few months ago, listed obesity as a chronic 
+disease, stating: "It shall be the policy of the Federal Government to aggressively combat the 
+critical health challenges facing our citizens, including the rising rates of mental health disorders, 
+obesity, diabetes, and other chronic diseases." Exec. Order No. 14212, 90 Fed. Reg. 9833, 9834 
+(Feb. 13, 2025). 
+ 
+12  Recognition of Obesity as a Disease H-440.842, AM. MED. ASS'N, https://policysearch.ama-
+assn.org/policyfinder/detail/obesity?uri=®AMADoc®HOD.xml-0-3858.xml (last visited May 9, 2025) ("Our 
+American Medical Association recognizes obesity as a disease state with multiple pathophysiological aspects 
+requiring a range of interventions to advance obesity treatment and prevention.").  
+13  About Obesity, U.S. CTRS. FOR DISEASE CONTROL & PREVENTION (Jan. 23, 2024), available at 
+https://www.cdc.gov/obesity/php/about/index.html (last visited May 9, 2025). CDC is responsible for exercising the 
+duties provided for in law "related to the investigation, detection, identification, prevention, or control of diseases or 
+conditions to preserve and improve public health domestically." 42 U.S.C. § 242c. CDC "has an essential role in 
+defending against and combatting public health threats." 42 U.S.C. § 247d-4. Last year, CDC announced new ICD-
+10-CM codes for adult and childhood obesity, effective October 1, 2024, saying that "ICD-10-CM codes are used to 
+classify and diagnose disease processes and for disease management and billing purposes, as well as health services 
+research." See https://www.cdc.gov/obesity/media/pdfs/2024/12/Adult-Partner-Promotion-Materials-ICD-10-Codes-
+508.pdf (last visited May 9, 2025). 
+14  Obesity and Overweight, WORLD HEALTH ORG. (March 1, 2024), https://www.who.int/news-room/fact-
+sheets/detail/obesity-and-overweight (last visited May 9, 2025). The World Health Organization is a "public 
+international organization of which the United States is a member." 8 C.F.R. § 316.20(c) (2024); see 22 U.S.C. § 290. 
+15  Nutrition and Obesity, AM. ASS'N OF CLINICAL ENDOCRINOLOGY, https://www.aace.com/disease-and-
+conditions/nutrition-and-obesity/all-about-obesity (last visited May 11, 2025). 
+16 Why Obesity is a Disease, OBESITY MED. ASS'N (Dec. 30, 2023), https://obesitymedicine.org/blog/ why-is-obesity-
+a-disease/ (last visited May 11, 2025). 
+17 Taylor v. Burlington N. R.R. Holdings, Inc., 444 P.3d 606, 613 (Wash. 2019) (en banc).  
+Case: 23-5064    Page: 22 of 24      Filed: 07/08/2025
+ 
+23 
+The majority rejects the General Counsel's finding that obesity is not a disease for purposes 
+of 38 C.F.R. § 3.310, ante at 14, but the majority endorses "the Secretary's interpretation of section 
+1110 as excluding obesity from the conditions that may be considered a 'disease' [as] persuasive 
+and entitled to respect" because that "interpretation is supported by references to literature showing 
+that there is no medical consensus that obesity should be classified as a disease," ante at 13. But 
+the majority fails to look carefully at the Secretary's flimsy claim of no consensus, which is based 
+on his General Counsel's rejection of the AMA's definitive conclusion that obesity is a disease in 
+favor of the uncertain input of two subordinate councils that the medical question is a difficult one. 
+And the majority is uninterested in the subsequent determinations by judicial, executive, 
+legislative, and authoritative medical entities, supra at 21-22, because the appellant did not spell 
+them out when he attacked G.C. Prec. 1-2017 for categorically excluding obesity from disability 
+compensation, ante at 12, 13 n.4.18 In my view, such myopic and mechanical deference fails to 
+fulfill the Court's responsibility to provide independent judicial review, including by considering 
+the thoroughness of the General Counsel's opinion, the validity of its reasoning, and its consistency 
+with other reliable sources and later developments. See Loper Bright, 603 U.S. at 388. The Court 
+is not limited by the specific arguments of the parties, "but rather retains the independent power to 
+identify and apply the proper construction of governing law." Kamen v. Kemper Fin. Servs., Inc., 
+500 U.S. 90, 99 (1991). Indeed, Loper Bright recently reminded us that 
+[j]udges have always been expected to apply their "judgment" independent of the 
+political branches when interpreting the laws those branches enact. The Federalist 
+No. 78, at 523. And one of those laws, the [Administrative Procedure Act], bars 
+judges from disregarding that responsibility just because an Executive Branch 
+agency views a statute differently. 
+ 
+603 U.S. at 412. 
+ 
+18 The veteran’s challenge to G.C. Prec. Op. 1-2017’s categorical exclusion of obesity as a disability and a disease 
+placed all of the General Counsel’s justifications at issue, and the veteran was not silent on the inconsonance between 
+the G.C. opinion and the conclusions of the AMA and Federal agencies that obesity is a disease. See Appellant’s Br. 
+at 9. Moreover, it is indisputable that AMA, CDC, WHO, the American Association of Clinical Endocrinology, the 
+Obesity Medicine Association, CMS, the American College of Cardiology, 42 U.S.C. § 3002, Executive Order 14212, 
+and rulings by IRS and SSA all describe obesity as a disease. Such official public references may and should be 
+judicially noticed and considered in determining whether the General Counsel’s selective reliance on medical literature 
+is persuasive. See Euzebio v. McDonough, 989 F.3d 1305, 1323 (Fed. Cir. 2021) (“[T]he Veterans Court [is not 
+precluded] from taking judicial notice of extra-record evidence that is ‘generally known’or ‘from sources whose 
+accuracy cannot reasonably be questioned,’ . . . or in accordance with and in furtherance of its review of Board and 
+VA decisions.” (citations omitted)).   
+Case: 23-5064    Page: 23 of 24      Filed: 07/08/2025
+ 
+24 
+G.C. Prec. 1-2017 is riddled with inconsistencies and unsupported assertions, and it 
+conflicts with caselaw and the opinions of medical and governmental authorities, so I do not find 
+its categorical exclusion of obesity from its unstated definition of disease to be persuasive. And 
+the Board did not even address Larson or Saunders, obviously pertinent precedential cases, in its 
+unitary decision denying service connection for the veteran's acknowledged obesity. I respectfully 
+dissent from the Court's leaving the Board's direct-service-connection denial undisturbed.  
+ 
+Case: 23-5064    Page: 24 of 24      Filed: 07/08/2025
