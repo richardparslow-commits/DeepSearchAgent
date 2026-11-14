@@ -555,7 +555,11 @@ def build_interpretive_analysis(
     # coverage is then 0.0 rather than padded with unrelated claim elements.
     covered_weight = sum(element.weight for element in detected if element.covered_by)
     total_weight = sum(element.weight for element in detected)
-    coverage_score = covered_weight / total_weight if total_weight > 0 else 0.0
+    coverage_score = (
+        max(0.0, min(1.0, covered_weight / total_weight))
+        if total_weight > 0
+        else 0.0
+    )
 
     # ── Confidence heuristics ───────────────────────────────────────────
     next_steps = [spec.step for spec in element_specs]

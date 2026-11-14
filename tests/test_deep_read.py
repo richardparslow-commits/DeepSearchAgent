@@ -323,6 +323,21 @@ def test_synthesize_case_joins_digests_without_llm(monkeypatch):
     assert result == "- digest one\n- digest two"
 
 
+def test_synthesize_case_omits_empty_digest_sentinels(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    result = _synthesize_case(
+        "Fountain v. McDonald",
+        "tinnitus",
+        [_EMPTY_DIGEST, "digest with a holding", _EMPTY_DIGEST],
+    )
+
+    assert result == "- digest with a holding"
+    assert _EMPTY_DIGEST not in result
+    # An all-sentinel case is empty so the caller can use its snippet fallback.
+    assert _synthesize_case("Fountain v. McDonald", "tinnitus", [_EMPTY_DIGEST]) == ""
+
+
 def test_synthesize_case_uses_llm_summary_when_enabled(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     captured: dict[str, object] = {}

@@ -166,16 +166,21 @@ def _build_reduce_prompt(
 
 def _synthesize_case(case_title: str, issue: str, digests: list[str]) -> str:
     """Reduce step: combine chunk digests into one per-case deep summary."""
-    if not digests:
+    # A chunk with nothing salient carries a sentinel so the map step can
+    # distinguish "no content" from an empty string. It is not real digest
+    # content, so keep it out of both the reduce prompt and the final summary;
+    # an all-sentinel case falls back to the caller's snippet path.
+    useful = [digest for digest in digests if digest != _EMPTY_DIGEST]
+    if not useful:
         return ""
     if llm_enabled():
         try:
-            text = call_openai(_build_reduce_prompt(case_title, issue, digests))
+            text = call_openai(_build_reduce_prompt(case_title, issue, useful))
             if text and text.strip():
                 return text.strip()
         except Exception as exc:  # noqa: BLE001 - LLM is an optional enhancement
             logger.warning("Deep-read synthesis failed; joining digests: %s", exc)
-    return "\n".join(f"- {digest}" for digest in digests)
+    return "\n".join(f"- {digest}" for digest in useful)
 
 
 def _fetch_case_text(case: CaseRecord) -> str:

@@ -1,5 +1,7 @@
 """Tests for the interpretive analysis layer (va_legal_agent.interpretation)."""
 
+import pytest
+
 from va_legal_agent.interpretation import (
     _COURT_ORDER,
     _build_element_library,
@@ -12,7 +14,7 @@ from va_legal_agent.interpretation import (
     uncovered_element_names,
 )
 from va_legal_agent.llm import ReasoningResult
-from va_legal_agent.models import CaseRecord, Contradiction
+from va_legal_agent.models import CaseRecord, Contradiction, LegalAnalysis
 from va_legal_agent.topics import COURT_SUPREME, TOPICS
 
 
@@ -89,6 +91,17 @@ def test_rating_coverage_ignores_operating_and_frustrating():
     assert result.detected_elements[0].name == "rating"
     assert result.detected_elements[0].covered_by == []
     assert result.coverage_score == 0.0
+
+
+@pytest.mark.parametrize("score", [7.5, -2.0])
+def test_legal_analysis_rejects_out_of_range_coverage_scores(score):
+    with pytest.raises(ValueError):
+        LegalAnalysis(
+            issue="i",
+            summary="s",
+            how_it_affects_va_claims="h",
+            coverage_score=score,
+        )
 
 
 def test_uncovered_element_names_flags_elements_without_coverage():

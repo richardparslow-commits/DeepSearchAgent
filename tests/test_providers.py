@@ -696,7 +696,18 @@ def test_search_all_returns_empty_when_no_results_no_errors(monkeypatch):
 
     monkeypatch.setattr("va_legal_agent.providers.get_provider", lambda name: _FakeDDG())
 
-    assert search_all("tinnitus") == []
+    telemetry: list[dict[str, object]] = []
+    assert search_all("tinnitus", telemetry=telemetry) == []
+    assert telemetry == [
+        {
+            "provider": "duckduckgo",
+            "queries_issued": 1,
+            "results": 0,
+            "deduped": 0,
+            "failures": 0,
+            "variants": {"tinnitus": {"results": 0, "failures": 0}},
+        }
+    ]
 
 
 def test_search_all_skips_unknown_provider(monkeypatch, caplog):
@@ -3244,6 +3255,17 @@ def test_courtlistener_daily_budget_missing_keys_default_to_zero():
     }
 
 
+def test_courtlistener_daily_budget_rejects_non_numeric_counter():
+    payload = {
+        "current_usage": [
+            {"scope": "user", "rate": "125/day", "used": "abc", "limit": 125}
+        ]
+    }
+
+    with pytest.raises(SearchError, match="malformed daily usage row"):
+        courtlistener_daily_budget(payload)
+
+
 def test_check_courtlistener_daily_budget_aborts_when_exhausted(monkeypatch):
     monkeypatch.setattr(
         "va_legal_agent.providers.fetch_courtlistener_usage",
@@ -4998,6 +5020,52 @@ class TestBvaLocalNeedsRebuild:
         meta_path = _bva_local_meta_path(str(tmp_path))
         with open(meta_path, "w") as fh:
             json.dump(meta, fh)
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
+
+    def test_naive_build_time_is_treated_as_utc(self, monkeypatch, tmp_path):
+        """A hand-written timestamp without an offset is aged as UTC."""
+        meta = {
+            "build_time": "2000-01-01T00:00:00",
+            "most_recent_lastmod": "2026-08-15",
+        }
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+        monkeypatch.setattr(
+            "va_legal_agent.providers.BvaSitemapProvider._most_recent_leaf",
+            lambda self: [
+                ("https://va.gov/vetapp26/Files4/26000099.txt", "2026-09-01"),
+            ],
+        )
+        assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
+
+    def test_true_when_age_subtraction_fails(self, monkeypatch, tmp_path):
+        """An un-ageable timestamp is treated as stale rather than crashing."""
+        meta = {
+            "build_time": "2000-01-01T00:00:00+00:00",
+            "most_recent_lastmod": "2026-08-15",
+        }
+        meta_path = _bva_local_meta_path(str(tmp_path))
+        with open(meta_path, "w") as fh:
+            json.dump(meta, fh)
+
+        class _BuildTime:
+            tzinfo = timezone.utc
+
+        class _Now:
+            def __sub__(self, other):
+                raise TypeError("un-ageable timestamp")
+
+        class _FakeDatetime:
+            @staticmethod
+            def fromisoformat(value):
+                return _BuildTime()
+
+            @staticmethod
+            def now(tz):
+                return _Now()
+
+        monkeypatch.setattr("va_legal_agent.providers.datetime", _FakeDatetime)
         assert _bva_local_needs_rebuild(str(tmp_path), 1) is True
 
 

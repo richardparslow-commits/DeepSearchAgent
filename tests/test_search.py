@@ -242,8 +242,7 @@ def test_duckduckgo_impersonation_never_sends_bot_user_agent(monkeypatch):
             "va_legal_agent.search.build_duckduckgo_url",
             lambda query, page=1: f"http://127.0.0.1:{server.server_port}/html/",
         )
-        with pytest.raises(SearchError):
-            DuckDuckGoProvider().search("tinnitus")
+        assert DuckDuckGoProvider().search("tinnitus") == []
     finally:
         server.shutdown()
         server.server_close()
@@ -312,8 +311,7 @@ def test_parse_skips_result_block_without_any_link(monkeypatch):
         lambda url, impersonate=None, timeout=None: FakeResponse(html),
     )
 
-    with pytest.raises(SearchError, match="No search results"):
-        search_web("tinnitus", max_results=5)
+    assert search_web("tinnitus", max_results=5) == []
 
 
 SAMPLE_HTML = """
@@ -386,14 +384,15 @@ def test_parse_prefers_result__a_over_first_anchor(monkeypatch):
     assert results[0]["url"] == "https://www.uscourts.cavc.gov/documents/Real.pdf"
 
 
-def test_search_web_raises_when_no_results(monkeypatch):
+def test_search_web_returns_empty_when_no_results(monkeypatch):
+    # A parsed zero-hit page is a legitimate search outcome, not a provider
+    # failure; search_all must be able to record it as zero results.
     monkeypatch.setattr(
         "va_legal_agent.search.cffi_requests.get",
         lambda url, impersonate=None, timeout=None: FakeResponse("<html><body></body></html>"),
     )
 
-    with pytest.raises(SearchError, match="query that returns nothing"):
-        search_web("query that returns nothing")
+    assert search_web("query that returns nothing") == []
 
 
 def test_search_web_detects_rate_limit_challenge_page(monkeypatch):
@@ -540,8 +539,7 @@ def test_search_web_skips_click_trackers_then_stops_at_scan_cap(monkeypatch):
         lambda url, impersonate=None, timeout=None: FakeResponse(f"<html><body>{blocks}</body></html>"),
     )
 
-    with pytest.raises(SearchError, match="No search results"):
-        search_web("tinnitus", max_results=1)
+    assert search_web("tinnitus", max_results=1) == []
 
 
 def test_search_web_does_not_retry_fatal_status(monkeypatch):

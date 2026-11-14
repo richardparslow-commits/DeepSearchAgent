@@ -11,6 +11,7 @@ from va_legal_agent.llm import (
     _build_reasoning_messages,
     _parse_reasoning_response,
     interpret_cases,
+    llm_enabled,
     reason_cases,
 )
 from va_legal_agent.models import CaseRecord, CitationTreatment
@@ -82,6 +83,17 @@ def test_interpret_returns_none_without_api_key(monkeypatch):
     assert called == []
 
 
+def test_llm_enabled_requires_a_non_whitespace_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "   \t\n")
+    assert llm_enabled() is False
+
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    assert llm_enabled() is False
+
+    monkeypatch.setenv("OPENAI_API_KEY", "  sk-test  ")
+    assert llm_enabled() is True
+
+
 def test_interpret_returns_none_for_empty_cases(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     assert interpret_cases("tinnitus", "Compensation", []) is None
@@ -109,7 +121,7 @@ def test_interpret_falls_back_on_api_failure(monkeypatch):
 
 def test_call_openai_success_with_real_client_body(monkeypatch):
     """Exercise call_openai's real body: client construction + completion request."""
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "  test-key  ")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://llm.example.com/v1")
     captured: dict[str, object] = {}
     fake = _install_fake_openai(
@@ -119,7 +131,8 @@ def test_call_openai_success_with_real_client_body(monkeypatch):
     result = interpret_cases("tinnitus", "Compensation", [_case()])
 
     assert result == "Fountain requires reasons and bases."
-    # Settings are wired into the client and the completion request.
+    # Settings are wired into the client and the completion request; the
+    # same stripped key used for enablement reaches the client, not padding.
     assert fake.client_kwargs["api_key"] == "test-key"
     assert fake.client_kwargs["base_url"] == "https://llm.example.com/v1"
     assert captured["model"] == "gpt-4o-mini"

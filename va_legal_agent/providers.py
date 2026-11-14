@@ -617,7 +617,7 @@ def courtlistener_daily_budget(usage: dict[str, object]) -> dict[str, object]:
     have higher limits). A missing day row means the payload shape changed,
     which should raise rather than silently pass a wrong budget.
     """
-    budget = _extract_rate_row(usage, _DAILY_RATE_PATTERN)
+    budget = _extract_rate_row(usage, _DAILY_RATE_PATTERN, "daily")
     if budget is None:
         raise SearchError(
             "Could not find the CourtListener daily request budget in the api-usage response."
@@ -634,17 +634,27 @@ def courtlistener_minute_budget(
     distinguishes an absent row (``None``; non-standard tier) from a malformed
     payload, which raises :class:`SearchError` from :func:`_extract_rate_row`.
     """
-    return _extract_rate_row(usage, _MINUTE_RATE_PATTERN)
+    return _extract_rate_row(usage, _MINUTE_RATE_PATTERN, "minute")
+
+
+def _usage_counter(row: dict[str, object], key: str, label: str) -> int:
+    """Coerce one usage counter, reporting a malformed payload as SearchError."""
+    try:
+        return int(row.get(key, 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise SearchError(f"malformed {label} usage row: {row!r}") from exc
 
 
 def _extract_rate_row(
-    usage: dict[str, object], pattern: re.Pattern[str]  # type: ignore[type-arg]
+    usage: dict[str, object],
+    pattern: re.Pattern[str],  # type: ignore[type-arg]
+    label: str = "CourtListener",
 ) -> dict[str, object] | None:
     """Pull a single rate-window row from an api-usage payload.
 
     Returns ``None`` when the payload is well-formed but has no user row for
-    *pattern*; malformed payloads (including a non-list ``current_usage``)
-    raise :class:`SearchError`.
+    *pattern*; malformed payloads (including a non-list ``current_usage`` or
+    non-numeric counters) raise :class:`SearchError`.
     """
     rows = usage.get("current_usage")
     if not isinstance(rows, list):
@@ -657,9 +667,9 @@ def _extract_rate_row(
         rate = str(row.get("rate", ""))
         if pattern.match(rate):
             return {
-                "used": int(row.get("used", 0) or 0),
-                "limit": int(row.get("limit", 0) or 0),
-                "remaining": int(row.get("remaining", 0) or 0),
+                "used": _usage_counter(row, "used", label),
+                "limit": _usage_counter(row, "limit", label),
+                "remaining": _usage_counter(row, "remaining", label),
                 "reset_at": row.get("reset_at"),
             }
     return None
@@ -1280,9 +1290,17 @@ def _bva_local_needs_rebuild(
     if build_time_str:
         try:
             build_time = datetime.fromisoformat(build_time_str)
-        except ValueError:
+        except (TypeError, ValueError):
             return True
-        age = (datetime.now(timezone.utc) - build_time).total_seconds()
+        # Hand-written meta, restored backups, and older builds may carry a
+        # naive timestamp. Treat it as UTC instead of letting the aware/naive
+        # subtraction raise TypeError.
+        if build_time.tzinfo is None:
+            build_time = build_time.replace(tzinfo=timezone.utc)
+        try:
+            age = (datetime.now(timezone.utc) - build_time).total_seconds()
+        except TypeError:
+            return True  # un-ageable timestamp → stale, rebuild
         if age <= max_age_hours * 3600:
             return False  # fresh — don't even fetch the sitemap
     # Age exceeded: check the live sitemap for newer content before deciding

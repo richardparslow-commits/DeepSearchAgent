@@ -67,27 +67,39 @@ def env_provider_int_map(raw: str, min_value: int = 0) -> dict[str, int]:
     Used for ``SEARCH_QUERY_VARIANTS_BY_PROVIDER`` (``min_value=0``, where 0
     disables expansion) and ``SEARCH_PAGES_PER_QUERY_BY_PROVIDER``
     (``min_value=1``, where a backend must fetch at least one page).
-    Malformed entries (no ``=``, non-integer, or below *min_value*) are logged
-    and skipped; the global setting then applies for that provider.
+    Malformed entries (no ``=``, non-integer, below *min_value*, or an
+    unregistered provider name) are logged and skipped; the global setting
+    then applies for that provider.
     """
+    # Imported lazily to avoid a config <-> providers import cycle: providers
+    # imports get_settings at module scope.
+    from .providers import _PROVIDERS
+
     result: dict[str, int] = {}
     for part in raw.split(","):
         part = part.strip()
         if not part:
             continue
         name, sep, value = part.partition("=")
-        if not sep or not name.strip():
+        name = name.strip()
+        if not sep or not name:
             logger.warning("Ignoring malformed provider-override entry %r.", part)
+            continue
+        if name not in _PROVIDERS:
+            logger.warning(
+                "Unknown search provider %r in provider override; ignoring.",
+                name,
+            )
             continue
         try:
             count = int(value.strip())
         except ValueError:
-            logger.warning("%s=%r is not an integer; ignoring.", name.strip(), value.strip())
+            logger.warning("%s=%r is not an integer; ignoring.", name, value.strip())
             continue
         if count < min_value:
-            logger.warning("%s=%s must be >= %s; ignoring.", name.strip(), count, min_value)
+            logger.warning("%s=%s must be >= %s; ignoring.", name, count, min_value)
             continue
-        result[name.strip()] = count
+        result[name] = count
     return result
 
 

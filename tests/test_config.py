@@ -310,6 +310,10 @@ def test_env_provider_int_map_skips_malformed_entries(monkeypatch):
 
     parsed = env_provider_int_map("duckduckgo=2, ,bva=0,courtlistener=wat,=3,foo=-1,bar")
     assert parsed == {"duckduckgo": 2, "bva": 0}
+    # Unknown provider names are rejected against the registry, not accepted
+    # as phantom overrides (`bvaa` would otherwise look configured but do
+    # nothing).
+    assert env_provider_int_map("bvaa=0,courtlistener=5") == {"courtlistener": 5}
     assert env_provider_int_map("") == {}
     # min_value=1 rejects 0 (pages can't be disabled), keeping the fallback.
     assert env_provider_int_map("bva=0,duckduckgo=3", min_value=1) == {"duckduckgo": 3}

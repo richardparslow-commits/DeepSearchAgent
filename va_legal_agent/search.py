@@ -239,8 +239,9 @@ def _parse_results(
         results.append({"title": title, "url": normalized, "snippet": snippet})
         if len(results) >= max_results:
             break
-    if not results:
-        raise SearchError(f"No search results returned for query: {query}")
+    # A parsed page with no result blocks is a legitimate zero-hit query, not
+    # a provider failure: search_all records zero results and reserves
+    # SearchError for transport, challenge, and parse failures.
     return results
 
 

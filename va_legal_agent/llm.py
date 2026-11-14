@@ -46,7 +46,7 @@ def _case_block(index: int, case: "CaseRecord") -> str:
 
 
 def llm_enabled() -> bool:
-    return bool(get_settings().openai_api_key)
+    return bool((get_settings().openai_api_key or "").strip())
 
 
 def _build_messages(issue: str, claim_type: str, cases: "list[CaseRecord]") -> list[dict[str, str]]:
@@ -71,7 +71,7 @@ def call_openai(messages: list[dict[str, str]]) -> str:
 
     settings = get_settings()
     client = OpenAI(
-        api_key=settings.openai_api_key,
+        api_key=(settings.openai_api_key or "").strip(),
         base_url=settings.openai_base_url,
     )
     completion = client.chat.completions.create(

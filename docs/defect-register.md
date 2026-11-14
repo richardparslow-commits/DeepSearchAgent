@@ -19,7 +19,7 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 
 | Pass | Source document | Findings | Rows here | Current state |
 |---|---|---:|---:|---|
-| 1 | `docs/audit-pass1.md` | 32 | 32 | 25 Closed, 0 Partial, 7 Open |
+| 1 | `docs/audit-pass1.md` | 32 | 32 | 32 Closed, 0 Partial, 0 Open |
 | 2 | `docs/audit-pass2.md` | 7 | 0 | 7 Closed; source document only |
 | 3 | `docs/audit-pass3.md` | 22 | 0 | 22 Closed; source document only |
 | 4 | — | 0 | 0 | Reserved |
@@ -31,10 +31,10 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 |---|---:|---:|---:|---:|
 | High | 9 | 0 | 0 | 9 |
 | Medium | 16 | 0 | 0 | 16 |
-| Low | 8 | 7 | 0 | 1 |
-| **Total** | **33** | **7** | **0** | **26** |
+| Low | 8 | 0 | 0 | 8 |
+| **Total** | **33** | **0** | **0** | **33** |
 
-Pass 1 alone contributes 32 findings: **25 Closed, 0 Partial, 7 Open**, matching the
+Pass 1 alone contributes 32 findings: **32 Closed, 0 Partial, 0 Open**, matching the
 remaining-core audit report. The ninth High is the supplementary legal finding `L-1`: it is
 outside Pass 1's file scope but is a fixed release-blocking defect recorded in the same
 audit document, so it is included here rather than left out of the consolidated view.
@@ -70,8 +70,7 @@ are in the tree, not that this register independently re-verified every fix.
 ## Register
 
 Sorted by severity; within a severity band, Open before Partial before Closed, then numeric
-ID. Line ranges are current for the remediated P1-007/P1-009/P1-011 rows and source-pass
-locations for untouched findings.
+ID. Line ranges are current for the remediated P1 rows in this tree.
 
 | Severity | ID | File and line range | One-line defect | Status | Suggested disposition |
 |---|---|---|---|---|---|
@@ -101,13 +100,13 @@ locations for untouched findings.
 | Medium | P1-028 | `va_legal_agent/fetch.py:49-54, 141-167` | Decision-date hints are ranked decided > issued > filed > handed down, so a filing date no longer displaces the decision date. | Closed | Closed — verify |
 | Medium | P1-030 | `va_legal_agent/fetch.py:840-844` | Enrichment now reads every PDF page, so holdings on page 5+ are no longer recorded as empty. | Closed | Closed — verify |
 | Medium | P1-031 | `va_legal_agent/deep_read.py:50-55, 58-72` | Facts extraction now treats the chunk boundary as a section terminator while keeping an empty facts section empty. | Closed | Closed — verify |
-| Low | P1-008 | `va_legal_agent/config.py:58-85` | Unknown provider keys in the page-cap map are silently accepted. | Open | Backlog |
-| Low | P1-010 | `va_legal_agent/models.py:133` | `coverage_score` lacks 0–1 bounds, so invalid scores print as valid. | Open | Backlog |
-| Low | P1-012 | `va_legal_agent/llm.py:48-49` | Whitespace-only `OPENAI_API_KEY` is treated as enabled, causing a failed call per issue. | Open | Backlog |
-| Low | P1-017 | `va_legal_agent/providers.py:634-659` | Non-numeric usage rows raise bare `ValueError`, bypassing `SearchError` handling. | Open | Backlog |
-| Low | P1-018 | `va_legal_agent/providers.py:1273-1279` | Naive local-index timestamps raise `TypeError` instead of triggering a rebuild. | Open | Backlog |
-| Low | P1-021 | `va_legal_agent/search.py:203-205` | Zero-result pages are classified as provider failures. | Open | Backlog |
-| Low | P1-032 | `va_legal_agent/deep_read.py:32, 117-133, 167-178` | Deep-read synthesis emits `- (nothing relevant)` sentinel lines as content. | Open | Backlog |
+| Low | P1-008 | `va_legal_agent/config.py:64-103` | Unknown provider keys in provider override maps were silently accepted; fixed to validate against `_PROVIDERS` and skip them with a warning. | Closed | Closed — verify |
+| Low | P1-010 | `va_legal_agent/models.py:134`; `interpretation.py:554-562` | `coverage_score` lacked 0–1 bounds; fixed with bounded model validation and a producer clamp. | Closed | Closed — verify |
+| Low | P1-012 | `va_legal_agent/llm.py:48-49, 74` | Whitespace-only `OPENAI_API_KEY` was treated as enabled; fixed to strip the key before testing it and before constructing the client. | Closed | Closed — verify |
+| Low | P1-017 | `va_legal_agent/providers.py:640-675` | Non-numeric usage rows raised bare `ValueError`; fixed to coerce counters and raise `SearchError` for malformed payloads. | Closed | Closed — verify |
+| Low | P1-018 | `va_legal_agent/providers.py:1289-1305` | Naive local-index timestamps raised `TypeError`; fixed to treat them as UTC and treat un-ageable timestamps as stale. | Closed | Closed — verify |
+| Low | P1-021 | `va_legal_agent/search.py:242-245` | Zero-result pages were classified as provider failures; fixed to return an empty result list and record zero-result telemetry. | Closed | Closed — verify |
+| Low | P1-032 | `va_legal_agent/deep_read.py:167-183` | Deep-read synthesis emitted `- (nothing relevant)` sentinel lines; fixed to filter the sentinel and return an empty summary when no usable digest remains. | Closed | Closed — verify |
 
 ## Pass 2 / Pass 3 status
 
@@ -141,9 +140,8 @@ Template row:
 
 ## Notes
 
-- Line ranges are current for the three P1-007/P1-009/P1-011 remediations and the other
-  already-fixed P1 rows where the audit report supplies current evidence; untouched findings
-  retain their source-pass locations. Relocate before editing.
+- Line ranges are current for the remediated P1 rows where the audit report supplies current
+  evidence. Relocate before editing.
 - Severity is not re-triaged here. If a later pass disagrees, keep the source severity and
   record the disagreement in the disposition or a note rather than silently changing rank.
 - `Closed — verify` means the fix and its regression test are in the tree. It does not mean

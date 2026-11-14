@@ -131,7 +131,7 @@ class LegalAnalysis(BaseModel):
     contradictions: list[Contradiction] = Field(default_factory=list)
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
-    coverage_score: float = 0.0
+    coverage_score: float = Field(default=0.0, ge=0.0, le=1.0)
     coverage_confidence: str = "low"
     interpretation_source: str = "template"
     search_telemetry: dict[str, dict[str, object]] = Field(default_factory=dict)
