@@ -22,6 +22,9 @@ from va_legal_agent.providers import (
     _bva_sitemap_index,
     _bva_text_matches,
     _courtlistener_query,
+    _cluster_citation_values,
+    _cluster_identifier,
+    _cluster_opinion_ids,
     _fetch_bva_decision_text,
     _filter_excluded_terms,
     _minimize_bva_query,
@@ -29,6 +32,7 @@ from va_legal_agent.providers import (
     _parse_bva_leaf_sitemap,
     _parse_bva_sitemap_index,
     _parse_retry_after,
+    _positive_id,
     BVAProvider,
     BvaLocalIndexProvider,
     BvaSitemapProvider,
@@ -183,6 +187,7 @@ def _cl_opinion_detail(**overrides):
     item = {
         "absolute_url": "/opinion/12345/smith-v-mcdonough/",
         "cluster": "https://www.courtlistener.com/api/rest/v4/clusters/98765/",
+        "type": "020lead",
         "plain_text": "",
     }
     item.update(overrides)
@@ -192,10 +197,19 @@ def _cl_opinion_detail(**overrides):
 def _cl_cluster_detail(**overrides):
     """Real v4 clusters shape: case metadata plus a docket link."""
     item = {
+        "id": 98765,
         "case_name": "Smith v. McDonough",
-        "citations": [{"cite": "35 Vet.App. 123"}],
+        "citations": [
+            {"cite": "35 Vet.App. 123"},
+            {"cite": "2024 WL 123456"},
+        ],
+        "sub_opinions": [
+            "https://www.courtlistener.com/api/rest/v4/opinions/12345/",
+            "https://www.courtlistener.com/api/rest/v4/opinions/12346/",
+        ],
         "date_filed": "2023-05-01",
         "judges": "Judge Mary J. Smith",
+        "precedential_status": "Published",
         "docket": "https://www.courtlistener.com/api/rest/v4/dockets/55555/",
     }
     item.update(overrides)
@@ -4062,6 +4076,11 @@ def test_courtlistener_get_opinion_success(monkeypatch):
     assert result["decision_date"] == "2023-05-01"
     assert result["docket"] == "19-4433"
     assert result["judge"] == "Judge Mary J. Smith"
+    assert result["opinion_type"] == "020lead"
+    assert result["precedential_status"] == "Published"
+    assert result["cluster_id"] == "98765"
+    assert result["citations"] == ["35 Vet.App. 123", "2024 WL 123456"]
+    assert result["opinion_ids"] == [12345, 12346]
     assert result["snippet"] == ""
     assert result["courtlistener_opinion_id"] == "12345"
 
@@ -4088,6 +4107,11 @@ def test_courtlistener_get_opinion_sparse_fallbacks(monkeypatch):
     assert result["decision_date"] == ""
     assert result["docket"] == ""
     assert result["judge"] == ""
+    assert result["opinion_type"] == ""
+    assert result["precedential_status"] == ""
+    assert result["cluster_id"] == ""
+    assert result["citations"] == []
+    assert result["opinion_ids"] == [12345]
     assert result["snippet"] == ""
     assert result["courtlistener_opinion_id"] == "12345"
 
@@ -5975,3 +5999,33 @@ def test_bva_local_rebuilds_a_stale_year_shard(monkeypatch, tmp_path):
     results = BvaLocalIndexProvider().search("tinnitus")
 
     assert len(results) == 1
+
+
+def test_courtlistener_cluster_helpers_cover_edge_variants():
+    assert _positive_id(None) is None
+    assert _positive_id("123") == 123
+    assert _positive_id("0") is None
+    assert _positive_id("not-an-id") is None
+    assert _positive_id("https://www.courtlistener.com/opinion/456/") == 456
+
+    assert _cluster_citation_values(None) == []
+    assert _cluster_citation_values(
+        [{"cite": "A"}, {"citation": "B"}, "C", "C", {"reporter": "D"}, ""]
+    ) == ["A", "B", "C"]
+
+    assert _cluster_opinion_ids(
+        {
+            "sub_opinions": [
+                {"resource_uri": "https://www.courtlistener.com/api/rest/v4/opinions/1/"},
+                "2",
+                "2",
+                "bad",
+            ],
+            "opinions": [{"id": 3}, 1],
+        }
+    ) == [1, 2, 3]
+    assert _cluster_opinion_ids({}) == []
+
+    assert _cluster_identifier({}, "https://www.courtlistener.com/api/rest/v4/clusters/77/") == "77"
+    assert _cluster_identifier({"resource_uri": "https://x/clusters/88/"}) == "88"
+    assert _cluster_identifier({}) == ""

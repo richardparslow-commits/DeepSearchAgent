@@ -1207,6 +1207,118 @@ def test_dedupe_rank_and_enrich_collapses_mirror_duplicates_after_enrichment(mon
     assert result[0].courtlistener_opinion_id == "111"  # first copy wins
 
 
+def test_enrich_attaches_quote_candidates_without_overwriting_fields(monkeypatch):
+    from va_legal_agent.extraction import QuoteExtractionResult
+    from va_legal_agent.models import ExtractionCandidate
+
+    monkeypatch.setenv("LLM_EXTRACTION", "1")
+    monkeypatch.setattr("va_legal_agent.agent.llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details_and_text",
+        lambda url, timeout=None: (
+            {"holding": "Deterministic holding.", "outcome": "granted"},
+            "Decision text with a holding and an outcome.",
+        ),
+    )
+    candidates = [
+        ExtractionCandidate(field="holding", quote="q1", value="Candidate holding."),
+        ExtractionCandidate(field="citation", quote="q2", value="23 Vet.App. 1"),
+        ExtractionCandidate(
+            field="outcome",
+            quote="q3",
+            value="granted",
+            detail="Candidate only.",
+        ),
+    ]
+    monkeypatch.setattr(
+        "va_legal_agent.agent.extract_quote_candidates",
+        lambda text: QuoteExtractionResult(candidates, ["one quote was rejected"]),
+    )
+    case = CaseRecord(
+        title="Candidate Case",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/candidate",
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    # Deterministic extraction remains authoritative; the candidate differs
+    # and is explicitly labeled for review.
+    assert case.holding == "Deterministic holding."
+    assert case.outcome == "granted"
+    assert case.extraction_candidates == candidates
+    assert "Deterministic extraction differs" in candidates[0].detail
+    assert "Deterministic extraction was empty" in candidates[1].detail
+    assert "Candidate only" in candidates[2].detail
+    assert case.extraction_flags == ["one quote was rejected"]
+
+
+def test_enrich_quote_candidate_failure_is_isolated(monkeypatch):
+    monkeypatch.setenv("LLM_EXTRACTION", "1")
+    monkeypatch.setattr("va_legal_agent.agent.llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details_and_text",
+        lambda url, timeout=None: ({"holding": "Deterministic holding."}, "body"),
+    )
+
+    def failing_extract(text):
+        raise RuntimeError("candidate parser exploded")
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.extract_quote_candidates", failing_extract
+    )
+    case = CaseRecord(
+        title="Candidate Failure",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/candidate-failure",
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.holding == "Deterministic holding."
+    assert case.extraction_candidates == []
+    assert case.extraction_flags == [
+        "LLM extraction failed: candidate parser exploded"
+    ]
+
+
+def test_enrich_quote_extraction_uses_courtlistener_text(monkeypatch):
+    from va_legal_agent.extraction import QuoteExtractionResult
+
+    monkeypatch.setenv("LLM_EXTRACTION", "1")
+    monkeypatch.setattr("va_legal_agent.agent.llm_enabled", lambda: True)
+    seen: list[str] = []
+
+    class FakeProvider:
+        def fetch_opinion_text(self, opinion_id):
+            return "The Court holds that the Board erred."
+
+    monkeypatch.setattr(
+        "va_legal_agent.agent.CourtListenerProvider", lambda: FakeProvider()
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details_and_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("CourtListener path must not scrape the frontend")
+        ),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.extract_quote_candidates",
+        lambda text: seen.append(text) or QuoteExtractionResult(),
+    )
+    case = CaseRecord(
+        title="CL Candidate",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.courtlistener.com/opinion/1/case/",
+        courtlistener_opinion_id="1",
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert seen == ["The Court holds that the Board erred."]
+    assert case.extraction_candidates == []
+
+
 def test_enrich_populates_citation_treatments(monkeypatch):
     """Citation treatments are stored as CitationTreatment models during
     enrichment."""
@@ -4458,4 +4570,79 @@ def test_check_analysis_citations_reports_lookup_failure(monkeypatch):
 
     assert flags == [
         "CourtListener citation check failed: lookup unavailable"
+    ]
+
+
+def test_analyze_cases_attaches_statutory_supersession_signals(monkeypatch):
+    from va_legal_agent.models import AuthorityCheck, StatutorySupersessionSignal
+
+    _stub_search(
+        monkeypatch,
+        results=[
+            {
+                "title": "Smith v. Wilkie",
+                "url": "https://uscourts.cavc.gov/smith",
+                "snippet": "service connection evidence nexus",
+            }
+        ],
+    )
+    monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.verify_analysis_authorities",
+        lambda analysis, cases: [
+            AuthorityCheck(
+                authority="38 C.F.R. § 3.303",
+                source="eCFR",
+                status="unresolved",
+                detail="Section not found.",
+            )
+        ],
+    )
+    signal = StatutorySupersessionSignal(
+        authority="38 C.F.R. § 3.303",
+        authority_type="regulation",
+        source="Federal Register",
+        status="candidate",
+        signal="removed",
+        detail="Removal candidate.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.verify_analysis_supersession",
+        lambda analysis, cases, checks: [signal],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.statutory_supersession_flags",
+        lambda signals: ["Statutory/regulatory supersession signal: test"],
+    )
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    assert analysis.statutory_supersession_signals == [signal]
+    assert analysis.statutory_supersession_flags == [
+        "Statutory/regulatory supersession signal: test"
+    ]
+
+
+def test_enrich_marks_quote_extraction_not_assessed_without_source(monkeypatch):
+    monkeypatch.setenv("LLM_EXTRACTION", "1")
+    monkeypatch.setattr("va_legal_agent.agent.llm_enabled", lambda: True)
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details_and_text",
+        lambda url, timeout=None: ({}, ""),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.agent.extract_quote_candidates",
+        lambda text: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    case = CaseRecord(
+        title="No Source",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/no-source",
+    )
+
+    enrich_top_cases([case], limit=1)
+
+    assert case.extraction_candidates == []
+    assert case.extraction_flags == [
+        "LLM extraction not assessed: no readable source text was available."
     ]

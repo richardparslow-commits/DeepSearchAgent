@@ -948,14 +948,14 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     return soup.get_text(" ", strip=True)
 
 
-def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | list[str] | bool | None]:
-    """Fetch a case page or PDF and extract structured details.
+def fetch_case_details_and_text(
+    url: str, timeout: int | None = None
+) -> tuple[dict[str, str | list[str] | bool | None], str]:
+    """Fetch a case and return both structured details and readable text.
 
-    Extracts citation, decision date, holding, docket number, judge, cited
-    statutes, and procedural outcome where detectable. Network failures,
-    oversized responses, non-public destinations, and redirects to
-    non-public destinations raise FetchError; parse failures return empty
-    fields.
+    The text is the same source used for extraction, so quote-first
+    verification can check a model-proposed span against exactly what was
+    fetched. It is not written to disk unless a caller deliberately does so.
     """
     settings = get_settings()
     timeout = timeout or settings.request_timeout_seconds
@@ -972,13 +972,14 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
         # Enrichment needs the whole opinion: a holding or disposition can sit
         # beyond the old four-page default.  The byte cap still bounds the
         # download itself, and deep-read already uses the same all-pages mode.
-        return extract_case_details(_extract_pdf_text(content, max_pages=0))
+        text = _extract_pdf_text(content, max_pages=0)
+        return extract_case_details(text), text
 
     encoding = getattr(response, "encoding", None) or "utf-8"
     text = content.decode(encoding, errors="replace")
     # BVA decisions are plain-text files; parse them directly rather than as HTML.
     if "text/plain" in content_type.lower() or url_path.endswith(".txt"):
-        return extract_case_details(text)
+        return extract_case_details(text), text
 
     soup = BeautifulSoup(text, "html.parser")
     title = soup.title.get_text(" ", strip=True) if soup.title else ""
@@ -986,9 +987,25 @@ def fetch_case_details(url: str, timeout: int | None = None) -> dict[str, str | 
         "meta", attrs={"property": "og:description"}
     )
     page_text = soup.get_text(" ", strip=True)
-    details = extract_case_details(f"{title} {page_text}")
+    source_text = f"{title} {page_text}"
+    details = extract_case_details(source_text)
     if not details["holding"] and meta:
         details["holding"] = (meta.get("content") or "").strip()
+    return details, source_text
+
+
+def fetch_case_details(
+    url: str, timeout: int | None = None
+) -> dict[str, str | list[str] | bool | None]:
+    """Fetch a case page or PDF and extract structured details.
+
+    Extracts citation, decision date, holding, docket number, judge, cited
+    statutes, and procedural outcome where detectable. Network failures,
+    oversized responses, non-public destinations, and redirects to
+    non-public destinations raise FetchError; parse failures return empty
+    fields.
+    """
+    details, _source_text = fetch_case_details_and_text(url, timeout)
     return details
 
 

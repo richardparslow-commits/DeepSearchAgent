@@ -51,6 +51,10 @@ _ENV_VARS = (
     "GOVINFO_API_KEY",
     "CITATION_TRAVERSAL",
     "CITATION_TRAVERSE_LIMIT",
+    "CITATOR",
+    "CITATOR_MAX_CASES",
+    "CITATOR_MAX_CITING_OPINIONS",
+    "CITATOR_MAX_PAGES",
     "ENRICH_CASE_LIMIT",
     "INTERPRET_CASE_LIMIT",
     "PRINCIPLE_SCAN_LIMIT",
@@ -61,6 +65,7 @@ _ENV_VARS = (
     "OPENAI_MAX_TOKENS",
     "LLM_REASONING",
     "LLM_REASONING_LIMIT",
+    "LLM_EXTRACTION",
     "DEEP_READ",
     "DEEP_READ_LIMIT",
     "DEEP_READ_PAGES",
@@ -218,6 +223,10 @@ def test_settings_defaults(monkeypatch):
     assert settings.govinfo_api_key is None
     assert settings.citation_traversal is False
     assert settings.citation_traverse_limit == 3
+    assert settings.citator is False
+    assert settings.citator_max_cases == 10
+    assert settings.citator_max_citing_opinions == 5
+    assert settings.citator_max_pages == 1
     assert settings.enrich_case_limit == 5
     assert settings.interpret_case_limit == 3
     assert settings.principle_scan_limit == 5
@@ -228,6 +237,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.openai_max_tokens == 700
     assert settings.llm_reasoning is True
     assert settings.llm_reasoning_limit == 10
+    assert settings.llm_extraction is False
     assert settings.deep_read is False
     assert settings.deep_read_limit == 3
     assert settings.deep_read_pages == 0
@@ -274,6 +284,10 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("GOVINFO_API_KEY", "gov-123")
     monkeypatch.setenv("CITATION_TRAVERSAL", "1")
     monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "5")
+    monkeypatch.setenv("CITATOR", "1")
+    monkeypatch.setenv("CITATOR_MAX_CASES", "2")
+    monkeypatch.setenv("CITATOR_MAX_CITING_OPINIONS", "7")
+    monkeypatch.setenv("CITATOR_MAX_PAGES", "3")
     monkeypatch.setenv("ENRICH_CASE_LIMIT", "4")
     monkeypatch.setenv("INTERPRET_CASE_LIMIT", "7")
     monkeypatch.setenv("PRINCIPLE_SCAN_LIMIT", "9")
@@ -283,6 +297,7 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("OPENAI_MAX_TOKENS", "300")
     monkeypatch.setenv("LLM_REASONING", "0")
     monkeypatch.setenv("LLM_REASONING_LIMIT", "4")
+    monkeypatch.setenv("LLM_EXTRACTION", "1")
     monkeypatch.setenv("DEEP_READ", "1")
     monkeypatch.setenv("DEEP_READ_LIMIT", "5")
     monkeypatch.setenv("DEEP_READ_PAGES", "0")
@@ -317,6 +332,10 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.govinfo_api_key == "gov-123"
     assert settings.citation_traversal is True
     assert settings.citation_traverse_limit == 5
+    assert settings.citator is True
+    assert settings.citator_max_cases == 2
+    assert settings.citator_max_citing_opinions == 7
+    assert settings.citator_max_pages == 3
     assert settings.enrich_case_limit == 4
     assert settings.interpret_case_limit == 7
     assert settings.principle_scan_limit == 9
@@ -326,6 +345,7 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.openai_max_tokens == 300
     assert settings.llm_reasoning is False
     assert settings.llm_reasoning_limit == 4
+    assert settings.llm_extraction is True
     assert settings.deep_read is True
     assert settings.deep_read_limit == 5
     assert settings.deep_read_pages == 0

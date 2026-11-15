@@ -83,6 +83,69 @@ def _courtlistener_query(query: str) -> str:
 # API form (".../api/rest/v4/opinions/12345/", the opinions-cited rows);
 # match both so traversal works end to end.
 _OPINION_ID_PATTERN = re.compile(r"/opinions?/(\d+)")
+_CLUSTER_ID_PATTERN = re.compile(r"/clusters?/(\d+)")
+
+
+def _positive_id(value: object) -> int | None:
+    """Return a positive numeric id from an int, digit string, or URL."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text.isdigit():
+        parsed = int(text)
+        return parsed if parsed > 0 else None
+    match = _OPINION_ID_PATTERN.search(text)
+    if not match:
+        return None
+    parsed = int(match.group(1))
+    return parsed if parsed > 0 else None
+
+
+def _cluster_citation_values(values: object) -> list[str]:
+    """Return every parallel citation string in a cluster citation list."""
+    if not isinstance(values, list):
+        return []
+    citations: list[str] = []
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("cite") or value.get("citation") or ""
+        text = str(value or "").strip()
+        if text and text not in citations:
+            citations.append(text)
+    return citations
+
+
+def _cluster_opinion_ids(cluster: dict) -> list[int]:
+    """Return every valid sub-opinion id in a cluster, preserving order."""
+    ids: list[int] = []
+    for key in ("sub_opinions", "opinions"):
+        values = cluster.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, dict):
+                value = value.get("resource_uri") or value.get("url") or value.get("id")
+            parsed = _positive_id(value)
+            if parsed is not None and parsed not in ids:
+                ids.append(parsed)
+    return ids
+
+
+def _cluster_identifier(cluster: dict, cluster_url: str = "") -> str:
+    """Return a cluster id from the object or one of its URL fields."""
+    raw_id = cluster.get("id")
+    if raw_id is not None and str(raw_id).strip().isdigit():
+        return str(int(str(raw_id).strip()))
+    for value in (
+        cluster.get("resource_uri"),
+        cluster.get("url"),
+        cluster.get("absolute_url"),
+        cluster_url,
+    ):
+        match = _CLUSTER_ID_PATTERN.search(str(value or ""))
+        if match:
+            return match.group(1)
+    return ""
 
 
 def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
@@ -593,14 +656,17 @@ class CourtListenerProvider:
         except (SearchError, ValueError):
             return header
 
-    def _get_opinion(self, opinion_id: int) -> dict[str, str] | None:
+    def _get_opinion(self, opinion_id: int) -> dict[str, object] | None:
         """Fetch one opinion (plus its cluster and docket) into a result dict.
 
         The opinions detail endpoint carries only the opinion text and links;
         the case name, citations, decision date, and judges live on the
         opinion's *cluster*, and the docket number/court on its *docket*, so
         all three are fetched to produce the same structured fields the search
-        endpoint returns in a single call.
+        endpoint returns in a single call. The result also carries the cluster
+        id, every parallel citation, and every sub-opinion id so the citator
+        can resolve the whole case rather than the one opinion it started
+        from.
         """
         try:
             opinion = self._get_json(f"{self.API_URL}{opinion_id}/")
@@ -617,17 +683,28 @@ class CourtListenerProvider:
         url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
         if not url:
             return None
-        citations = cluster.get("citations") or []
-        citation = citations[0].get("cite", "") if citations else ""
+        citations = _cluster_citation_values(cluster.get("citations"))
+        citation = citations[0] if citations else ""
+        opinion_ids = _cluster_opinion_ids(cluster) or [opinion_id]
         return {
             "title": cluster.get("case_name") or "Untitled case",
             "url": url,
             "snippet": "",
             "court": _CL_COURT_NAMES.get(docket.get("court_id"), COURT_UNKNOWN),
             "citation": citation,
+            "citations": citations,
+            "cluster_id": _cluster_identifier(cluster, str(cluster_url or "")),
+            "opinion_ids": opinion_ids,
             "decision_date": cluster.get("date_filed") or "",
             "docket": docket.get("docket_number") or "",
             "judge": cluster.get("judges") or "",
+            # The citator needs the individual opinion's role (lead, dissent,
+            # etc.) and the cluster's precedential designation before it can
+            # decide whether a treatment finding is authoritative.
+            "opinion_type": str(opinion.get("type") or ""),
+            "precedential_status": str(
+                cluster.get("precedential_status") or ""
+            ),
             # Carry the opinion id so enrichment/deep-read can pull full text
             # from the detail endpoint instead of the WAF-challenged frontend.
             "courtlistener_opinion_id": str(opinion_id),
@@ -701,6 +778,105 @@ class CourtListenerProvider:
     def cited_opinions(self, opinion_id: int, max_results: int = 10) -> list[dict[str, str]]:
         """Return opinions *opinion_id* cites (its authorities)."""
         return self._related_opinions(opinion_id, "citing", max_results)
+
+    def citing_edges(
+        self,
+        opinion_id: int,
+        page_size: int = 100,
+        cursor: str | None = None,
+    ) -> dict[str, object]:
+        """Return one raw page of forward-citation edges for *opinion_id*.
+
+        The citator needs the relationship rows' own ``citing_opinion``
+        links, the response ``count``, and the cursor in ``next``. Unlike
+        :meth:`citing_opinions`, this deliberately does not fetch each cited
+        opinion's cluster/docket; the citator reads only the capped set it
+        will actually review and reports the remainder as incomplete.
+        """
+        params: dict[str, object] = {
+            "cited_opinion": opinion_id,
+            "page_size": min(max(page_size, 1), 100),
+            "format": "json",
+        }
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            return self._get_json(self.CITATIONS_URL, params)
+        except SearchError as exc:
+            raise SearchError(
+                f"CourtListener citing opinions failed for opinion {opinion_id}: {exc}"
+            ) from exc
+
+    def same_docket_decisions(
+        self, opinion_id: int, max_results: int = 5
+    ) -> list[dict[str, str]]:
+        """Return other opinion clusters attached to the target's docket.
+
+        This is deliberately a **within-docket** advisory signal. It does not
+        follow an appeal to a new court, infer treatment, or establish finality.
+        The docket response supplies the cluster links; each linked cluster is
+        fetched for display metadata. A fetch failure is raised so the caller
+        can report the signal as unavailable instead of silently showing an
+        empty list.
+        """
+        try:
+            opinion = self._get_json(f"{self.API_URL}{opinion_id}/")
+            cluster_url = str(opinion.get("cluster") or "")
+            if not cluster_url:
+                return []
+            target_cluster = self._get_json(cluster_url)
+            docket_url = str(target_cluster.get("docket") or "")
+            if not docket_url:
+                return []
+            docket = self._get_json(docket_url)
+            cluster_key = cluster_url.rstrip("/")
+            cluster_urls = [
+                str(value).rstrip("/")
+                for value in (docket.get("clusters") or [])
+                if value and str(value).rstrip("/") != cluster_key
+            ][: max(0, max_results)]
+
+            decisions: list[dict[str, str]] = []
+            for value in cluster_urls:
+                cluster = self._get_json(value + "/")
+                absolute_url = str(cluster.get("absolute_url") or "")
+                url = (
+                    "https://www.courtlistener.com" + absolute_url
+                    if absolute_url
+                    else ""
+                )
+                first_citation = (cluster.get("citations") or [{}])[0]
+                citation = (
+                    str(first_citation.get("cite", ""))
+                    if isinstance(first_citation, dict)
+                    else str(first_citation)
+                )
+                decisions.append(
+                    {
+                        "case_name": str(
+                            cluster.get("case_name") or "Untitled case"
+                        ),
+                        "citation": citation,
+                        "court": _CL_COURT_NAMES.get(
+                            docket.get("court_id"), COURT_UNKNOWN
+                        ),
+                        "decision_date": str(cluster.get("date_filed") or ""),
+                        "url": url,
+                        "cluster_id": str(
+                            cluster.get("id") or value.rsplit("/", 1)[-1]
+                        ),
+                    }
+                )
+            return decisions
+        except SearchError as exc:
+            raise SearchError(
+                "CourtListener same-docket lookup failed for opinion "
+                f"{opinion_id}: {exc}"
+            ) from exc
+
+    def opinion_metadata(self, opinion_id: int) -> dict[str, object] | None:
+        """Return the citator's opinion/cluster/docket metadata for one opinion."""
+        return self._get_opinion(opinion_id)
 
 
 USAGE_URL = "https://www.courtlistener.com/api/rest/v4/api-usage/"

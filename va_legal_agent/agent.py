@@ -10,17 +10,29 @@ import re
 from collections import Counter
 from urllib.parse import urlsplit
 
+from .appellate_history import load_appellate_history_records
+from .authority_queue import build_authority_queue
 from .authorities import (
     authority_flags,
+    statutory_supersession_flags,
     validate_cavc_panel_cases,
     verify_analysis_authorities,
+    verify_analysis_supersession,
 )
+from .citator import run_citator
 from .config import get_settings
 from .deep_read import deep_read_cases
-from .fetch import extract_case_details, fetch_case_details
+from .extraction import extract_quote_candidates
+from .fetch import extract_case_details, fetch_case_details, fetch_case_details_and_text
 from .impact import analyze_case_impact
 from .interpretation import build_interpretive_analysis, uncovered_element_names
-from .models import CaseRecord, CitationTreatment, LegalAnalysis
+from .llm import llm_enabled
+from .models import (
+    CaseExtractionCandidates,
+    CaseRecord,
+    CitationTreatment,
+    LegalAnalysis,
+)
 from .planning import decompose_issue, plan_queries, refine_plan
 from .providers import (
     CourtListenerProvider,
@@ -35,6 +47,7 @@ from .providers import (
 from .ranking import _parse_year, rank_cases, select_with_court_floor
 from .reliability import classify_source
 from .search import SearchError
+from .snapshots import SnapshotStore
 from .topics import (
     COURT_BVA,
     COURT_CAVC,
@@ -895,12 +908,18 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
     outcome where the source page provides them. ``limit`` defaults to
     ENRICH_CASE_LIMIT.
     """
+    settings = get_settings()
     if limit is None:
-        limit = get_settings().enrich_case_limit
+        limit = settings.enrich_case_limit
+    # Quote-first extraction is candidate-only and opt-in. It needs the
+    # readable source text, which is already in hand for CourtListener and is
+    # returned alongside details for the generic fetch path.
+    quote_extraction = bool(getattr(settings, "llm_extraction", False)) and llm_enabled()
     courtlistener = CourtListenerProvider()
     for case in cases[:limit]:
         if not case.url:
             continue
+        source_text = ""
         try:
             if case.courtlistener_opinion_id:
                 # CourtListener's frontend page is AWS-WAF JS-challenged for
@@ -909,6 +928,9 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
                 # endpoint's full text instead of scraping the URL.
                 text = courtlistener.fetch_opinion_text(int(case.courtlistener_opinion_id))
                 details = extract_case_details(text) if text else {}
+                source_text = text if text else ""
+            elif quote_extraction:
+                details, source_text = fetch_case_details_and_text(case.url)
             else:
                 details = fetch_case_details(case.url)
         except Exception as exc:  # noqa: BLE001 - enrichment is best-effort
@@ -946,6 +968,32 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             case.citation_treatments = [
                 t if isinstance(t, CitationTreatment) else CitationTreatment(**t)
                 for t in treatments
+            ]
+        if quote_extraction and source_text.strip():
+            try:
+                extraction = extract_quote_candidates(source_text)
+            except Exception as exc:  # noqa: BLE001 - candidates are best-effort
+                logger.warning(
+                    "Quote-first extraction failed for %s: %s", case.url, exc
+                )
+                case.extraction_flags = [f"LLM extraction failed: {exc}"]
+                continue
+            for candidate in extraction.candidates:
+                deterministic = str(getattr(case, candidate.field, "") or "")
+                if deterministic and candidate.value and deterministic != candidate.value:
+                    candidate.detail += (
+                        f" Deterministic extraction differs ({deterministic!r}); "
+                        "candidate only."
+                    )
+                elif not deterministic:
+                    candidate.detail += (
+                        " Deterministic extraction was empty; candidate only."
+                    )
+            case.extraction_candidates = extraction.candidates
+            case.extraction_flags = extraction.flags
+        elif quote_extraction:
+            case.extraction_flags = [
+                "LLM extraction not assessed: no readable source text was available."
             ]
     return cases
 
@@ -1156,6 +1204,18 @@ def _build_analysis(
         {"case": label, "summary": case.deep_summary}
         for label, case in zip(top_cases, cases[:5])
     ]
+    # Quote-backed extraction proposals ride along with the surfaced cases so
+    # reviewers can inspect them. They are deliberately not merged into any
+    # authoritative field or interpretive input.
+    extraction_candidates = [
+        CaseExtractionCandidates(
+            case=label,
+            candidates=case.extraction_candidates,
+            flags=case.extraction_flags,
+        )
+        for label, case in zip(top_cases, cases[:5])
+        if case.extraction_candidates or case.extraction_flags
+    ]
     rolled_telemetry = rollup_search_telemetry(telemetry or [])
 
     return LegalAnalysis(
@@ -1166,6 +1226,7 @@ def _build_analysis(
         next_steps=interpretive.next_steps,
         top_cases=top_cases,
         deep_summaries=deep_summaries,
+        extraction_candidates=extraction_candidates,
         detected_elements=interpretive.detected_elements,
         principle_findings=interpretive.principle_findings,
         contradictions=interpretive.contradictions,
@@ -1190,6 +1251,7 @@ def analyze_cases_for_claim(
     max_wall_seconds: float | None = None,
     deep_read: bool | None = None,
     deep_read_limit: int | None = None,
+    snapshot_dir: str | None = None,
 ) -> LegalAnalysis:
     """Run the adaptive research loop and build structured VA-claims guidance."""
     if telemetry is None:
@@ -1217,6 +1279,71 @@ def analyze_cases_for_claim(
         authority_checks.extend(verify_analysis_authorities(analysis, cases))
     analysis.authority_checks = authority_checks
     analysis.authority_flags = authority_flags(authority_checks)
+    if settings.authority_verification:
+        analysis.statutory_supersession_signals = verify_analysis_supersession(
+            analysis, cases, authority_checks
+        )
+        analysis.statutory_supersession_flags = statutory_supersession_flags(
+            analysis.statutory_supersession_signals
+        )
+    if settings.citator:
+        history_records = []
+        history_flags: list[str] = []
+        snapshot_flags: list[str] = []
+        snapshot_store = None
+        effective_snapshot_dir = (
+            settings.snapshot_dir if snapshot_dir is None else snapshot_dir
+        )
+        if settings.appellate_history_file:
+            try:
+                history_records = load_appellate_history_records(
+                    settings.appellate_history_file
+                )
+            except (OSError, ValueError) as exc:
+                history_flags.append(
+                    "Appellate history verification records unavailable: "
+                    f"{exc}"
+                )
+        if not settings.courtlistener_api_key:
+            analysis.citator_flags = [
+                "CourtListener citator skipped: COURTLISTENER_API_KEY is not set.",
+                *history_flags,
+                *snapshot_flags,
+            ]
+        else:
+            if effective_snapshot_dir:
+                try:
+                    snapshot_store = SnapshotStore(effective_snapshot_dir)
+                except OSError as exc:
+                    snapshot_flags.append(
+                        f"Evidence snapshots unavailable: {exc}"
+                    )
+            citator_kwargs: dict[str, object] = {
+                "max_cases": settings.citator_max_cases,
+                "max_citing_opinions": settings.citator_max_citing_opinions,
+                "max_pages": settings.citator_max_pages,
+            }
+            if history_records:
+                citator_kwargs["history_records"] = history_records
+            if snapshot_store is not None:
+                citator_kwargs["snapshot_store"] = snapshot_store
+            analysis.authority_queue = build_authority_queue(
+                cases, settings.citator_max_cases
+            )
+            analysis.citator_checks = run_citator(
+                cases,
+                CourtListenerProvider(),
+                **citator_kwargs,
+            )
+            if settings.appellate_history_file:
+                for check in analysis.citator_checks:
+                    if check.appellate_history is not None:
+                        check.appellate_history.source = settings.appellate_history_file
+            analysis.citator_flags = [
+                flag for check in analysis.citator_checks for flag in check.flags
+            ]
+            analysis.citator_flags.extend(history_flags)
+            analysis.citator_flags.extend(snapshot_flags)
     return analysis
 
 

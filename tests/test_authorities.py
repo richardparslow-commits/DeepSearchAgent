@@ -320,6 +320,31 @@ def test_federal_circuit_case_rejects_a_non_ca13_or_wrong_title_match(monkeypatc
     assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
 
 
+def test_titles_match_rejects_an_empty_case_name():
+    assert auth._titles_match("", "Another Veteran v. Secretary") is False
+
+
+def test_federal_circuit_case_rejects_a_longer_title_match(monkeypatch):
+    """A title containing the expected name is not the same case."""
+    client = auth.GovInfoClient("demo-key")
+    case = CaseRecord(title="Veteran v. Secretary", court=COURT_FEDERAL_CIRCUIT)
+    rows = iter(
+        [
+            [{"packageId": "USCOURTS-ca13-1", "title": "Another Veteran v. Secretary"}],
+            [
+                {
+                    "packageId": "USCOURTS-ca13-24-1234",
+                    "title": "24-1234 - Another Veteran v. Secretary",
+                }
+            ],
+        ]
+    )
+    monkeypatch.setattr(client, "search", lambda *args, **kwargs: next(rows))
+
+    assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
+    assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
+
+
 @pytest.fixture(autouse=True)
 def _clear_authority_state():
     auth.clear_authority_caches()

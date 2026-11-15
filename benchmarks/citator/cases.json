@@ -1,0 +1,1411 @@
+{
+  "version": 1,
+  "description": "Labeled synthetic citator cases with adversarial language, role/status traps, parallel citations, whole-cluster edges, and coverage failures.",
+  "label_rules": {
+    "status": "negative only for an authoritative majority/lead/combined/unanimous opinion with Published status; gated findings force unknown; no findings and complete coverage produce good_law.",
+    "authoritative": "Exact finding signature expected in CitatorCheck.negative_treatments.",
+    "gated": "Exact finding signature expected in CitatorCheck.gated_treatment_findings.",
+    "coverage_complete": "Expected CitatorCheck.coverage.complete.",
+    "flags_contain": "Every string must appear in at least one citator flag."
+  },
+  "cases": [
+    {
+      "id": "auth-majority-parallel-overrule",
+      "category": "authoritative negative",
+      "adversarial_note": "The target is named only by its parallel WL citation, not the Vet.App. citation.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "In Jones, we overruled Smith v. Wilkie, 2020 WL 123456, in part."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "part",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "dissent-only-criticism",
+      "category": "role gate",
+      "adversarial_note": "Negative language appears only in a dissent, so it cannot set negative.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "040dissent",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The dissent criticizes Smith v. Wilkie, 30 Vet.App. 123, for ignoring the statute."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "criticized",
+            "scope": "unclear",
+            "opinion_role": "separate",
+            "precedential_status": "Published"
+          }
+        ],
+        "flags_contain": [
+          "non-authoritative"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "concurrence-unpublished-limit",
+      "category": "role and status gate",
+      "adversarial_note": "A nonprecedential concurrence would be doubly ineligible.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "030concurrence",
+          "precedential_status": "Unpublished"
+        }
+      },
+      "texts": {
+        "201": "The concurrence would limit Smith v. Wilkie, 30 Vet.App. 123, to its facts."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "limited",
+            "scope": "unclear",
+            "opinion_role": "separate",
+            "precedential_status": "Unpublished"
+          }
+        ],
+        "flags_contain": [
+          "non-authoritative"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "lead-unpublished-overrule",
+      "category": "status gate",
+      "adversarial_note": "The lead opinion is nonprecedential, so its negative language is advisory only.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Unpublished"
+        }
+      },
+      "texts": {
+        "201": "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Unpublished"
+          }
+        ],
+        "flags_contain": [
+          "non-authoritative"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "lead-unknown-status-question",
+      "category": "status gate",
+      "adversarial_note": "An empty precedential status is unknown, not Published.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": ""
+        }
+      },
+      "texts": {
+        "201": "The court questioned Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "questioned",
+            "scope": "unclear",
+            "opinion_role": "majority",
+            "precedential_status": ""
+          }
+        ],
+        "flags_contain": [
+          "non-authoritative"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "clean-good-law",
+      "category": "clean review",
+      "adversarial_note": "A citation followed by approving language must not be treated as negative.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123, and applied its framework."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "negated-overrule",
+      "category": "negation",
+      "adversarial_note": "The sentence contains overrule but explicitly negates it.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "We do not overrule Smith v. Wilkie, 30 Vet.App. 123; its holding remains intact."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "negated-after-target",
+      "category": "negation",
+      "adversarial_note": "The target appears before the negated treatment verb.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "Smith v. Wilkie, 30 Vet.App. 123, was not overruled."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "sibling-opinion-edge",
+      "category": "whole cluster",
+      "adversarial_note": "The citing edge is attached to opinion 112, not the primary opinion 111.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "203": {
+          "title": "Delta v. McDonough",
+          "citation": "34 Vet.App. 44",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2022-03-03",
+          "url": "https://www.courtlistener.com/opinion/203/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "203": "The en banc court abrogated Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 112,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            203
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/203/",
+            "treatment": "abrogated",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "mixed-authoritative-gated",
+      "category": "mixed signals",
+      "adversarial_note": "One lead opinion overrules; a dissent criticizes. Only the lead counts.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "040dissent",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court overruled Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The dissent criticizes Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 2,
+          "citing_ids": [
+            201,
+            202
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/202/",
+            "treatment": "criticized",
+            "scope": "unclear",
+            "opinion_role": "separate",
+            "precedential_status": "Published"
+          }
+        ],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "truncated-page-cap",
+      "category": "coverage",
+      "adversarial_note": "The API reports two citations but the one-page cap sees only one.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 2,
+          "citing_ids": [
+            201
+          ],
+          "next": "?cursor=page-2"
+        }
+      ],
+      "limits": {
+        "max_pages": 1
+      },
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "page cap"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "missing-target-text",
+      "category": "coverage",
+      "adversarial_note": "The citation edge exists but the body never names the target.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "This opinion discusses a different case."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "could not locate"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "ambiguous-lookup",
+      "category": "resolution",
+      "adversarial_note": "The citation lookup returns two clusters; the resolver must not guess.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "lookup": [
+        {
+          "citation": "30 Vet.App. 123",
+          "normalized_citations": [
+            "30 Vet.App. 123"
+          ],
+          "status": 200,
+          "clusters": [
+            {
+              "id": 777,
+              "case_name": "Smith v. Wilkie",
+              "citations": [
+                {
+                  "cite": "30 Vet.App. 123"
+                }
+              ],
+              "sub_opinions": [
+                "https://www.courtlistener.com/api/rest/v4/opinions/111/"
+              ]
+            },
+            {
+              "id": 778,
+              "case_name": "Smith v. Wilkie",
+              "citations": [
+                {
+                  "cite": "30 Vet.App. 123"
+                }
+              ],
+              "sub_opinions": [
+                "https://www.courtlistener.com/api/rest/v4/opinions/222/"
+              ]
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "",
+        "target_citations": [
+          "30 Vet.App. 123"
+        ],
+        "target_opinion_ids": [],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "exactly one"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "direct-cluster-error",
+      "category": "resolution",
+      "adversarial_note": "Cluster metadata fails; the fallback checks one opinion and marks coverage incomplete.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "errors": {
+        "metadata": {
+          "111": "cluster unavailable"
+        }
+      },
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "",
+        "target_citations": [
+          "30 Vet.App. 123"
+        ],
+        "target_opinion_ids": [
+          "111"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "cluster unavailable",
+          "only opinion 111"
+        ],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "lookup-whole-cluster",
+      "category": "whole cluster",
+      "adversarial_note": "The lookup cluster has two sub-opinions and two parallel citations.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "lookup": [
+        {
+          "citation": "30 Vet.App. 123",
+          "normalized_citations": [
+            "30 Vet.App. 123"
+          ],
+          "status": 200,
+          "clusters": [
+            {
+              "id": 888,
+              "case_name": "Smith v. Wilkie",
+              "citations": [
+                {
+                  "cite": "30 Vet.App. 123"
+                },
+                {
+                  "cite": "2020 WL 123456"
+                }
+              ],
+              "sub_opinions": [
+                "https://www.courtlistener.com/api/rest/v4/opinions/222/",
+                "https://www.courtlistener.com/api/rest/v4/opinions/223/"
+              ]
+            }
+          ]
+        }
+      ],
+      "metadata": {
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court overruled Smith v. Wilkie, 2020 WL 123456.",
+        "202": "The court followed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 222,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        },
+        {
+          "opinion_id": 223,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            202
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "888",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "222",
+          "223"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "same-docket-advisory",
+      "category": "advisory separation",
+      "adversarial_note": "A later same-docket cluster is context only, not appellate history or treatment.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "same_docket": [
+        {
+          "case_name": "Smith v. McDonough",
+          "citation": "32 Vet.App. 9",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2019-01-01",
+          "url": "https://www.courtlistener.com/opinion/999/",
+          "cluster_id": "999"
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 1
+      }
+    },
+    {
+      "id": "same-name-different-citation",
+      "category": "adversarial false positive",
+      "adversarial_note": "The negative verb applies to a different decision with the same name and a different citation.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "We overruled Smith v. Wilkie, 30 Vet.App. 999, a different case that happens to share the name."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "dissent-attribution-trap",
+      "category": "adversarial false positive",
+      "adversarial_note": "The sentence criticizes the target, but attributes the criticism to the dissent; the majority did not adopt it.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Jones v. McDonough",
+          "citation": "33 Vet.App. 10",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-02-02",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The majority affirmed, but the dissent criticized Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0
+      }
+    }
+  ]
+}

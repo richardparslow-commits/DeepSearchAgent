@@ -27,7 +27,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from .config import get_settings
-from .models import AuthorityCheck, CaseRecord, LegalAnalysis
+from .models import (
+    AuthorityCheck,
+    CaseRecord,
+    LegalAnalysis,
+    StatutorySupersessionSignal,
+)
 from .search import SearchError, http_proxy_kwargs
 from .topics import COURT_CAVC, COURT_FEDERAL_CIRCUIT
 
@@ -37,6 +42,27 @@ ECFR_FULL_URL = "https://www.ecfr.gov/api/versioner/v1/full/{date}/title-38.xml"
 ECFR_SECTION_URL = "https://www.ecfr.gov/current/title-38/section-{section}"
 FEDERAL_REGISTER_DOCUMENTS_URL = "https://www.federalregister.gov/api/v1/documents.json"
 GOVINFO_SEARCH_URL = "https://api.govinfo.gov/search"
+FR_HOME_URL = "https://www.federalregister.gov/"
+
+# Explicit actions that can make a cited provision no longer current. These
+# are used only to raise a review candidate; an amendment alone is not a
+# supersession signal, and no source result is treated as a final label.
+_SUPERSESSION_ACTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("repealed", re.compile(r"\brepeal(?:e|ed|es|ing)?\b", re.I)),
+    ("removed", re.compile(r"\bremov(?:e|ed|es|ing|al)\b", re.I)),
+    ("reserved", re.compile(r"\breserv(?:e|ed|es|ing|ation)\b", re.I)),
+    ("renumbered", re.compile(r"\brenumber(?:ed|ing|s)?\b", re.I)),
+    ("redesignated", re.compile(r"\bredesignat(?:e|ed|es|ing|ion)\b", re.I)),
+    ("superseded", re.compile(r"\b(?:supersed(?:e|ed|es|ing)|supersession)\b", re.I)),
+)
+_REPLACEMENT_RE = re.compile(
+    r"(?:redesignat(?:ed|ion)|renumber(?:ed|ing)|moved|transferred|"
+    r"replac(?:ed|ement)|supersed(?:ed|es))\s+"
+    r"(?:as|to|by|with)\s+"
+    r"(?:38\s*C\.?\s*F\.?\s*R\.?\s*(?:§\s*)?)?"
+    r"(\d{1,2}\.\d{1,4}[A-Za-z]?)(?!\d)",
+    re.I,
+)
 
 # Docket numbers in CAVC PDF links are often attached to a filename with an
 # underscore (``Jones_20-8342(E).pdf``), so a word boundary is too strict.
@@ -445,6 +471,346 @@ def verify_federal_register_part(
     )
 
 
+def _supersession_action(row: dict[str, object]) -> str:
+    """Return an explicit supersession action named in a Federal Register row."""
+    text = " ".join(
+        str(row.get(key) or "") for key in ("action", "title", "abstract")
+    )
+    for signal, pattern in _SUPERSESSION_ACTION_PATTERNS:
+        if pattern.search(text):
+            return signal
+    return ""
+
+
+def _replacement_from_text(text: str) -> str:
+    """Extract a replacement section only when the rule states one explicitly."""
+    match = _REPLACEMENT_RE.search(text)
+    return f"38 C.F.R. § {match.group(1)}" if match else ""
+
+
+def _row_matches_section(row: dict[str, object], section: str) -> bool:
+    """Require a Federal Register row's CFR references to name the section."""
+    references = row.get("cfr_references")
+    if not isinstance(references, list) or not references:
+        return True
+    declared: list[str] = []
+    for reference in references:
+        if isinstance(reference, dict):
+            value = reference.get("section")
+            if value:
+                declared.append(str(value))
+        elif reference:
+            declared.append(str(reference))
+    return not declared or section in declared
+
+
+def verify_cfr_supersession(
+    section: str, today: date | None = None
+) -> StatutorySupersessionSignal:
+    """Look for an explicit Federal Register action affecting one CFR section.
+
+    This is a candidate generator, not a legal conclusion. A rule action such
+    as removal, repeal, renumbering, redesignation, reservation, or
+    supersession is retained with its effective date and source. A current
+    eCFR absence without an explicit action is reported separately by
+    :func:`build_statutory_supersession_signals` as ``not_in_current_source``.
+    """
+    authority = f"38 C.F.R. § {section}"
+    part = section.split(".", 1)[0]
+    lookback = get_settings().federal_register_lookback_days
+    today = today or datetime.now(timezone.utc).date()
+    since = (today - timedelta(days=lookback)).isoformat()
+    params: dict[str, object] = {
+        "conditions[cfr][title]": "38",
+        "conditions[cfr][part]": part,
+        "conditions[cfr][section]": section,
+        "conditions[type][]": "RULE",
+        "conditions[publication_date][gte]": since,
+        "order": "newest",
+        "per_page": 10,
+        "fields[]": [
+            "document_number",
+            "title",
+            "publication_date",
+            "effective_on",
+            "html_url",
+            "type",
+            "action",
+            "abstract",
+            "cfr_references",
+        ],
+    }
+    try:
+        response = requests.get(
+            FEDERAL_REGISTER_DOCUMENTS_URL,
+            params=params,
+            headers=_headers(),
+            timeout=_timeout(),
+            **http_proxy_kwargs(),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        return StatutorySupersessionSignal(
+            authority=authority,
+            authority_type="regulation",
+            source="Federal Register",
+            status="unavailable",
+            detail=str(exc),
+            url=FR_HOME_URL,
+        )
+
+    results = payload.get("results") if isinstance(payload, dict) else []
+    if not isinstance(results, list):
+        results = []
+    for row in results:
+        if not isinstance(row, dict) or not _row_matches_section(row, section):
+            continue
+        action = _supersession_action(row)
+        if not action:
+            continue
+        title = str(row.get("title") or "Untitled rule")
+        document = str(row.get("document_number") or "Federal Register rule")
+        published = str(row.get("publication_date") or "date unknown")
+        text = " ".join(
+            str(row.get(key) or "") for key in ("action", "title", "abstract")
+        )
+        return StatutorySupersessionSignal(
+            authority=authority,
+            authority_type="regulation",
+            source="Federal Register",
+            status="candidate",
+            signal=action,
+            detail=(
+                f"{document} ({published}) — {title}: action indicates "
+                f"{action} for {authority}. This is a review candidate, not a "
+                "confirmed supersession."
+            ),
+            url=str(row.get("html_url") or FR_HOME_URL),
+            effective_date=str(
+                row.get("effective_on") or row.get("publication_date") or ""
+            ),
+            replacement=_replacement_from_text(text),
+        )
+
+    if results:
+        detail = (
+            f"No explicit repeal, removal, reservation, renumbering, "
+            f"redesignation, or supersession action for {section} was found "
+            f"in Federal Register rules from the last {lookback} days."
+        )
+    else:
+        detail = (
+            f"No Federal Register rule referencing {authority} was found in "
+            f"the last {lookback} days."
+        )
+    return StatutorySupersessionSignal(
+        authority=authority,
+        authority_type="regulation",
+        source="Federal Register",
+        status="no_signal",
+        detail=detail,
+        url=FR_HOME_URL,
+    )
+
+
+def _not_found_regulation_signal(
+    authority: str, check: AuthorityCheck, explicit: StatutorySupersessionSignal
+) -> StatutorySupersessionSignal:
+    """Build a current-source-missing candidate, retaining FR coverage detail."""
+    detail = (
+        f"{check.detail} The section is absent from the current source, which "
+        "is a candidate for repeal, renumbering, or a citation error, not a "
+        "confirmed supersession."
+    )
+    if explicit.status == "candidate":
+        return explicit
+    if explicit.status == "unavailable":
+        detail += f" Federal Register check unavailable: {explicit.detail}"
+    elif explicit.detail:
+        detail += f" {explicit.detail}"
+    return StatutorySupersessionSignal(
+        authority=authority,
+        authority_type="regulation",
+        source=check.source,
+        status="candidate",
+        signal="not_in_current_source",
+        detail=detail,
+        url=check.url,
+    )
+
+
+def build_statutory_supersession_signals(
+    cfr_sections: list[str],
+    usc_sections: list[str],
+    checks: list[AuthorityCheck],
+) -> list[StatutorySupersessionSignal]:
+    """Derive separate provision-level signals from authority checks.
+
+    A verified current eCFR/GovInfo section produces ``no_signal``. A missing
+    current section produces a review candidate; for regulations, an explicit
+    Federal Register action can refine that candidate. An absent GovInfo check
+    (for example, no API key) remains ``not_assessed`` rather than looking
+    clean.
+    """
+    by_key = {
+        (check.source, check.authority): check for check in checks
+    }
+    signals: list[StatutorySupersessionSignal] = []
+    for section in dict.fromkeys(cfr_sections):
+        authority = f"38 C.F.R. § {section}"
+        check = by_key.get(("eCFR", authority))
+        if check is None:
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="regulation",
+                    source="eCFR",
+                    status="not_assessed",
+                    detail="No eCFR verification result was available.",
+                    url=ECFR_SECTION_URL.format(section=section),
+                )
+            )
+        elif check.status == "verified":
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="regulation",
+                    source="eCFR",
+                    status="no_signal",
+                    detail=(
+                        "The section is present in the current eCFR; no "
+                        "whole-section supersession signal was found."
+                    ),
+                    url=check.url,
+                )
+            )
+        elif check.status == "unresolved":
+            explicit = verify_cfr_supersession(section)
+            signals.append(
+                _not_found_regulation_signal(authority, check, explicit)
+            )
+        else:
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="regulation",
+                    source=check.source,
+                    status="unavailable",
+                    detail=check.detail,
+                    url=check.url,
+                )
+            )
+
+    for section in dict.fromkeys(usc_sections):
+        authority = f"38 U.S.C. § {section}"
+        check = by_key.get(("GovInfo", authority))
+        if check is None:
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="statute",
+                    source="GovInfo",
+                    status="not_assessed",
+                    detail=(
+                        "GovInfo verification did not run (for example, no "
+                        "GOVINFO_API_KEY)."
+                    ),
+                    url=GOVINFO_HOME_URL,
+                )
+            )
+        elif check.status == "verified":
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="statute",
+                    source="GovInfo",
+                    status="no_signal",
+                    detail=(
+                        "The exact section granule is present in the current "
+                        "U.S. Code collection; no whole-section supersession "
+                        "signal was found."
+                    ),
+                    url=check.url,
+                )
+            )
+        elif check.status == "unresolved":
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="statute",
+                    source="GovInfo",
+                    status="candidate",
+                    signal="not_in_current_source",
+                    detail=(
+                        f"{check.detail} The section is absent from the "
+                        "current GovInfo U.S. Code collection, which is a "
+                        "candidate for repeal, renumbering, or a citation "
+                        "error, not a confirmed supersession."
+                    ),
+                    url=check.url,
+                )
+            )
+        else:
+            signals.append(
+                StatutorySupersessionSignal(
+                    authority=authority,
+                    authority_type="statute",
+                    source=check.source,
+                    status="unavailable",
+                    detail=check.detail,
+                    url=check.url,
+                )
+            )
+    return signals
+
+
+def verify_analysis_supersession(
+    analysis: LegalAnalysis,
+    cases: list[CaseRecord],
+    checks: list[AuthorityCheck],
+) -> list[StatutorySupersessionSignal]:
+    """Build statutory/regulatory supersession signals for an analysis."""
+    if not get_settings().authority_verification:
+        return []
+    text = _analysis_text(analysis, cases)
+    return build_statutory_supersession_signals(
+        extract_cfr_sections(text),
+        _extract_usc_sections(text),
+        checks,
+    )
+
+
+def statutory_supersession_flags(
+    signals: list[StatutorySupersessionSignal],
+) -> list[str]:
+    """Turn supersession candidates and coverage gaps into separate flags."""
+    flags: list[str] = []
+    seen: set[str] = set()
+    for signal in signals:
+        if signal.status == "candidate":
+            flag = (
+                f"Statutory/regulatory supersession signal: {signal.authority} "
+                f"({signal.source}) — {signal.detail}"
+            )
+        elif signal.status == "unavailable":
+            flag = (
+                f"Statutory/regulatory supersession check unavailable for "
+                f"{signal.authority} ({signal.source}): {signal.detail}"
+            )
+        elif signal.status == "not_assessed":
+            flag = (
+                f"Statutory/regulatory supersession not assessed for "
+                f"{signal.authority} ({signal.source}): {signal.detail}"
+            )
+        else:
+            continue
+        if flag not in seen:
+            seen.add(flag)
+            flags.append(flag)
+    return flags
+
+
 class GovInfoClient:
     """Minimal client for GovInfo's official search API."""
 
@@ -500,10 +866,24 @@ def _title_words(value: object) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
 
 
+_GOVINFO_DOCKET_PREFIX_RE = re.compile(
+    r"^\s*(?:No\.\s*)?\d{2,4}-\d{1,5}\s*(?:-\s*)?", re.IGNORECASE
+)
+
+
 def _titles_match(expected: str, actual: object) -> bool:
-    """True when GovInfo's longer title contains the case name we searched."""
+    """True when GovInfo's title names exactly the case we searched.
+
+    GovInfo prefixes package titles with the docket (``24-1234 - ...``), so
+    remove that prefix before comparing. The remaining case name must match
+    exactly: a longer name such as ``Another Veteran v. Secretary`` must not
+    satisfy a search for ``Veteran v. Secretary``.
+    """
     expected_words = _title_words(expected)
-    return bool(expected_words and expected_words in _title_words(actual))
+    if not expected_words:
+        return False
+    actual_without_docket = _GOVINFO_DOCKET_PREFIX_RE.sub("", str(actual or ""))
+    return _title_words(actual_without_docket) == expected_words
 
 
 def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:

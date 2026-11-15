@@ -19,9 +19,12 @@ from va_legal_agent.__main__ import (
 )
 from va_legal_agent.models import (
     AuthorityCheck,
+    CitatorCheck,
+    CitatorCoverage,
     ClaimElement,
     Contradiction,
     LegalAnalysis,
+    NegativeTreatment,
     PrincipleFinding,
 )
 
@@ -3022,6 +3025,90 @@ def test_cli_output_file_error_is_reported(capsys, tmp_path, monkeypatch):
     assert "could not write output file" in capsys.readouterr().err
 
 
+def test_cli_adjudication_queue_writes_evidence_first_items(
+    capsys, tmp_path, monkeypatch
+):
+    analysis = _sample_analysis()
+    analysis.citator_checks = [
+        CitatorCheck(
+            target_case="Smith v. Wilkie",
+            target_citation="30 Vet.App. 123",
+            target_url="https://www.courtlistener.com/opinion/111/",
+            status="negative",
+            coverage=CitatorCoverage(complete=True),
+            negative_treatments=[
+                NegativeTreatment(
+                    citing_case="Jones v. McDonough",
+                    citing_citation="33 Vet.App. 10",
+                    citing_url="https://www.courtlistener.com/opinion/201/",
+                    treatment="overruled",
+                    binding=True,
+                    confidence="high",
+                    opinion_type="020lead",
+                    opinion_role="majority",
+                    precedential_status="Published",
+                    authoritative=True,
+                    excerpt="The court overruled Smith v. Wilkie.",
+                )
+            ],
+        )
+    ]
+    queue_path = tmp_path / "review.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-file",
+            str(tmp_path / "analysis.json"),
+            "--adjudication-queue",
+            str(queue_path),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: analysis,
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Adjudication queue: 1 item(s)" in captured.err
+    data = json.loads(queue_path.read_text())
+    assert data["source"].startswith("run:")
+    assert data["items"][0]["evidence"]["excerpt"] == (
+        "The court overruled Smith v. Wilkie."
+    )
+    assert data["items"][0]["review"]["status"] == "pending"
+
+
+def test_cli_adjudication_queue_write_error_is_reported(
+    capsys, tmp_path, monkeypatch
+):
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--adjudication-queue",
+            str(blocked / "review.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _sample_analysis(),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    assert "could not write adjudication queue" in capsys.readouterr().err
+
+
 def _logged_analysis(logger: logging.Logger, level: int) -> None:
     """Mock analyze_cases_for_claim that logs at *level*, then returns a sample."""
 
@@ -3976,3 +4063,121 @@ def test_render_analysis_authority_checks_across_formats():
     row = dict(zip(rows[0], rows[1]))
     assert row["authority_flags"] == analysis.authority_flags[0]
     assert json.loads(row["authority_checks"])[1]["status"] == "conflict"
+
+
+def test_cli_passes_snapshot_dir_to_analysis(capsys, monkeypatch):
+    captured = {}
+
+    def _analyze(issue, **kwargs):
+        captured.update(kwargs)
+        return _sample_analysis()
+
+    monkeypatch.setattr("va_legal_agent.__main__.analyze_cases_for_claim", _analyze)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "tinnitus", "--snapshot-dir", "/tmp/audit-snapshots"],
+    )
+
+    main()
+
+    capsys.readouterr()
+    assert captured["snapshot_dir"] == "/tmp/audit-snapshots"
+
+
+def test_render_analysis_statutory_supersession_across_formats(capsys):
+    from va_legal_agent.models import StatutorySupersessionSignal
+
+    analysis = _sample_analysis()
+    analysis.statutory_supersession_signals = [
+        StatutorySupersessionSignal(
+            authority="38 C.F.R. § 3.303",
+            authority_type="regulation",
+            source="Federal Register",
+            status="candidate",
+            signal="removed",
+            detail="Removal candidate from a final rule.",
+            effective_date="2026-11-01",
+            replacement="38 C.F.R. § 3.304",
+        ),
+        StatutorySupersessionSignal(
+            authority="38 C.F.R. § 3.305",
+            authority_type="regulation",
+            source="eCFR",
+            status="no_signal",
+            detail="Present in the current source.",
+            replacement="38 C.F.R. § 3.306",
+        ),
+        StatutorySupersessionSignal(
+            authority="38 U.S.C. § 1110",
+            authority_type="statute",
+            source="GovInfo",
+            status="not_assessed",
+            detail="No GovInfo key.",
+        ),
+    ]
+    analysis.statutory_supersession_flags = [
+        "Statutory/regulatory supersession signal: 38 C.F.R. § 3.303"
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "Statutory/regulatory supersession:" in text
+    assert "[candidate; signal=removed] 38 C.F.R. § 3.303" in text
+    assert "effective: 2026-11-01; replacement: 38 C.F.R. § 3.304" in text
+    assert "Statutory/regulatory supersession flags:" in text
+
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["statutory_supersession_signals"][0]["signal"] == "removed"
+    assert data["statutory_supersession_flags"] == analysis.statutory_supersession_flags
+
+    rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
+    row = dict(zip(rows[0], rows[1]))
+    assert json.loads(row["statutory_supersession_signals"])[0]["status"] == "candidate"
+    assert row["statutory_supersession_flags"] == analysis.statutory_supersession_flags[0]
+
+    capsys.readouterr()
+
+
+def test_render_analysis_extraction_candidates_across_formats():
+    from va_legal_agent.models import (
+        CaseExtractionCandidates,
+        ExtractionCandidate,
+    )
+
+    analysis = _sample_analysis()
+    analysis.extraction_candidates = [
+        CaseExtractionCandidates(
+            case="Smith v. Wilkie (Court of Appeals for Veterans Claims)",
+            candidates=[
+                ExtractionCandidate(
+                    field="holding",
+                    quote="We hold that the Board erred in its nexus analysis.",
+                    value="We hold that the Board erred in its nexus analysis.",
+                ),
+                ExtractionCandidate(
+                    field="outcome",
+                    quote="x" * 260,
+                    value="granted",
+                    detail="Candidate only.",
+                ),
+            ],
+            flags=["one quote was rejected"],
+        )
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "Quote-backed extraction candidates:" in text
+    assert "Smith v. Wilkie (Court of Appeals for Veterans Claims):" in text
+    assert '[candidate] holding: We hold that the Board erred' in text
+    assert '[flag] one quote was rejected' in text
+    assert "xxxxxxxx" in text
+
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["extraction_candidates"][0]["case"].startswith("Smith v. Wilkie")
+    assert data["extraction_candidates"][0]["candidates"][1]["value"] == "granted"
+
+    rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
+    row = dict(zip(rows[0], rows[1]))
+    payload = json.loads(row["extraction_candidates"])
+    assert payload[0]["flags"] == ["one quote was rejected"]

@@ -15,17 +15,22 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from .adjudication import build_adjudication_queue, save_queue
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
 from .config import get_settings
 from .interpretation import detect_claim_elements
 from .models import (
     AuthorityCheck,
+    AuthorityQueueEntry,
+    CaseExtractionCandidates,
+    CitatorCheck,
     ClaimElement,
     Contradiction,
     LegalAnalysis,
     PrincipleFinding,
     StatuteOutcomeRow,
+    StatutorySupersessionSignal,
 )
 from .planning import decompose_issue, plan_queries
 from .providers import (
@@ -342,6 +347,245 @@ def _authority_lines(checks: list[AuthorityCheck]) -> list[str]:
     return lines
 
 
+def _extraction_candidate_lines(
+    groups: list[CaseExtractionCandidates],
+) -> list[str]:
+    """Render quote-backed candidates with their source quotes visible."""
+    lines: list[str] = []
+    for group in groups:
+        lines.append(f"{group.case}:")
+        for candidate in group.candidates:
+            value = candidate.value or "(no canonical value)"
+            quote = candidate.quote
+            if len(quote) > 240:
+                quote = quote[:237] + "..."
+            line = (
+                f"  [{candidate.status}] {candidate.field}: {value} "
+                f'(quote: "{quote}")'
+            )
+            if candidate.detail:
+                line += f" — {candidate.detail}"
+            lines.append(line)
+        for flag in group.flags:
+            lines.append(f"  [flag] {flag}")
+    return lines
+
+
+def _supersession_lines(
+    signals: list[StatutorySupersessionSignal],
+) -> list[str]:
+    """Render provision-level supersession signals without overstating them."""
+    lines: list[str] = []
+    for signal in signals:
+        label = signal.status
+        if signal.signal:
+            label += f"; signal={signal.signal}"
+        detail = f": {signal.detail}" if signal.detail else ""
+        lines.append(
+            f"[{label}] {signal.authority} ({signal.source}){detail}"
+        )
+        if signal.effective_date or signal.replacement:
+            lines.append(
+                "  "
+                + (
+                    f"effective: {signal.effective_date}"
+                    if signal.effective_date
+                    else "effective date unknown"
+                )
+                + (f"; replacement: {signal.replacement}" if signal.replacement else "")
+            )
+    return lines
+
+
+def _authority_queue_lines(queue: list[AuthorityQueueEntry]) -> list[str]:
+    """Render the citator's priority order without implying a ranking change."""
+    lines = [
+        "Review order only; this queue does not change case ranking or "
+        "citator status."
+    ]
+    for item in queue:
+        reasons = "; ".join(item.reasons) or "no priority details"
+        lines.append(
+            f"  {item.priority}. {item.case_title} "
+            f"({item.citation or 'no citation'}; "
+            f"{item.court or 'court unknown'}) — {reasons}"
+        )
+    return lines
+
+
+def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
+    """Render citator results with explicit scope and separate advisory signals."""
+    lines: list[str] = [
+        "Scope: good_law means only no authoritative negative treatment in "
+        "reviewed citing opinions. Only lead/majority/combined/unanimous Published "
+        "opinions can set negative; gated findings force unknown. Subsequent history "
+        "is not inferred from citation signals: it is reported only as candidates "
+        "or as a human-verified record. Same-docket decisions and later citing "
+        "opinions are separate advisory signals, not appellate history."
+    ]
+    for check in checks:
+        coverage = check.coverage
+        date = check.good_law_as_of or "not established"
+        status_detail = {
+            "good_law": "no authoritative negative treatment in reviewed citing opinions",
+            "negative": "authoritative negative treatment in reviewed citing opinions",
+            "unknown": "not established from reviewed citing opinions",
+        }.get(check.status, "not established")
+        if check.gated_treatment_findings and check.status != "negative":
+            status_detail = "only gated negative treatment found; not counted"
+        history_state = (
+            "human-verified"
+            if check.subsequent_history_assessed
+            else "not assessed"
+        )
+        status = (
+            f"{check.target_case} ({check.target_citation or 'no citation'}): "
+            f"{check.status}; {status_detail}; good-law cutoff: {date}; reviewed "
+            f"{coverage.citing_opinions_reviewed}/{coverage.forward_citations_found} "
+            f"citing opinions; coverage complete={'yes' if coverage.complete else 'no'}; "
+            f"subsequent history: {history_state}"
+        )
+        lines.append(status)
+        if coverage.gaps:
+            lines.append("  Coverage gaps:")
+            for gap in coverage.gaps:
+                lines.append(f"  - {gap.code}: {gap.detail}")
+        else:
+            lines.append("  Coverage gaps: none")
+        lines.append(
+            f"  Temporal confidence: {coverage.temporal_confidence} "
+            f"({coverage.temporal_confidence_reason or 'no basis recorded'})"
+        )
+        history = check.appellate_history
+        if history is None:
+            lines.append(
+                "  Appellate history: not assessed (history layer did not run)"
+            )
+        else:
+            meaning = {
+                "verified": "human-verified record available",
+                "insufficient_source": (
+                    "candidates require authoritative human verification"
+                ),
+                "not_assessed": (
+                    "no candidate signals; absence is not proof of no appeal"
+                ),
+            }.get(history.status, "not established")
+            lines.append(
+                f"  Appellate history: {history.status} ({meaning})"
+            )
+            if history.candidates:
+                lines.append(
+                    "  History candidates requiring verification "
+                    "(not history labels):"
+                )
+                for candidate in history.candidates:
+                    signals = ", ".join(candidate.signals) or candidate.signal_type
+                    lines.append(
+                        f"  - [{candidate.verification_status}; {signals}] "
+                        f"{candidate.candidate_case} "
+                        f"({candidate.citation or 'no citation'}; "
+                        f"{candidate.decision_date or 'date unknown'}; "
+                        f"{candidate.court or 'court unknown'}) "
+                        f"{candidate.url}".rstrip()
+                    )
+                    for reason in candidate.match_reasons:
+                        lines.append(f"    signal: {reason}")
+                    if candidate.verification_status in {"verified", "rejected"}:
+                        lines.append(
+                            f"    human review: relationship={candidate.relationship}; "
+                            f"disposition={candidate.disposition}; "
+                            f"scope={candidate.scope}; "
+                            f"reviewer={candidate.reviewer}; "
+                            f"reviewed={candidate.reviewed_at}; "
+                            f"source={candidate.source_quality} "
+                            f"{candidate.source_url}"
+                        )
+            if history.verified_history:
+                lines.append("  Verified appellate history:")
+                for record in history.verified_history:
+                    lines.append(
+                        f"  - {record.candidate_case}: "
+                        f"relationship={record.relationship}; "
+                        f"disposition={record.disposition}; scope={record.scope}; "
+                        f"source={record.source_quality} {record.source_url}; "
+                        f"reviewer={record.reviewer}; reviewed={record.reviewed_at}"
+                    )
+                    lines.append(f"    rationale: {record.rationale}")
+            for flag in history.flags:
+                lines.append(f"  History note: {flag}")
+        if check.target_cluster_id or len(check.target_citations) > 1 or len(
+            check.target_opinion_ids
+        ) > 1:
+            lines.append(
+                f"  Cluster: {check.target_cluster_id or 'unknown'}; "
+                f"parallel citations: "
+                f"{' | '.join(check.target_citations) or 'none'}; "
+                f"opinions: {', '.join(check.target_opinion_ids) or 'none'}"
+            )
+        if check.same_docket_decisions:
+            lines.append(
+                "  Same-docket decisions (advisory context only; not appellate history):"
+            )
+            for decision in check.same_docket_decisions:
+                lines.append(
+                    f"  - {decision.case_name} "
+                    f"({decision.citation or 'no citation'}; "
+                    f"{decision.decision_date or 'date unknown'}; "
+                    f"{decision.court or 'court unknown'}) {decision.url}".rstrip()
+                )
+        if check.later_citing_opinions:
+            lines.append(
+                "  Later citing opinions reviewed (advisory only; not appellate "
+                "history or treatment):"
+            )
+            for cited in check.later_citing_opinions:
+                eligible = "eligible" if cited.treatment_eligible else "gated"
+                lines.append(
+                    f"  - {cited.case_name} ({cited.citation or 'no citation'}; "
+                    f"{cited.decision_date or 'date unknown'}; "
+                    f"{cited.court or 'court unknown'}; "
+                    f"{cited.opinion_role}; "
+                    f"{cited.precedential_status or 'status unknown'}; "
+                    f"{eligible}) {cited.url}".rstrip()
+                )
+        if check.negative_treatments:
+            lines.append("  Authoritative negative treatment findings:")
+        for treatment in check.negative_treatments:
+            if treatment.binding is True:
+                binding = "binding"
+            elif treatment.binding is False:
+                binding = "not binding"
+            else:
+                binding = "binding status unknown"
+            location = treatment.citing_case
+            if treatment.citing_url:
+                location += f" {treatment.citing_url}"
+            lines.append(
+                f"  - {treatment.treatment} ({treatment.scope}, "
+                f"{treatment.confidence}, {treatment.opinion_role}, "
+                f"{treatment.precedential_status or 'status unknown'}): "
+                f"\"{treatment.excerpt}\" — {location} "
+                f"({treatment.citing_date or 'date unknown'}, {binding})"
+            )
+        if check.gated_treatment_findings:
+            lines.append(
+                "  Gated treatment findings (not counted toward status):"
+            )
+        for treatment in check.gated_treatment_findings:
+            location = treatment.citing_case
+            if treatment.citing_url:
+                location += f" {treatment.citing_url}"
+            lines.append(
+                f"  - {treatment.treatment} ({treatment.scope}, "
+                f"{treatment.opinion_role}, "
+                f"{treatment.precedential_status or 'status unknown'}; "
+                f"{treatment.gate_reason}): \"{treatment.excerpt}\" — "
+                f"{location} ({treatment.citing_date or 'date unknown'})"
+            )
+    return lines
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
@@ -363,6 +607,33 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         else [],
         _bullets("Authority flags", analysis.authority_flags)
         if analysis.authority_flags
+        else [],
+        _bullets(
+            "Statutory/regulatory supersession",
+            _supersession_lines(analysis.statutory_supersession_signals),
+        )
+        if analysis.statutory_supersession_signals
+        else [],
+        _bullets(
+            "Statutory/regulatory supersession flags",
+            analysis.statutory_supersession_flags,
+        )
+        if analysis.statutory_supersession_flags
+        else [],
+        _bullets(
+            "Quote-backed extraction candidates",
+            _extraction_candidate_lines(analysis.extraction_candidates),
+        )
+        if analysis.extraction_candidates
+        else [],
+        _bullets("Authority queue", _authority_queue_lines(analysis.authority_queue))
+        if analysis.authority_queue
+        else [],
+        _bullets("Citator checks", _citator_lines(analysis.citator_checks))
+        if analysis.citator_checks
+        else [],
+        _bullets("Citator flags", analysis.citator_flags)
+        if analysis.citator_flags
         else [],
         ([_matrix_header()] + _matrix_rows(analysis.statute_outcome_matrix))
         if analysis.statute_outcome_matrix else [],
@@ -451,6 +722,9 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
         "gaps", "citation_flags", "authority_checks", "authority_flags",
+        "extraction_candidates",
+        "statutory_supersession_signals", "statutory_supersession_flags",
+        "authority_queue", "citator_checks", "citator_flags",
         "detected_elements", "principle_findings", "statute_outcome_matrix",
         "search_telemetry", "courtlistener_quota",
     ]
@@ -475,6 +749,30 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
             sort_keys=True,
         ),
         " | ".join(analysis.authority_flags),
+        json.dumps(
+            [
+                group.model_dump()
+                for group in analysis.extraction_candidates
+            ],
+            sort_keys=True,
+        ),
+        json.dumps(
+            [
+                signal.model_dump()
+                for signal in analysis.statutory_supersession_signals
+            ],
+            sort_keys=True,
+        ),
+        " | ".join(analysis.statutory_supersession_flags),
+        json.dumps(
+            [entry.model_dump() for entry in analysis.authority_queue],
+            sort_keys=True,
+        ),
+        json.dumps(
+            [check.model_dump() for check in analysis.citator_checks],
+            sort_keys=True,
+        ),
+        " | ".join(analysis.citator_flags),
         " | ".join(_element_label(e) for e in analysis.detected_elements),
         " | ".join(_finding_label(f) for f in analysis.principle_findings),
         json.dumps(
@@ -1089,6 +1387,7 @@ def _auto_run(
     run_id: str = "",
     max_iterations: int | None = None,
     max_wait_seconds: float | None = None,
+    snapshot_dir: str | None = None,
 ) -> list[dict[str, object]]:
     """Execute the batch: run the packed issues now, wait for the reset, repeat.
 
@@ -1155,6 +1454,7 @@ def _auto_run(
                         max_results=max_results,
                         telemetry=None,
                         max_wall_seconds=max_wall_seconds,
+                        snapshot_dir=snapshot_dir,
                     )
                     analysis.run_id = run_id
                     _emit_completion_event(analysis, run_id)
@@ -1315,6 +1615,24 @@ def main() -> None:
         dest="output_file",
         default=None,
         help="Write the analysis to this file instead of stdout.",
+    )
+    parser.add_argument(
+        "--adjudication-queue",
+        dest="adjudication_queue",
+        default=None,
+        help=(
+            "After analysis, write evidence-first citator findings to this human "
+            "review queue (JSON). The queue does not change citator status or ranking."
+        ),
+    )
+    parser.add_argument(
+        "--snapshot-dir",
+        dest="snapshot_dir",
+        default=None,
+        help=(
+            "Persist evidence and CourtListener response snapshots under this "
+            "directory. Defaults to SNAPSHOT_DIR; empty disables snapshots."
+        ),
     )
     parser.add_argument("--show-config", action="store_true", help="Print the resolved settings as JSON and exit.")
     parser.add_argument(
@@ -1508,6 +1826,7 @@ def main() -> None:
             max_wall_seconds=args.max_wall_time,
             max_batch_requests=args.max_batch_requests,
             run_id=run_id,
+            snapshot_dir=args.snapshot_dir,
         )
         summary = _auto_run_summary(results)
         complete = summary["successful"] == summary["issues"]
@@ -1669,6 +1988,7 @@ def main() -> None:
             max_wall_seconds=args.max_wall_time,
             deep_read=args.deep_read,
             deep_read_limit=args.deep_read_limit,
+            snapshot_dir=args.snapshot_dir,
         )
     except Exception as exc:  # noqa: BLE001 - emit event, then preserve original behavior
         _emit_failure_event(args.issue, exc, run_id)
@@ -1685,6 +2005,19 @@ def main() -> None:
         raise
     analysis.run_id = run_id
     _emit_completion_event(analysis, run_id)
+    if args.adjudication_queue:
+        try:
+            queue = build_adjudication_queue(
+                analysis.citator_checks, source=f"run:{run_id}"
+            )
+            save_queue(queue, args.adjudication_queue)
+        except OSError as exc:
+            parser.error(f"could not write adjudication queue: {exc}")
+        print(
+            f"Adjudication queue: {len(queue.items)} item(s) -> "
+            f"{args.adjudication_queue}",
+            file=sys.stderr,
+        )
     if tracker:
         tracker.record(
             {

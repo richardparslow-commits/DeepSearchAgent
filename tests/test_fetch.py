@@ -26,6 +26,7 @@ from va_legal_agent.fetch import (
     extract_precedential_status,
     extract_statutes,
     fetch_case_details,
+    fetch_case_details_and_text,
     fetch_full_text,
 )
 
@@ -222,6 +223,26 @@ def test_fetch_case_details_from_plain_text(monkeypatch):
     assert details["decision_date"] == "2025-06-05"
     assert details["docket"] == "220606-252507"
     assert details["statutes"]  # 38 U.S.C. / 38 C.F.R. sections extracted
+
+
+def test_fetch_case_details_and_text_returns_the_extraction_source(monkeypatch):
+    bva_text = (
+        "Citation Nr: A25049742\nDATE: June 5, 2025\n\n"
+        "We hold that the Board erred.\n\nORDER\nThe claim is granted.\n"
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.fetch.cffi_requests.get",
+        lambda url, headers=None, timeout=None, stream=None, impersonate=None, proxies=None, allow_redirects=None, curl_options=None: FakePageResponse(
+            text=bva_text, headers={"Content-Type": "text/plain"}
+        ),
+    )
+
+    details, source_text = fetch_case_details_and_text(
+        "https://www.va.gov/vetapp25/Files6/A25049742.txt"
+    )
+
+    assert details["citation"] == "BVA Citation Nr. A25049742"
+    assert source_text == bva_text
 
 
 def test_fetch_case_details_handles_unparseable_pdf(monkeypatch):

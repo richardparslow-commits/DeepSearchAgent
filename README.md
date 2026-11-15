@@ -75,7 +75,8 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
    ```
    Use `--no-enrich` to skip fetching case source pages for citation/date details,
    `--output-format {json,text,csv}` to choose the analysis output format,
-   `--output-file PATH` to write the analysis to a file, `--show-config` to
+   `--output-file PATH` to write the analysis to a file, `--adjudication-queue PATH`
+   to write evidence-first citator findings to a human review queue, `--show-config` to
    print the resolved settings as JSON (useful for debugging; it includes
    `effective_search_providers`, the post-validation provider list next to the
    raw `search_providers` value),
@@ -286,6 +287,16 @@ The enrichment step (`va_legal_agent/fetch.py`) pulls structured details from ea
 
 All fields are best-effort: unparseable pages leave fields empty rather than failing the research run.
 
+### Quote-first LLM extraction candidates
+
+`LLM_EXTRACTION=1` adds a separate, opt-in LLM extraction pass after a case's full text is fetched. The model is asked for **verbatim source quotes**, not field values. Each returned quote is checked against the fetched decision after whitespace/typography normalization; a paraphrased, spliced, or invented quote is dropped and reported in a flag. A value is then derived deterministically from the verified quote with the existing extractors.
+
+- Candidates are exposed as `extraction_candidates` per surfaced case, each with `field`, `quote`, `value`, `source="llm_quote"`, and `status="candidate"`.
+- They never overwrite `citation`, `decision_date`, `holding`, `outcome`, `legal_standard`, or any other `CaseRecord` field, and they never feed ranking, impact, interpretation, contradiction detection, or the citator.
+- A candidate whose value differs from the deterministic field, or whose deterministic field was empty, says so in its `detail`. This is a review signal, not a correction.
+- Rejected quotes, LLM failures, and a truncated head/tail prompt excerpt appear in that case's flags. An empty candidate list is not evidence that a field is absent.
+- The pass requires `OPENAI_API_KEY` because it makes one LLM call per enriched case; without the key, deterministic extraction is unchanged.
+
 ## Impact analysis layer
 
 `va_legal_agent/impact.py` turns each case record into an `ImpactProfile` with a nuanced narrative (`agent.summarize_case_impact` delegates to it):
@@ -309,6 +320,92 @@ Output is deterministic research support derived from public decisions, not lega
 - **LLM reasoning pass** — with `OPENAI_API_KEY` set, the agent reconciles holdings across all ranked cases, flags contradictions between decisions (`contradictions` in the JSON/text/CSV output), and cites each claim; the deterministic template remains the always-on fallback.
 - **Deterministic contradiction detection** — always on, even without the LLM: pairs of retrieved authorities that cite the same statute but reach opposite outcomes (favorable vs. unfavorable to the claimant, e.g. `granted` vs. `denied` on the same 38 U.S.C. §) are surfaced as `contradictions` on the template path too. Only explicit, single-direction outcomes trigger a flag; unknown or mixed postures never do. When the LLM reasoning pass is active, its contradictions are merged with the deterministic ones (deduped by case pair, LLM wins on a tie).
 - **Deep-read mode** — with `DEEP_READ=1`, the agent ingests the full body of the top cases (every PDF page, the whole HTML page, or the verbatim plain-text decision) instead of the snippet and the first few pages, splits it into chunks, digests each chunk deterministically (holding / outcome / statutes), and synthesizes the digests into one per-case summary (LLM when `OPENAI_API_KEY` is set, a plain join otherwise). The reasoning pass then cross-references these full-text summaries across the whole corpus. Off by default because it fetches the entire body of every top case; a case whose body cannot be fetched keeps its snippet-based path. Each top case's summary is surfaced in the output as `deep_summaries` (a list of `{"case": ..., "summary": ...}` entries in JSON, a `Deep summaries` block in text, and a `deep_summaries` column in CSV), so you can see exactly what full-text ingestion produced.
+
+### CourtListener citator (advisory only)
+
+`CITATOR=1` builds a prioritized authority queue from the retrieved cases, then resolves each selected target to its full CourtListener cluster and reviews forward citations across every opinion in that cluster. It is a **citation checker, not a finality check**.
+
+- **Prioritized authority queue.** The queue replaces the old top-three slice. It de-duplicates authorities by opinion id, citation/date, or title/URL and orders them by court-authority tier; within a tier it prefers resolvable cases, live authorities over cases marked superseded in the retrieved corpus, precedential over unknown over non-precedential, then existing authority rank, composite score, and relevance. `CITATOR_MAX_CASES` caps the queue (default 10; lower it when CourtListener quota is tight). The queue changes review order only; it never changes ranking, `superseded_by`, or citator status. The selected queue is emitted as `authority_queue`, and each check carries `authority_priority` plus `authority_reasons`.
+- `good_law` means only that no explicit, **authoritative** negative treatment was found in the citing opinions actually reviewed. Only a lead, majority, combined, or unanimous opinion with CourtListener's `Published` status can supply an authoritative finding. It does not mean the case is still good law, has no subsequent history, or is final. `good_law_as_of` is the latest reviewed citing-opinion date and is populated only when that review is complete. `coverage.temporal_confidence` separately states whether that cutoff is well bounded: `high` (complete review with dates for every reviewed opinion), `medium` (a known date from an incomplete review), `low` (at least one reviewed opinion has no date), or `none` (no usable reviewed date). Its `temporal_confidence_reason` states the basis.
+- **Whole-cluster resolution.** A direct opinion id is expanded through its cluster metadata; a citation lookup uses the returned cluster. Every valid sub-opinion is checked for forward citations, which are de-duplicated, and every parallel reporter citation is retained in `target_citations` and matched in later opinion text. `target_cluster_id` and `target_opinion_ids` expose the resolved cluster and the opinions actually checked. If a direct id cannot be expanded, only that opinion is checked and coverage is marked incomplete.
+- **Role and status gate.** Negative language in a dissent, concurrence, plurality, nonprecedential opinion, or an opinion with unknown/nonstandard status is retained in `gated_treatment_findings` with its role, status, and gate reason, but it never sets `negative`. A gated finding forces `unknown`, not `good_law`.
+- **Subsequent history requires verification.** There is no automatic CAVC-to-Federal-Circuit-to-Supreme-Court history lookup or cross-docket appeal matching, and no claim that the absence of later citations means no appeal occurred. A separate shadow layer exposes same-docket and later-citing candidates, and only a validated human record tied to an official or licensed source becomes a history label.
+- **Same-docket decisions** are listed as an intra-court advisory signal only. They may include later orders, rehearings, or post-remand decisions, but the list is not appellate history.
+- **Later citing opinions** are listed separately. A citation is not proof that the later case is an appeal of the target, and it does not establish treatment by itself.
+- **Labeled adversarial evaluation.** [`benchmarks/citator`](benchmarks/citator/) contains 18 offline synthetic cases covering the gate, parallel citations, cluster edges, coverage failures, and adversarial false-positive traps. Run `make benchmark-citator`; two current extraction limitations are recorded as known misses.
+- The citator never changes ranking, `superseded_by`, or contradiction results. `negative_treatments` remains a separate advisory extraction from the same reviewed citation set and now contains only authoritative findings.
+
+The JSON result carries this scope explicitly in `good_law_meaning` and `subsequent_history_assessed` (`false` unless a confirmed human-verified appellate-history record matched), alongside `target_cluster_id`, `target_citations`, `target_opinion_ids`, `same_docket_decisions`, `later_citing_opinions`, `gated_treatment_findings`, and `appellate_history`. Each treatment and later-citation entry records the CourtListener opinion type, normalized role, raw precedential status, normalized tier, and the gate reason.
+
+Each check's `coverage` block also exposes `gaps` as structured `{code, detail}` entries instead of leaving the reason for incomplete coverage only in free-text flags. Stable gap codes include `page_cap`, `count_mismatch`, `pagination_cursor_missing`, `pagination_cursor_repeated`, `forward_fetch_failed`, `cluster_unresolved`, `no_usable_citing_ids`, `citing_opinion_cap`, `citing_metadata_unavailable`, `citing_metadata_fetch_failed`, `citing_text_empty`, `citing_text_fetch_failed`, `target_not_located`, `citing_date_missing`, `no_forward_citations`, and `target_unresolved`. `truncated` remains a quick indicator; the gap list explains exactly what was missed.
+
+### Verified appellate-history layer (shadow candidates)
+
+`appellate_history` on each citator check is a separate shadow layer. Same-docket decisions and later-citing opinions become `candidates`; they are never history labels by themselves. The layer reports one of:
+- `verified` — at least one confirmed human record matched the target.
+- `insufficient_source` — candidates exist, but no confirmed record does.
+- `not_assessed` — no candidate signals were available. This is **not** a finding that no appeal exists.
+
+Only a `review_status=confirmed` record in `APPELLATE_HISTORY_FILE` can enter `verified_history`. It must match the target by cluster id or citation (not name alone) and supply a supported relationship, disposition, `all`/`part` scope, `official` or `licensed` source with an HTTP(S) URL, reviewer, timestamp, and rationale. Rejected records and `relationship=no_relationship` records are retained for audit but never become labels. See [docs/appellate-history-layer.md](docs/appellate-history-layer.md) for the file schema and review gate; malformed or incomplete records produce `insufficient_source` rather than aborting the citator.
+
+### Statutory/regulatory supersession signals
+
+When `AUTHORITY_VERIFICATION=1`, cited provisions also get a separate supersession signal in `statutory_supersession_signals`. This is not the case-level `superseded_by` field and does not feed the citator, ranking, or contradiction detector.
+
+- A current eCFR or GovInfo match yields `status=no_signal`: the current source contains the provision. That is a bounded check of the current source, not a finding that the text was never amended.
+- A missing current section yields `status=candidate` with `signal=not_in_current_source`. The detail says explicitly that this may be a repeal, renumbering, or citation error; it is not a confirmed supersession.
+- For a missing 38 C.F.R. section, a Federal Register rule referencing that section is checked for an explicit action such as removal, repeal, reservation, renumbering, redesignation, or supersession. An explicit action yields `status=candidate` with that signal, its effective/publication date, and a replacement citation only when the rule states one.
+- A source failure yields `status=unavailable`; a provision with no verification result (for example, GovInfo without a key) yields `status=not_assessed`. Neither is silently treated as clean.
+
+Flags appear separately in `statutory_supersession_flags` and text/CSV output. The existing `authority_checks` and `authority_flags` are unchanged; the new layer never changes a case's `superseded_by`, `status`, ranking, or `good_law` result.
+
+### Persisted evidence and response snapshots
+
+Set `SNAPSHOT_DIR` (or pass `--snapshot-dir`) to keep the evidence behind each citator result and the public CourtListener payloads it came from. Snapshots are written only when `CITATOR=1` and `COURTLISTENER_API_KEY` is set.
+
+```text
+SNAPSHOT_DIR/
+  manifest.jsonl                         # append-only index
+  snapshots/
+    evidence.citator/<id>.json           # normalized CitatorCheck, including history
+    courtlistener.opinion_metadata/<id>.json
+    courtlistener.citing_edges/<id>.json
+    courtlistener.same_docket/<id>.json
+    courtlistener.opinion_text/<id>.json
+    courtlistener.lookup/<id>.json
+```
+
+Each payload is content-addressed by kind and canonical JSON, written through a temporary file, and deduplicated: repeating the same request/response does not add another manifest row. The manifest records the snapshot id, kind, capture time, relative path, source URL, SHA-256, and small audit metadata. Evidence snapshots contain the complete normalized `CitatorCheck` (target identifiers, coverage, treatment findings, candidates, verified history, and flags), so a reviewer can compare it with the raw responses. Provider snapshots contain the request identifiers and public response body; authentication headers and API keys are never captured. A failed provider call is recorded with its error text and original exception is re-raised. If a snapshot cannot be written, the citator still returns its result: evidence-write failures add a flag, and response-write failures are logged.
+
+Snapshots are audit material, not a replacement for the analysis output or the adjudication queue. Use them to reproduce a finding, check a source payload later, or confirm that a review record matches the evidence it cites.
+
+### Evidence-first human adjudication queue
+
+Every authoritative or gated treatment finding can be moved into a durable human-review queue. Evidence is serialized and rendered before the automated proposal; a decision requires a reviewer and an evidence-based rationale and never changes `status`, ranking, or `superseded_by`. Coverage gaps without a verbatim finding stay in the citator's structured coverage gaps and flags rather than entering the queue as if they had evidence.
+
+```sh
+# 1. Save an analysis and its queue in one run.
+va-legal-agent "service connection for tinnitus" \
+  --output-format json --output-file analysis.json \
+  --adjudication-queue citator-review.json
+
+# Or build a queue later from an existing analysis.
+python scripts/adjudicate_citator_queue.py build \
+  --analysis analysis.json --queue citator-review.json
+
+# 2. Review pending items; `show` puts the excerpt and source first.
+python scripts/adjudicate_citator_queue.py list --queue citator-review.json
+python scripts/adjudicate_citator_queue.py show \
+  --queue citator-review.json adj-1234567890abcdef1234
+
+# 3. Record a human decision.
+python scripts/adjudicate_citator_queue.py decide \
+  --queue citator-review.json adj-1234567890abcdef1234 \
+  --decision confirmed --reviewer "Reviewer name" \
+  --rationale "Checked the quoted sentence and Published lead-opinion status against the source."
+```
+
+Decisions are `confirmed`, `rejected`, or `deferred`; reviewed items remain in the queue for audit and are hidden from the default pending list. If a decision is revisited, the prior review is retained in the item's history. The queue is evidence-first, not a second automatic citator: it never promotes a gated finding or demotes an authoritative one without a human decision.
 
 ## Configuration
 
@@ -346,11 +443,17 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `COURTLISTENER_USAGE_GUARD` | `1` | Pre-flight check against CourtListener's `api-usage` endpoint before each run; aborts with the daily-window reset time when the remaining budget can't cover the run (`0` disables) |
 | `COURTLISTENER_SEMANTIC_GAP_SEARCH` | `0` | Run one CourtListener semantic (`semantic=true`) search per gap-refinement round, using a plain-language query built from the still-uncovered claim elements. Never used for the initial broad fan-out; requires `COURTLISTENER_API_KEY` and consumes one extra request per refinement round |
 | `CAVC_PANEL_VALIDATION` | `0` | Cross-check CAVC decisions against the court's official Panel Opinions list. Panel-listed dockets are treated as precedential; a Rule 30(a) marker plus panel listing is reported as a conflict, while a Rule 30(a) docket absent from the list is confirmed non-precedential. Off by default; enabling it adds one list fetch per analysis |
-| `AUTHORITY_VERIFICATION` | `0` | Verify cited 38 C.F.R. sections against eCFR, look up recent Federal Register rules affecting each cited CFR part, and — when `GOVINFO_API_KEY` is set — cross-check 38 U.S.C. sections against exact title-38 section granules and Federal Circuit cases against exact `USCOURTS-ca13` packages. Results appear under Authority checks/Authority flags |
-| `FEDERAL_REGISTER_LOOKBACK_DAYS` | `365` | How many days back the Federal Register lookup searches for rules affecting a cited CFR part (1–3650) |
+| `AUTHORITY_VERIFICATION` | `0` | Verify cited 38 C.F.R. sections against eCFR, look up recent Federal Register rules affecting each cited CFR part, and — when `GOVINFO_API_KEY` is set — cross-check 38 U.S.C. sections against exact title-38 section granules and Federal Circuit cases against exact `USCOURTS-ca13` packages. Results appear under Authority checks/Authority flags. Cited provisions also get separate `statutory_supersession_signals` and flags; these never change case `superseded_by` or citator status |
+| `FEDERAL_REGISTER_LOOKBACK_DAYS` | `365` | How many days back the Federal Register lookup searches for rules affecting a cited CFR part or provision (1–3650) |
 | `GOVINFO_API_KEY` | – | Optional api.data.gov key for GovInfo's official U.S. Code (`USCODE`) and U.S. Courts Opinions (`USCOURTS`) search API. Required only for the GovInfo portion of authority verification; leave empty to skip it |
 | `CITATION_TRAVERSAL` | `0` | Multi-hop citation traversal: follow CourtListener citation trails from the strongest cases found and merge the discovered opinions before final ranking (`1`/`true`/`yes`/`on` enables). Off by default because it makes extra authenticated API calls per run |
 | `CITATION_TRAVERSE_LIMIT` | `3` | How many top cases seed the citation traversal |
+| `CITATOR` | `0` | Conservative CourtListener citator for the prioritized authority queue: resolve each selected target's full cluster and all parallel citations, review forward citing opinions across every sub-opinion, extract explicit target-specific negative treatment, and report coverage. The queue prioritizes higher court tiers, resolvable, live, and precedential authorities without changing ranking. Only lead/majority/combined/unanimous `Published` opinions can set `negative`; separate, plurality, nonprecedential, and unknown-status findings are gated and force `unknown`. `good_law` means only no authoritative negative treatment in reviewed citing opinions. Same-docket decisions and later citing opinions are separate advisory signals; appellate history requires a validated human record. Advisory only; does not affect ranking or `superseded_by`. Off by default; requires `COURTLISTENER_API_KEY` |
+| `CITATOR_MAX_CASES` | `10` | Maximum authorities checked from the prioritized queue (1–10). Omitted cases are not implicitly clean |
+| `CITATOR_MAX_CITING_OPINIONS` | `5` | Maximum forward citing opinions read per target (1–50). Hitting the cap marks coverage incomplete rather than treating it as clean |
+| `CITATOR_MAX_PAGES` | `1` | Maximum forward-citation cursor pages fetched per target sub-opinion (1–10). Hitting the cap is reported as incomplete coverage |
+| `APPELLATE_HISTORY_FILE` | – | Optional JSON file of human-verified appellate-history records. The citator still emits same-docket and later-citing candidates without it, but a history label is exposed only after a matching record supplies an official or licensed source, reviewer, timestamp, relationship, disposition, scope, and rationale |
+| `SNAPSHOT_DIR` | – | Optional directory for durable citator evidence and CourtListener response snapshots. Writes an append-only `manifest.jsonl` plus content-addressed `snapshots/<kind>/<id>.json` payloads for audit and reproduction. Empty disables snapshots. Requires `CITATOR=1`; also available as `--snapshot-dir` |
 | `ENRICH_CASE_LIMIT` | `5` | Top cases enriched with full source-page details |
 | `INTERPRET_CASE_LIMIT` | `3` | Top cases fed into the interpretation narrative / LLM |
 | `PRINCIPLE_SCAN_LIMIT` | `5` | Cases scanned for case-backed principle findings |
@@ -361,6 +464,7 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `OPENAI_BASE_URL` | – | Endpoint override for Azure OpenAI / compatible APIs |
 | `LLM_REASONING` | `1` | Reconcile holdings across all ranked cases via the LLM, flag contradictions, and cite each claim (`0` keeps only the lighter single-call narrative) |
 | `LLM_REASONING_LIMIT` | `10` | Ranked cases fed into the reconciling reasoning pass |
+| `LLM_EXTRACTION` | `0` | Quote-first LLM extraction of case fields: ask for verbatim source quotes, verify each quote against the fetched text, and expose only candidate-level proposals. Deterministic fields remain authoritative; off by default because it adds one LLM call per enriched case |
 | `DEEP_READ` | `0` | Deep-read mode: fetch the full opinion text of the top cases and summarize it via chunked map-reduce, so the reasoning pass cross-references holdings across the whole corpus instead of truncated snippets (`1`/`true`/`yes`/`on` enables) |
 | `DEEP_READ_LIMIT` | `3` | Top cases ingested in deep-read mode |
 | `DEEP_READ_PAGES` | `0` | PDF page cap for deep-read fetches (`0` reads every page) |

@@ -273,6 +273,30 @@ class Settings:
     # How many top cases seed the citation traversal.
     citation_traverse_limit: int = 3
 
+    # Conservative CourtListener citator. Off by default because it makes
+    # authenticated forward-citation, opinion-detail, and same-docket requests.
+    # good_law means only no negative treatment in the reviewed citing opinions;
+    # appellate-history candidates are advisory and require human verification.
+    # It never changes ranking or superseded_by.
+    citator: bool = False
+    # How many prioritized authorities are checked. The queue is ordered by
+    # court authority, resolvability, live/precedential status, then ranking.
+    citator_max_cases: int = 10
+    # How many forward citing opinions are read per target. A lower cap keeps
+    # the request cost bounded; the result is marked incomplete when it bites.
+    citator_max_citing_opinions: int = 5
+    # How many forward-citation cursor pages are fetched per target.
+    citator_max_pages: int = 1
+    # Optional JSON file of human-verified appellate-history records. The
+    # citator still emits candidate signals without it, but no history label
+    # is exposed until a record with an authoritative source and reviewer is
+    # supplied.
+    appellate_history_file: str = ""
+    # Optional directory for durable evidence and provider-response snapshots.
+    # Empty disables snapshotting. When set, the citator writes content-
+    # addressed payloads plus an append-only manifest for audit/reproduction.
+    snapshot_dir: str = ""
+
     # Pipeline limits
     # Cap on results merged per search query. The CLI's --max-results flag
     # overrides this; raise it for multi-provider runs (SEARCH_PROVIDERS) so a
@@ -294,6 +318,11 @@ class Settings:
     llm_reasoning: bool = True
     # How many ranked cases the reasoning pass is fed.
     llm_reasoning_limit: int = 10
+    # Quote-first LLM extraction: ask the model for verbatim source spans and
+    # expose only quote-verified, candidate-level field proposals. Off by
+    # default because it adds one LLM call per enriched case; deterministic
+    # extraction remains authoritative either way.
+    llm_extraction: bool = False
 
     # Deep-read mode: ingest full opinion text (instead of snippets) and
     # summarize it via chunked map-reduce, so the reasoning pass cross-
@@ -417,6 +446,29 @@ class Settings:
             citation_traverse_limit=env_int(
                 "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit
             ),
+            citator=env_bool("CITATOR", d.citator),
+            citator_max_cases=env_int(
+                "CITATOR_MAX_CASES",
+                d.citator_max_cases,
+                min_value=1,
+                max_value=10,
+            ),
+            citator_max_citing_opinions=env_int(
+                "CITATOR_MAX_CITING_OPINIONS",
+                d.citator_max_citing_opinions,
+                min_value=1,
+                max_value=50,
+            ),
+            citator_max_pages=env_int(
+                "CITATOR_MAX_PAGES",
+                d.citator_max_pages,
+                min_value=1,
+                max_value=10,
+            ),
+            appellate_history_file=os.getenv(
+                "APPELLATE_HISTORY_FILE", d.appellate_history_file
+            ),
+            snapshot_dir=os.getenv("SNAPSHOT_DIR", d.snapshot_dir),
             search_max_results=env_int("SEARCH_MAX_RESULTS", d.search_max_results),
             enrich_case_limit=env_int("ENRICH_CASE_LIMIT", d.enrich_case_limit),
             interpret_case_limit=env_int("INTERPRET_CASE_LIMIT", d.interpret_case_limit),
@@ -432,6 +484,7 @@ class Settings:
             openai_max_tokens=env_int("OPENAI_MAX_TOKENS", d.openai_max_tokens),
             llm_reasoning=env_bool("LLM_REASONING", d.llm_reasoning),
             llm_reasoning_limit=env_int("LLM_REASONING_LIMIT", d.llm_reasoning_limit),
+            llm_extraction=env_bool("LLM_EXTRACTION", d.llm_extraction),
             deep_read=env_bool("DEEP_READ", d.deep_read),
             deep_read_limit=env_int("DEEP_READ_LIMIT", d.deep_read_limit),
             deep_read_pages=env_int("DEEP_READ_PAGES", d.deep_read_pages, min_value=0),

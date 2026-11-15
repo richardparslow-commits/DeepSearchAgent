@@ -8,6 +8,7 @@
 #   make test-core    fast slice: ranking, impact, interpretation, llm, topics
 #   make test-w       full suite with deprecation warnings promoted to errors
 #   make benchmark-extraction  real BVA/CAVC extraction benchmark
+#   make benchmark-citator  labeled adversarial citator evaluation
 #   make lint         ruff static checks
 #   make lint-fix     auto-fix what ruff can
 #   make coverage     full suite with coverage report
@@ -27,7 +28,7 @@ PYTEST = $(PYTHON) -m pytest
 ARGS =
 QUERY =
 
-.PHONY: test test-search test-fetch test-cli test-config test-core test-w benchmark-extraction lint lint-fix coverage mutate mutate-check smoke help
+.PHONY: test test-search test-fetch test-cli test-config test-core test-w benchmark-extraction benchmark-citator lint lint-fix coverage mutate mutate-check smoke help
 
 test: ## Run the full test suite
 	$(PYTEST) -q $(ARGS)
@@ -53,6 +54,9 @@ test-w: ## Full suite with warnings promoted to errors
 benchmark-extraction: ## Real BVA/CAVC extraction benchmark (known-miss baseline)
 	$(PYTHON) scripts/run_extraction_benchmark.py
 
+benchmark-citator: ## Labeled adversarial citator evaluation (known-miss baseline)
+	$(PYTHON) scripts/run_citator_benchmark.py
+
 lint: ## Static checks with ruff (pyflakes + pycodestyle rules)
 	$(PYTHON) -m ruff check va_legal_agent tests scripts webapp.py
 
@@ -67,11 +71,11 @@ coverage: ## Full suite with a per-module coverage report (line + branch)
 MUTATE_MODULES = \
 	"search.py tests/test_search.py" \
 	"queries.py tests/test_providers.py tests/test_search.py" \
-	"providers.py tests/test_providers.py tests/test_search.py" \
+	"providers.py tests/test_providers.py tests/test_search.py tests/test_citator_provider.py" \
 	"reliability.py tests/test_reliability.py tests/test_legal_agent.py" \
 	"fetch.py tests/test_fetch.py tests/test_legal_agent.py" \
 	"deep_read.py tests/test_deep_read.py tests/test_legal_agent.py" \
-	"agent.py tests/test_legal_agent.py tests/test_research.py" \
+	"agent.py tests/test_legal_agent.py tests/test_legal_agent_citator.py tests/test_research.py" \
 	"planning.py tests/test_planning.py" \
 	"batch.py tests/test_batch.py tests/test_cli.py" \
 	"config.py tests/test_config.py tests/test_cli.py" \

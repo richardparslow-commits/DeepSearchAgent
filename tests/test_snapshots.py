@@ -1,0 +1,201 @@
+"""Tests for durable evidence and provider-response snapshots."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from va_legal_agent.models import CitatorCheck
+from va_legal_agent.snapshots import (
+    SnapshotStore,
+    SnapshottingCourtListenerProvider,
+)
+
+
+def _manifest(store: SnapshotStore) -> list[dict[str, object]]:
+    if not store.manifest.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in store.manifest.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_record_writes_content_addressed_payload_and_deduplicates(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    first = store.record(
+        "courtlistener.test",
+        {"b": 2, "a": 1},
+        source_url="https://example.test/opinion/1/",
+        metadata={"target": "x"},
+    )
+    second = store.record(
+        "courtlistener.test",
+        {"a": 1, "b": 2},
+        source_url="https://example.test/opinion/1/",
+        metadata={"target": "x"},
+    )
+
+    assert first.id == second.id
+    assert first.path == second.path
+    rows = _manifest(store)
+    assert len(rows) == 1
+    assert rows[0]["id"] == first.id
+    assert rows[0]["source_url"] == "https://example.test/opinion/1/"
+    payload = json.loads((store.root / first.path).read_text(encoding="utf-8"))
+    assert payload["payload"] == {"a": 1, "b": 2}
+    assert payload["metadata"] == {"target": "x"}
+    assert payload["sha256"] == first.sha256
+
+
+def test_record_evidence_persists_normalized_check(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    check = CitatorCheck(
+        target_case="Smith v. Wilkie",
+        target_url="https://example.test/opinion/1/",
+        status="unknown",
+    )
+
+    record = store.record_evidence(check, source="citator-test")
+
+    payload = json.loads((store.root / record.path).read_text(encoding="utf-8"))
+    assert payload["payload"]["check"]["target_case"] == "Smith v. Wilkie"
+    assert record.metadata["source"] == "citator-test"
+    assert record.source_url == "https://example.test/opinion/1/"
+
+
+def test_record_response_persists_request_and_response(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    record = store.record_response(
+        "courtlistener.lookup", {"citation_text": "1 Vet.App. 1"}, {"results": []}
+    )
+
+    payload = json.loads((store.root / record.path).read_text(encoding="utf-8"))
+    assert payload["payload"] == {
+        "request": {"citation_text": "1 Vet.App. 1"},
+        "response": {"results": []},
+    }
+
+
+def test_record_rejects_unsafe_kind(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    with pytest.raises(ValueError, match="safe characters"):
+        store.record("..", {})
+
+
+def test_atomic_write_cleans_temp_file_after_failure(tmp_path, monkeypatch):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    def fail_dump(*args, **kwargs):
+        raise RuntimeError("serialization failed")
+
+    monkeypatch.setattr("va_legal_agent.snapshots.json.dump", fail_dump)
+
+    with pytest.raises(RuntimeError, match="serialization failed"):
+        store.record("courtlistener.test", {"large": "payload"})
+
+    assert list((tmp_path / "snapshots").rglob("*.tmp")) == []
+
+
+class FakeProvider:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def lookup_citations(self, text):
+        self.calls.append("lookup")
+        return {"text": text}
+
+    def citing_edges(self, opinion_id, page_size=100, cursor=None):
+        self.calls.append("edges")
+        return {"opinion_id": opinion_id, "page_size": page_size, "cursor": cursor}
+
+    def same_docket_decisions(self, opinion_id, max_results=5):
+        self.calls.append("same_docket")
+        return {"opinion_id": opinion_id, "max_results": max_results}
+
+    def opinion_metadata(self, opinion_id):
+        self.calls.append("metadata")
+        return {"id": opinion_id, "url": f"https://example.test/opinion/{opinion_id}/"}
+
+    def fetch_opinion_text(self, opinion_id):
+        self.calls.append("text")
+        return f"text {opinion_id}"
+
+
+def test_snapshotting_provider_captures_every_public_response(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    wrapper = SnapshottingCourtListenerProvider(FakeProvider(), store)
+
+    assert wrapper.lookup_citations("1 Vet.App. 1") == {"text": "1 Vet.App. 1"}
+    assert wrapper.citing_edges(7, page_size=25, cursor="abc")["cursor"] == "abc"
+    assert wrapper.same_docket_decisions(7, max_results=2)["max_results"] == 2
+    assert wrapper.opinion_metadata(7)["url"].endswith("/7/")
+    assert wrapper.fetch_opinion_text(7) == "text 7"
+
+    kinds = [row["kind"] for row in _manifest(store)]
+    assert kinds.count("courtlistener.lookup") == 1
+    assert kinds.count("courtlistener.citing_edges") == 1
+    assert kinds.count("courtlistener.same_docket") == 1
+    assert kinds.count("courtlistener.opinion_metadata") == 1
+    assert kinds.count("courtlistener.opinion_text") == 1
+    metadata_row = next(
+        row for row in _manifest(store) if row["kind"] == "courtlistener.opinion_metadata"
+    )
+    assert metadata_row["source_url"] == "https://example.test/opinion/7/"
+
+
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        ("lookup_citations", ("text",)),
+        ("citing_edges", (7,)),
+        ("same_docket_decisions", (7,)),
+        ("opinion_metadata", (7,)),
+        ("fetch_opinion_text", (7,)),
+    ],
+)
+def test_snapshotting_provider_persists_and_reraises_errors(
+    tmp_path, method, args
+):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    class FailingProvider(FakeProvider):
+        def lookup_citations(self, text):
+            raise RuntimeError("lookup failed")
+
+        def citing_edges(self, opinion_id, page_size=100, cursor=None):
+            raise RuntimeError("edges failed")
+
+        def same_docket_decisions(self, opinion_id, max_results=5):
+            raise RuntimeError("docket failed")
+
+        def opinion_metadata(self, opinion_id):
+            raise RuntimeError("metadata failed")
+
+        def fetch_opinion_text(self, opinion_id):
+            raise RuntimeError("text failed")
+
+    wrapper = SnapshottingCourtListenerProvider(FailingProvider(), store)
+
+    with pytest.raises(RuntimeError):
+        getattr(wrapper, method)(*args)
+
+    rows = _manifest(store)
+    assert len(rows) == 1
+    payload = json.loads((store.root / rows[0]["path"]).read_text(encoding="utf-8"))
+    assert payload["payload"]["response"]["error"]
+
+
+def test_snapshotting_provider_survives_store_failure(tmp_path, caplog):
+    class BrokenStore:
+        def record_response(self, *args, **kwargs):
+            raise OSError("disk full")
+
+    wrapper = SnapshottingCourtListenerProvider(FakeProvider(), BrokenStore())
+
+    assert wrapper.lookup_citations("text") == {"text": "text"}
+    assert "Could not persist courtlistener.lookup snapshot" in caplog.text
