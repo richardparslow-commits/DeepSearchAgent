@@ -6,7 +6,11 @@
     "authoritative": "Exact finding signature expected in CitatorCheck.negative_treatments.",
     "gated": "Exact finding signature expected in CitatorCheck.gated_treatment_findings.",
     "coverage_complete": "Expected CitatorCheck.coverage.complete.",
-    "flags_contain": "Every string must appear in at least one citator flag."
+    "flags_contain": "Every string must appear in at least one citator flag.",
+    "binding": "Optional exact signatures expected in CitatorCheck.binding_negative_treatments.",
+    "persuasive": "Optional exact signatures expected in CitatorCheck.persuasive_negative_treatments.",
+    "timeline": "Optional ordered signatures expected in CitatorCheck.treatment_timeline.",
+    "later_reaffirmance": "Optional expected CitatorCheck.later_reaffirmance boolean."
   },
   "cases": [
     {
@@ -1545,6 +1549,175 @@
           "2-opinion cap"
         ],
         "same_docket_count": 0
+      }
+    },
+    {
+      "id": "binding-persuasive-later-reaffirmance",
+      "category": "binding vs persuasive / timeline",
+      "adversarial_note": "A Board decision is authoritative but persuasive; a CAVC decision is binding; a still later CAVC reaffirmance postdates the binding negative.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Earlier Board Decision",
+          "citation": "BVA 20-001",
+          "court": "Board of Veterans' Appeals",
+          "decision_date": "2020-01-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Middle CAVC Decision",
+          "citation": "33 Vet.App. 20",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-01-01",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "203": {
+          "title": "Later CAVC Reaffirmance",
+          "citation": "35 Vet.App. 30",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2023-01-01",
+          "url": "https://www.courtlistener.com/opinion/203/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The Board overruled Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The court limited Smith v. Wilkie, 30 Vet.App. 123.",
+        "203": "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 3,
+          "citing_ids": [
+            201,
+            202,
+            203
+          ],
+          "next": null
+        }
+      ],
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          },
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/202/",
+            "treatment": "limited",
+            "scope": "unclear",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0,
+        "binding": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/202/",
+            "treatment": "limited",
+            "scope": "unclear",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "persuasive": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "timeline": [
+          {
+            "signal": "negative",
+            "treatment": "overruled",
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "citing_court": "Board of Veterans' Appeals",
+            "citing_date": "2020-01-01",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published",
+            "binding_class": "persuasive",
+            "authoritative": true,
+            "later_than_negative": false
+          },
+          {
+            "signal": "negative",
+            "treatment": "limited",
+            "citing_url": "https://www.courtlistener.com/opinion/202/",
+            "citing_court": "Court of Appeals for Veterans Claims",
+            "citing_date": "2021-01-01",
+            "scope": "unclear",
+            "opinion_role": "majority",
+            "precedential_status": "Published",
+            "binding_class": "binding",
+            "authoritative": true,
+            "later_than_negative": false
+          },
+          {
+            "signal": "reaffirmed",
+            "treatment": "reaffirmed",
+            "citing_url": "https://www.courtlistener.com/opinion/203/",
+            "citing_court": "Court of Appeals for Veterans Claims",
+            "citing_date": "2023-01-01",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published",
+            "binding_class": "binding",
+            "authoritative": true,
+            "later_than_negative": true
+          }
+        ],
+        "later_reaffirmance": true
       }
     }
   ]

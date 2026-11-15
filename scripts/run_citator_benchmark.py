@@ -33,6 +33,20 @@ FINDING_FIELDS = (
     "opinion_role",
     "precedential_status",
 )
+TIMELINE_FIELDS = (
+    "signal",
+    "treatment",
+    "citing_url",
+    "citing_court",
+    "citing_date",
+    "scope",
+    "opinion_role",
+    "precedential_status",
+    "binding_class",
+    "authoritative",
+    "later_than_negative",
+)
+TIMELINE_BOOLEAN_FIELDS = frozenset({"authoritative", "later_than_negative"})
 EXPECTED_FIELDS = (
     "status",
     "coverage_complete",
@@ -43,6 +57,24 @@ EXPECTED_FIELDS = (
     "gated",
     "flags_contain",
     "same_docket_count",
+)
+SIGNATURE_ACTUALS = {
+    "authoritative": "negative_treatments",
+    "gated": "gated_treatment_findings",
+    "binding": "binding_negative_treatments",
+    "persuasive": "persuasive_negative_treatments",
+}
+SIGNATURE_FIELDS = {
+    **{key: FINDING_FIELDS for key in SIGNATURE_ACTUALS},
+    "timeline": TIMELINE_FIELDS,
+}
+OPTIONAL_EXPECTED_FIELDS = tuple(
+    key
+    for key in (*SIGNATURE_FIELDS, "later_reaffirmance")
+    if key not in {"authoritative", "gated"}
+)
+ALLOWED_EXPECTED_FIELDS = frozenset(EXPECTED_FIELDS) | frozenset(
+    OPTIONAL_EXPECTED_FIELDS
 )
 
 
@@ -121,6 +153,21 @@ class FixtureProvider:
         return list(self._same_docket)[:max(0, max_results)]
 
 
+def _validate_signature_list(
+    case_id: str,
+    key: str,
+    values: object,
+    fields: tuple[str, ...],
+) -> None:
+    if not isinstance(values, list):
+        raise ValueError(f"{case_id}: {key} must be a list")
+    for finding in values:
+        if not isinstance(finding, dict) or set(finding) != set(fields):
+            raise ValueError(
+                f"{case_id}: {key} finding fields must be {', '.join(fields)}"
+            )
+
+
 def _load_cases(data_dir: Path) -> list[dict[str, Any]]:
     payload = json.loads((data_dir / "cases.json").read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -147,9 +194,17 @@ def _load_cases(data_dir: Path) -> list[dict[str, Any]]:
             raise ValueError(f"{case_id}: target must include a court")
 
         expected = case.get("expected")
-        if not isinstance(expected, dict) or set(expected) != set(EXPECTED_FIELDS):
+        if not isinstance(expected, dict):
+            raise ValueError(f"{case_id}: expected must be an object")
+        expected_fields = set(expected)
+        if (
+            not set(EXPECTED_FIELDS) <= expected_fields
+            or not expected_fields <= ALLOWED_EXPECTED_FIELDS
+        ):
             raise ValueError(
-                f"{case_id}: expected fields must be {', '.join(EXPECTED_FIELDS)}"
+                f"{case_id}: expected fields must include "
+                f"{', '.join(EXPECTED_FIELDS)} and may add "
+                f"{', '.join(OPTIONAL_EXPECTED_FIELDS)}"
             )
         if expected["status"] not in {"negative", "good_law", "unknown"}:
             raise ValueError(f"{case_id}: invalid expected status")
@@ -163,16 +218,13 @@ def _load_cases(data_dir: Path) -> list[dict[str, Any]]:
         ):
             if not isinstance(expected[key], (str, list)):
                 raise ValueError(f"{case_id}: {key} has the wrong type")
-        for key in ("authoritative", "gated"):
-            findings = expected[key]
-            if not isinstance(findings, list):
-                raise ValueError(f"{case_id}: {key} must be a list")
-            for finding in findings:
-                if not isinstance(finding, dict) or set(finding) != set(FINDING_FIELDS):
-                    raise ValueError(
-                        f"{case_id}: {key} finding fields must be "
-                        f"{', '.join(FINDING_FIELDS)}"
-                    )
+        for key, fields in SIGNATURE_FIELDS.items():
+            if key in expected:
+                _validate_signature_list(case_id, key, expected[key], fields)
+        if "later_reaffirmance" in expected and not isinstance(
+            expected["later_reaffirmance"], bool
+        ):
+            raise ValueError(f"{case_id}: later_reaffirmance must be a boolean")
         if not isinstance(expected["same_docket_count"], int):
             raise ValueError(f"{case_id}: same_docket_count must be an integer")
     return cases
@@ -206,6 +258,21 @@ def _sorted_signatures(findings: list[object]) -> list[dict[str, str]]:
     )
 
 
+def _timeline_signature(entry: object) -> dict[str, object]:
+    return {
+        field: (
+            bool(getattr(entry, field))
+            if field in TIMELINE_BOOLEAN_FIELDS
+            else str(getattr(entry, field) or "")
+        )
+        for field in TIMELINE_FIELDS
+    }
+
+
+def _timeline_signatures(entries: list[object]) -> list[dict[str, object]]:
+    return [_timeline_signature(entry) for entry in entries]
+
+
 def _compare_case(
     case: dict[str, Any], check: object
 ) -> list[str]:
@@ -221,14 +288,13 @@ def _compare_case(
     compare("target_cluster_id", check.target_cluster_id)
     compare("target_citations", check.target_citations)
     compare("target_opinion_ids", check.target_opinion_ids)
-    compare(
-        "authoritative",
-        _sorted_signatures(check.negative_treatments),
-    )
-    compare(
-        "gated",
-        _sorted_signatures(check.gated_treatment_findings),
-    )
+    for name, attribute in SIGNATURE_ACTUALS.items():
+        if name in expected:
+            compare(name, _sorted_signatures(getattr(check, attribute)))
+    if "timeline" in expected:
+        compare("timeline", _timeline_signatures(check.treatment_timeline))
+    if "later_reaffirmance" in expected:
+        compare("later_reaffirmance", check.later_reaffirmance)
     compare("same_docket_count", len(check.same_docket_decisions))
     flags_text = "\n".join(check.flags)
     for phrase in expected["flags_contain"]:

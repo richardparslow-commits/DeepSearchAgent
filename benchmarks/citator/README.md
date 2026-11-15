@@ -48,13 +48,20 @@ Each case contains:
   - `flags_contain`: every listed phrase must appear in at least one citator
     flag.
   - `same_docket_count`: expected number of separate same-docket decisions.
+  - `binding` / `persuasive`: optional exact signatures expected in
+    `binding_negative_treatments` and `persuasive_negative_treatments`.
+  - `timeline`: optional ordered signatures expected in `treatment_timeline`.
+  - `later_reaffirmance`: optional expected `later_reaffirmance` boolean.
 
 Finding signatures compare `citing_url`, `treatment`, `scope`, `opinion_role`,
-and `precedential_status`.
+and `precedential_status`. Timeline signatures additionally compare `signal`,
+`citing_court`, `citing_date`, `binding_class`, `authoritative`, and
+`later_than_negative`, in chronological order. Optional labels are compared
+only when present, so existing cases keep their original expectations.
 
 ## Corpus
 
-There are 19 cases across these adversarial categories:
+There are 20 cases across these adversarial categories:
 
 | Category | Cases | What it tests |
 | --- | --- | --- |
@@ -71,13 +78,14 @@ There are 19 cases across these adversarial categories:
 | Advisory separation | `same-docket-advisory` | Same-docket context does not affect treatment status. |
 | Adversarial false positive | `same-name-different-citation`, `dissent-attribution-trap` | A negative verb must bind to the target citation and to the court's own holding, not a same-named case or a dissent. |
 | Cap prioritization | `cap-prioritizes-later-authority` | Under a citing-opinion cap, older API-order citations are skipped so the later decisions are reviewed first. |
+| Binding/persuasive timeline | `binding-persuasive-later-reaffirmance` | A Board negative is persuasive, a CAVC negative is binding, and a later CAVC reaffirmance postdates the binding negative. |
 
 ## Baseline
 
 `baseline.json` records the current known misses. It is empty: every case has
 an expected label that the production citator must satisfy.
 
-Current score: **19/19 cases pass; 0 known misses; 0 new misses.**
+Current score: **20/20 cases pass; 0 known misses; 0 new misses.**
 
 CI fails if a case not listed in `known_misses` fails. A listed case that starts
 passing is reported as `fixed`; remove it from the baseline when the production
