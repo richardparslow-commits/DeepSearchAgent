@@ -106,43 +106,74 @@ _CASE_NAME_RE = re.compile(
     r"\b[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}\s+v\.\s+"
     r"[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}"
 )
+_ATTRIBUTION_NOUNS = (
+    r"(?:argument|assertion|contention|position|views?|claim|notion|theory|"
+    r"suggestion|assumption|premise)"
+)
+_ATTRIBUTION_VERBS = (
+    r"(?:argues?|argued|contends?|contended|asserts?|asserted|"
+    r"maintains?|maintained|submits?|submitted|urges?|urged|"
+    r"requests?|requested|asks?|asked|concedes?|conceded|"
+    r"acknowledges?|acknowledged|says?|said|notes?|noted|"
+    r"states?|stated|explains?|explained|observes?|observed|"
+    r"conclud(?:e|ed|es|ing)|hold(?:s|ing)?|held|find(?:s|ing)?|found|"
+    r"determin(?:e|ed|es|ing)|criticiz(?:e|ed|es|ing))"
+)
+_PARTY_SUBJECT = (
+    r"(?:appellant|appellee|claimant|veteran|petitioner|respondent|"
+    r"plaintiff|defendant|secretary|government|counsel|amic(?:us|i)|"
+    r"briefs?)"
+)
+_TRIBUNAL_SPEAKER = r"(?:agency|board|department)"
+_ADVOCATE_SPEAKER = rf"(?:{_PARTY_SUBJECT}|{_TRIBUNAL_SPEAKER})"
+_SEPARATE_SPEAKER = (
+    r"(?:dissent(?:ed|ing|er|ers)?|concurrence|concurring|plurality)"
+)
+_ATTRIBUTION_SPEAKER = rf"(?:{_ADVOCATE_SPEAKER}|{_SEPARATE_SPEAKER})"
+_SUBJECT_TAIL = (
+    r"(?:'s|’s)?"
+    r"(?:\s+(?:in|of|to)\s+[A-Z][A-Za-z'’.-]*)?"
+    r"(?:\s+(?:judge|justice|opinion|opinions?|decision|regulation|"
+    r"argument|position|view|brief|determination))?"
+    r"(?:\s+(?:was|were|is|are|has\s+been|have\s+been))?"
+    r"(?:\s*,\s*(?:however|though|also))?\s*$"
+)
+_PARTY_SUBJECT_RE = re.compile(rf"\b{_PARTY_SUBJECT}\b{_SUBJECT_TAIL}", re.I)
+_ATTRIBUTION_FRAME = rf"\b{_ATTRIBUTION_NOUNS}\b(?:\s+(?:is|was))?\s+that\b"
 _ADVOCACY_ATTRIBUTION_RE = re.compile(
-    r"\b(?:argument|assertion|contention|position|view)\s+that\b"
-    r"|\b(?:appellant|appellee|claimant|veteran|petitioner|respondent|secretary|"
-    r"government|amici?|counsel|brief|board|department)\b"
-    r"(?:\W+\w+){0,5}\W+(?:argues?|argued|contends?|contended|asserts?|asserted|"
-    r"maintains?|maintained|submits?|submitted|urges?|urged|requests?|requested|"
-    r"asks?|asked|concedes?|conceded|acknowledges?|acknowledged|argument|"
-    r"position|view|held|found|concluded|determined)\b",
+    rf"{_ATTRIBUTION_FRAME}"
+    rf"|\b{_ADVOCATE_SPEAKER}\b(?:\W+\w+){{0,5}}\W+"
+    rf"(?:{_ATTRIBUTION_VERBS}|{_ATTRIBUTION_NOUNS})\b",
     re.I,
 )
+_PASSIVE_PARTY_RE = re.compile(
+    rf"^\s*by\s+(?:the\s+)?{_PARTY_SUBJECT}\b", re.I
+)
+_MODAL = r"(?:would|could|should|might|may)"
 _SEPARATE_VOICE_RE = re.compile(
-    r"\b(?:dissent(?:ed|ing|er|ers)?|concurrence|concurring|plurality)\b"
-    r"(?:\W+\w+){0,5}\W+(?:argues?|argued|contends?|contended|asserts?|asserted|"
-    r"maintains?|maintained|submits?|submitted|urges?|urged|requests?|requested|"
-    r"asks?|asked|criticiz(?:e|ed|es|ing)|would|could|should|might|may|noted|"
-    r"observed|stated|said|explained|concluded|held|found|view|position|"
-    r"argument)\b",
+    rf"\b{_SEPARATE_SPEAKER}\b(?:\W+\w+){{0,5}}\W+"
+    rf"(?:{_ATTRIBUTION_VERBS}|{_ATTRIBUTION_NOUNS}|{_MODAL})\b",
     re.I,
 )
 _SEPARATE_SUBJECT_RE = re.compile(
-    r"\b(?:dissent(?:ed|ing|er|ers)?|concurrence|concurring|plurality)\b"
-    r"(?:\s+(?:in|of|to)\s+[A-Z][A-Za-z'’.-]*)?"
-    r"(?:\s+(?:judge|justice|opinion|opinions?))?"
-    r"(?:\s*,\s*(?:however|though|also))?\s*$",
-    re.I,
+    rf"\b{_SEPARATE_SPEAKER}\b{_SUBJECT_TAIL}", re.I
 )
 _HYPOTHETICAL_PREFIX_RE = re.compile(
-    r"\b(?:would|could|should|might|may)\b(?:\W+\w+){0,3}\W*$", re.I
+    rf"\b{_MODAL}\b(?:\W+\w+){{0,3}}\W*$"
+    r"|\b(?:whether|if)\b(?:\W+\w+){0,12}\W*$",
+    re.I,
+)
+_REPORTED_ATTRIBUTION_RE = re.compile(
+    rf"\b(?:according\s+to|per)\s+(?:the\s+)?{_ATTRIBUTION_SPEAKER}\b",
+    re.I,
 )
 _CLAUSE_BOUNDARY_RE = re.compile(
-    r";|:|\s+[—–-]\s+|(?:,\s*|\s+)(?:but|yet|while|whereas|although|though|however)\b"
+    r";|:|\s+[—–-]\s+|(?:,\s*|\s+)(?:but|yet|while|whereas|although|though|"
+    r"however|because|since|after|before|when|where|unless|until|which)\b"
     r"|,\s*and\b",
     re.I,
 )
-_INTERPOSED_ARGUMENT_RE = re.compile(
-    r"\b(?:argument|assertion|contention|position|view)\s+that\b", re.I
-)
+_INTERPOSED_ARGUMENT_RE = re.compile(_ATTRIBUTION_FRAME, re.I)
 
 # Periods after these tokens are not sentence boundaries. This matters for
 # reporter citations ("30 Vet.App. 123"), party names ("U.S."), and the
@@ -707,14 +738,25 @@ def _nearest_distance(
     return min((_span_distance(span, candidate) for candidate in candidates), default=None)
 
 
-def _attribution_rejects(prefix: str, opinion_role: str) -> bool:
-    """Whether a treatment clause belongs to an advocate or another voice."""
-    if _ADVOCACY_ATTRIBUTION_RE.search(prefix):
+def _attribution_rejects(
+    prefix: str, opinion_role: str, suffix: str = ""
+) -> bool:
+    """Whether a treatment belongs to an advocate, another voice, or a hypothetical."""
+    if (
+        _PARTY_SUBJECT_RE.search(prefix)
+        or _PASSIVE_PARTY_RE.search(prefix)
+        or _PASSIVE_PARTY_RE.search(suffix)
+        or _ADVOCACY_ATTRIBUTION_RE.search(prefix)
+        or _ADVOCACY_ATTRIBUTION_RE.search(suffix)
+        or _REPORTED_ATTRIBUTION_RE.search(prefix)
+        or _REPORTED_ATTRIBUTION_RE.search(suffix)
+    ):
         return True
     if opinion_role != "majority":
         return False
     return bool(
         _SEPARATE_VOICE_RE.search(prefix)
+        or _SEPARATE_VOICE_RE.search(suffix)
         or _SEPARATE_SUBJECT_RE.search(prefix)
         or _HYPOTHETICAL_PREFIX_RE.search(prefix)
     )
@@ -966,9 +1008,11 @@ def _extract_treatment_matches(
             sentence = raw.strip()
             verb_start = match.start() - start - lead
             verb_end = match.end() - start - lead
-            clause_start, _ = _clause_bounds(sentence, verb_start)
+            clause_start, clause_end = _clause_bounds(sentence, verb_start)
             if _attribution_rejects(
-                sentence[clause_start:verb_start], opinion_role
+                sentence[clause_start:verb_start],
+                opinion_role,
+                sentence[verb_end:clause_end],
             ):
                 continue
             if _is_negated(sentence, verb_start):

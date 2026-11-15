@@ -380,6 +380,80 @@ def test_extract_rejects_party_argument_and_hypothetical_holdings():
     ) == []
 
 
+def test_extract_rejects_reported_and_party_attribution():
+    attributed = (
+        "Smith v. Wilkie was overruled, according to the dissent.",
+        "According to the dissent, Smith v. Wilkie was overruled.",
+        "Smith v. Wilkie was overruled, according to the Secretary.",
+        "Smith v. Wilkie was overruled, according to the amicus.",
+        "Smith v. Wilkie was overruled by the Secretary.",
+        "Smith v. Wilkie was overruled, the Secretary concluded.",
+        "Smith v. Wilkie was overruled, the dissent concluded.",
+        "Smith v. Wilkie was overruled, the dissent says.",
+    )
+    party_subjects = (
+        "The Secretary's decision overruled Smith v. Wilkie.",
+        "The government's decision limited Smith v. Wilkie.",
+        "The Secretary was overruled by Smith v. Wilkie.",
+    )
+
+    for text in (*attributed, *party_subjects):
+        assert extract_negative_treatments(text, "Smith v. Wilkie", "") == []
+
+    assert extract_negative_treatments(
+        attributed[0], "Smith v. Wilkie", "", opinion_role="separate"
+    ) == []
+
+
+def test_extract_keeps_the_courts_own_holding():
+    holdings = (
+        "Smith v. Wilkie was overruled, according to the court.",
+        "The court overruled Smith v. Wilkie because the dissent argues that the "
+        "rule is wrong.",
+        "The court overruled Smith v. Wilkie, and the dissent argues that the "
+        "rule is wrong.",
+        "The court overruled Smith v. Wilkie, rejecting an argument by the "
+        "Secretary.",
+    )
+
+    for text in holdings:
+        assert [
+            finding.treatment
+            for finding in extract_negative_treatments(text, "Smith v. Wilkie", "")
+        ] == ["overruled"]
+
+
+def test_extract_rejects_nonholding_framing():
+    texts = (
+        "The court rejected the notion that it had overruled Smith v. Wilkie.",
+        "The court overruled the notion that Smith v. Wilkie was controlling.",
+    )
+
+    for text in texts:
+        assert extract_negative_treatments(text, "Smith v. Wilkie", "") == []
+
+
+def test_extract_rejects_whether_and_if_hypotheticals():
+    hypotheticals = (
+        "The court considered whether Smith v. Wilkie was overruled.",
+        "The court asked if Smith v. Wilkie was overruled.",
+        "The court considered whether to overrule Smith v. Wilkie.",
+    )
+
+    for text in hypotheticals:
+        assert extract_negative_treatments(text, "Smith v. Wilkie", "") == []
+
+
+def test_extract_reaffirmance_rejects_party_action():
+    texts = (
+        "The Secretary reaffirmed Smith v. Wilkie.",
+        "The Secretary's brief reaffirmed Smith v. Wilkie.",
+    )
+
+    for text in texts:
+        assert extract_reaffirmance_signals(text, "Smith v. Wilkie", "") == []
+
+
 def test_extract_allows_the_courts_own_holding_after_other_actors():
     text = (
         "The court affirmed the Board and overruled Smith v. Wilkie, "
