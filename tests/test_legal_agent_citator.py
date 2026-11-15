@@ -93,6 +93,53 @@ def test_citator_enabled_with_api_key_invokes_runner_with_limits(monkeypatch):
     assert calls[0][2:] == (1, 2, 3)
     assert analysis.authority_queue[0].case_title == "Smith v. Wilkie"
     assert analysis.authority_queue[0].priority == 1
+    assert analysis.authority_queue[0].citator_status == "unknown"
+    assert analysis.authority_queue[0].citator_flagged is True
+    assert analysis.authority_queue[0].citator_reasons == [
+        "citator review flag: status requires manual review"
+    ]
+
+
+def test_citator_passes_configured_as_of_date(monkeypatch):
+    _stub_search(monkeypatch)
+    monkeypatch.setenv("CITATOR", "1")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("CITATOR_AS_OF_DATE", "2021-03-04")
+    monkeypatch.setattr("va_legal_agent.agent.check_analysis_citations", lambda *a: [])
+    check = CitatorCheck(target_case="Smith v. Wilkie", status="unknown")
+    received = {}
+
+    def fake_run(cases, provider, **kwargs):
+        received.update(kwargs)
+        return [check]
+
+    monkeypatch.setattr("va_legal_agent.agent.run_citator", fake_run)
+
+    analyze_cases_for_claim("service connection")
+
+    assert received["as_of_date"] == "2021-03-04"
+
+
+def test_citator_passes_source_validity_only_when_enabled(monkeypatch):
+    _stub_search(monkeypatch)
+    monkeypatch.setenv("CITATOR", "1")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("CITATOR_SOURCE_VALIDITY", "1")
+    monkeypatch.setenv("CITATOR_SOURCE_VALIDITY_MODE", "enforce")
+    monkeypatch.setattr("va_legal_agent.agent.check_analysis_citations", lambda *a: [])
+    check = CitatorCheck(target_case="Smith v. Wilkie", status="unknown")
+    received = {}
+
+    def fake_run(cases, provider, **kwargs):
+        received.update(kwargs)
+        return [check]
+
+    monkeypatch.setattr("va_legal_agent.agent.run_citator", fake_run)
+
+    analyze_cases_for_claim("service connection")
+
+    assert received["source_validity"] is True
+    assert received["source_validity_mode"] == "enforce"
 
 
 def test_citator_loads_verified_history_records_and_sets_their_source(

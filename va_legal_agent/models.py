@@ -199,14 +199,18 @@ class CitatorCoverage(BaseModel):
 
     ``complete`` is deliberately conservative: it is true only when every
     forward-citation page the API reported was fetched and every citing
-    opinion in that set was successfully read. The count fields let a
-    consumer distinguish a complete review from a partially checked one.
-    ``gaps`` enumerates the specific missing pieces rather than leaving the
-    consumer to parse flags. ``temporal_confidence`` describes how far the
-    latest reviewed citing date can bound the review: ``high`` means a
-    complete review with dates for every reviewed opinion, ``medium`` means a
-    known date from an incomplete review, ``low`` means at least one reviewed
-    opinion has no date, and ``none`` means no usable reviewed date exists.
+    opinion in that set was successfully read. With an as-of cutoff, the set
+    is limited to citing opinions dated on or before the cutoff; later
+    opinions are reported separately. An opinion with no usable date cannot
+    be placed relative to the cutoff, so it is excluded and makes the as-of
+    review incomplete. The count fields let a consumer distinguish a complete
+    review from a partially checked one. ``gaps`` enumerates the specific
+    missing pieces rather than leaving the consumer to parse flags.
+    ``temporal_confidence`` describes how far the latest reviewed citing date
+    can bound the review: ``high`` means a complete review with dates for
+    every reviewed opinion, ``medium`` means a known date from an incomplete
+    review, ``low`` means at least one reviewed or excluded opinion has no
+    date, and ``none`` means no usable reviewed date exists.
     """
 
     forward_citations_found: int = 0
@@ -228,6 +232,11 @@ class NegativeTreatment(BaseModel):
     citing_court: str = ""
     citing_date: str = ""
     citing_url: str = ""
+    # Stable CourtListener identifiers for the source (citing) opinion. They
+    # are extracted from the metadata already used by the citator and are
+    # advisory provenance only; they never participate in status or binding.
+    source_opinion_id: str = ""
+    source_cluster_id: str = ""
     # Canonical term: overruled, abrogated, superseded, questioned,
     # criticized, limited, or declined to follow.
     treatment: str
@@ -249,6 +258,16 @@ class NegativeTreatment(BaseModel):
     # kept in CitatorCheck.gated_treatment_findings, never in this list.
     authoritative: bool = True
     gate_reason: str = ""
+    # How the target reference was bound in the sentence: "citation" for an
+    # explicit reporter citation, "case_name" for a bare full name, or
+    # "short_name" for a conservative short-form alias. Bare and short-name
+    # matches are retained but flagged because they are weaker attribution.
+    attribution_basis: str = "citation"
+    # True when the accepted finding needs human attribution review, for
+    # example a bare-name match or a passive verb with no explicit actor.
+    # This never changes whether the finding counts toward ``status``.
+    attribution_ambiguous: bool = False
+    attribution_reason: str = ""
     # Verbatim sentence from the citing opinion. It is intentionally not
     # whitespace-normalized so it can be checked against the source text.
     excerpt: str
@@ -283,6 +302,7 @@ class LaterCitingOpinion(BaseModel):
     decision_date: str = ""
     url: str = ""
     opinion_id: str = ""
+    cluster_id: str = ""
     opinion_type: str = ""
     opinion_role: str = "unknown"
     precedential_status: str = ""
@@ -309,6 +329,9 @@ class TreatmentTimelineEntry(BaseModel):
     citing_court: str = ""
     citing_date: str = ""
     citing_url: str = ""
+    # Source identifiers copied from the originating finding for audit.
+    source_opinion_id: str = ""
+    source_cluster_id: str = ""
     # None means the relative authority could not be established; it is not
     # equivalent to persuasive.
     binding: bool | None = None
@@ -321,6 +344,43 @@ class TreatmentTimelineEntry(BaseModel):
     gate_reason: str = ""
     # True for a reaffirmance dated after the latest authoritative negative.
     later_than_negative: bool = False
+
+
+class SourceValiditySignal(BaseModel):
+    """Advisory validation of one reviewed citing opinion.
+
+    The source opinion's stable CourtListener identifiers are retained so the
+    advisory validator can check whether the source still exists in the form
+    the finding assumed. ``status`` is ``not_assessed`` until validation runs;
+    advisory validation never changes citator status, coverage, ranking, or
+    authority-queue order. In ``enforce`` mode these signals can additionally
+    withhold support from status and queue demotion. A known lower-court
+    source is retained with ``precedence="persuasive"`` and is always withheld
+    from enforcement; when its history is otherwise clean its status is
+    ``precedence_defect``. Only an authoritative source may be used by
+    enforcement. When an as-of cutoff is set, source-history review stops at
+    that cutoff.
+    """
+
+    source_opinion_id: str
+    source_cluster_id: str = ""
+    # not_assessed, valid, invalid, qualified, precedence_defect, or unverified.
+    status: str = "not_assessed"
+    # Human-readable reason for the status; advisory only.
+    reason: str = ""
+    # authoritative, persuasive, nonprecedential, separate, or unverified.
+    precedence: str = ""
+    # True when this signal must be withheld from enforcement. This includes
+    # known lower-court sources even when their history is invalid, plus any
+    # nonprecedential, separate, or unverified source. It also defaults to true
+    # before assessment, so an extract-mode signal is never enforceable.
+    # Advisory output still shows the signal; only an authoritative, validly
+    # assessed source is enforceable.
+    withheld: bool = True
+    # True only when the bounded one-hop source history review completed.
+    # With an as-of cutoff, this covers only history on or before the cutoff.
+    history_complete: bool = False
+    checked_at: str = ""
 
 
 class AppellateHistoryCandidate(BaseModel):
@@ -404,10 +464,13 @@ class AuthorityQueueEntry(BaseModel):
     """One selected target in the prioritized authority queue.
 
     The queue orders cases for advisory review; it does not change their
-    ranking, ``superseded_by``, or the citator's status rules.
+    ranking, ``superseded_by``, or the citator's status rules. ``base_priority``
+    preserves the pre-citator order so a later annotation pass can show whether
+    and why an authority moved.
     """
 
     priority: int = 0
+    base_priority: int = 0
     case_title: str
     citation: str = ""
     court: str = ""
@@ -419,6 +482,14 @@ class AuthorityQueueEntry(BaseModel):
     superseded_by: str = ""
     eligible: bool = True
     reasons: list[str] = Field(default_factory=list)
+    # One-way annotations from the citator review. Authoritative negative
+    # treatment demotes the entry; gated findings or review-required coverage
+    # issues flag it. These fields never feed case ranking or citator status.
+    citator_status: str = ""
+    citator_demoted: bool = False
+    citator_flagged: bool = False
+    citator_reasons: list[str] = Field(default_factory=list)
+    citator_findings: list[NegativeTreatment] = Field(default_factory=list)
 
 
 class CitatorCheck(BaseModel):
@@ -427,11 +498,19 @@ class CitatorCheck(BaseModel):
     ``good_law`` means only that no authoritative negative treatment was found
     in the reviewed citing opinions. It does not mean the case is final, has no
     subsequent history, or remains good law. ``good_law_as_of`` is populated
-    only for a clean, complete review of that forward-citation set. An
+    only for a clean, complete review of that forward-citation set. When
+    ``as_of_date`` is set, only citing opinions dated on or before that
+    inclusive cutoff affect the status and coverage; later opinions and their
+    findings are reported separately and never change the as-of result. An
     authoritative negative finding makes the status ``negative``; a finding
     from a separate or nonprecedential opinion is gated and makes it
     ``unknown``. Missing or truncated coverage also makes it ``unknown``. The
     citator never changes ranking, ``superseded_by``, or contradiction results.
+    Confidence and review-required fields are advisory: they explain how much
+    trust to place in the review without altering the conservative status rule.
+    When opt-in source-validity enforcement runs, it may downgrade an
+    unsupported ``negative``/``good_law`` status to ``unknown`` and record its
+    actions; it never deletes findings and never upgrades status.
     """
 
     target_case: str
@@ -450,6 +529,10 @@ class CitatorCheck(BaseModel):
     status: str = "unknown"
     # Latest reviewed citing-opinion date, not a finality or history date.
     good_law_as_of: str = ""
+    # Optional inclusive cutoff requested by the caller. When set, only
+    # citing opinions dated on or before this date can affect ``status``,
+    # ``good_law_as_of``, or as-of coverage. An empty value means no cutoff.
+    as_of_date: str = ""
     # Stable scope statement carried in JSON/CSV so consumers cannot read
     # ``good_law`` as a finality conclusion.
     good_law_meaning: str = (
@@ -460,6 +543,17 @@ class CitatorCheck(BaseModel):
     # False unless a validated human-verified appellate-history record matched.
     # The citator itself never performs a cross-court history lookup.
     subsequent_history_assessed: bool = False
+    # Penalty-based confidence in the completeness and attribution of the
+    # review. ``confidence`` is ``high``, ``medium``, ``low``, or ``none``;
+    # ``confidence_score`` is the corresponding 0..1 score. The score does not
+    # feed status or good_law_as_of.
+    confidence: str = "none"
+    confidence_score: float = 0.0
+    confidence_reason: str = ""
+    # True when a human should review the check because coverage is incomplete,
+    # metadata failed, or an accepted finding has ambiguous attribution.
+    review_required: bool = False
+    review_reasons: list[str] = Field(default_factory=list)
     # Position and reasons from the prioritized authority queue. These are
     # review-order metadata only and never feed the status calculation.
     authority_priority: int = 0
@@ -473,6 +567,39 @@ class CitatorCheck(BaseModel):
     # Separate advisory signals. Neither is used to derive ``status``.
     same_docket_decisions: list[SameDocketDecision] = Field(default_factory=list)
     later_citing_opinions: list[LaterCitingOpinion] = Field(default_factory=list)
+    # Opt-in source-validity signals (``CITATOR_SOURCE_VALIDITY``). Empty when
+    # the feature is off. Extract/advisory entries are evidence only. In
+    # ``enforce`` mode, withheld or invalid/qualified sources stop supporting
+    # status and queue demotion, but the entries and findings remain visible.
+    source_validity: list[SourceValiditySignal] = Field(default_factory=list)
+    # True when the opt-in enforcement pass ran. Advisory and extract modes
+    # leave this false. Enforcement may change status and queue annotations but
+    # never deletes the underlying advisory findings.
+    source_validity_enforced: bool = False
+    # Human-readable audit trail for enforcement decisions, one entry per
+    # withheld or invalid/qualified source. Entries are deduplicated so the
+    # pass is idempotent.
+    source_validity_actions: list[str] = Field(default_factory=list)
+    # As-of-only review material. Opinions dated after the cutoff are reviewed
+    # for treatment but never change the as-of status or coverage. Findings
+    # include authoritative and gated signals, identified by ``authoritative``.
+    post_as_of_citing_opinions: list[LaterCitingOpinion] = Field(
+        default_factory=list
+    )
+    post_as_of_treatment_findings: list[NegativeTreatment] = Field(
+        default_factory=list
+    )
+    # Opinions excluded from an as-of review because their decision date is
+    # missing or unusable. They could fall on either side of the cutoff, so
+    # their treatment is not used and as-of coverage is incomplete.
+    undated_citing_opinions: list[LaterCitingOpinion] = Field(
+        default_factory=list
+    )
+    # True when the separate post-cutoff review is incomplete: its opinion cap
+    # was reached, a review failed or was empty, or a target was not located.
+    # This never makes the as-of review incomplete.
+    post_as_of_incomplete: bool = False
+    post_as_of_flags: list[str] = Field(default_factory=list)
     # Only majority-role, Published findings. This is the list that can make
     # the status ``negative``.
     negative_treatments: list[NegativeTreatment] = Field(default_factory=list)
@@ -495,6 +622,24 @@ class CitatorCheck(BaseModel):
     later_reaffirmance: bool = False
     flags: list[str] = Field(default_factory=list)
 
+    def source_validity_blocked_source_ids(self) -> set[str]:
+        """Return source IDs enforcement must not use.
+
+        Withheld sources include known lower courts, nonprecedential and
+        separate opinions, and unverified sources. An authoritative source
+        whose bounded history is invalid or only partly valid is also blocked
+        from supporting enforcement. The advisory findings remain available.
+        """
+        return {
+            signal.source_opinion_id
+            for signal in self.source_validity
+            if signal.source_opinion_id
+            and (
+                signal.withheld
+                or signal.status in {"invalid", "qualified"}
+            )
+        }
+
 
 class AdjudicationEvidence(BaseModel):
     """Source evidence a human must inspect before accepting a proposal."""
@@ -507,6 +652,8 @@ class AdjudicationEvidence(BaseModel):
     citing_court: str = ""
     citing_date: str = ""
     citing_url: str = ""
+    source_opinion_id: str = ""
+    source_cluster_id: str = ""
     opinion_type: str = ""
     opinion_role: str = "unknown"
     precedential_status: str = ""

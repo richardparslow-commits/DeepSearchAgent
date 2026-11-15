@@ -16,6 +16,7 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     SameDocketDecision,
+    SourceValiditySignal,
     TreatmentTimelineEntry,
 )
 
@@ -226,6 +227,143 @@ def test_citator_text_and_json_render_treatment_timeline():
     assert data["citator_checks"][0]["later_reaffirmance"] is True
 
 
+def test_citator_text_and_json_render_confidence_and_review_reasons():
+    base = _check()
+    ambiguous = base.negative_treatments[0].model_copy(
+        update={
+            "attribution_ambiguous": True,
+            "attribution_reason": (
+                "passive treatment verb has no explicit actor"
+            ),
+        }
+    )
+    check = base.model_copy(
+        update={
+            "negative_treatments": [
+                ambiguous,
+                *base.negative_treatments[1:],
+            ],
+            "confidence": "medium",
+            "confidence_score": 0.72,
+            "confidence_reason": (
+                "Penalty-based score 0.72: 1 coverage gap(s), including 0 "
+                "metadata failure(s), and 1 ambiguous attribution(s)."
+            ),
+            "review_required": True,
+            "review_reasons": [
+                "coverage gap [page_cap]: Forward-citation fetch hit the cap.",
+                "ambiguous attribution [overruled by Alpha v. McDonough]: "
+                "passive treatment verb has no explicit actor.",
+            ],
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "Calibrated confidence: medium (0.72)" in text
+    assert "Review required: yes" in text
+    assert "- coverage gap [page_cap]: Forward-citation fetch hit the cap." in text
+    assert "- ambiguous attribution [overruled by Alpha v. McDonough]" in text
+    assert "attribution ambiguous: passive treatment verb has no explicit actor" in text
+
+    data = json.loads(render_analysis(_analysis(check), "json"))
+    check_data = data["citator_checks"][0]
+    assert check_data["confidence"] == "medium"
+    assert check_data["confidence_score"] == 0.72
+    assert check_data["review_required"] is True
+    assert check_data["review_reasons"][0].startswith("coverage gap [page_cap]")
+    assert check_data["negative_treatments"][0]["attribution_ambiguous"] is True
+    assert check_data["negative_treatments"][0]["attribution_reason"] == (
+        "passive treatment verb has no explicit actor"
+    )
+
+
+def test_citator_text_and_json_render_as_of_and_post_as_of_material():
+    post = LaterCitingOpinion(
+        case_name="Later v. McDonough",
+        citation="35 Vet.App. 20",
+        court="Court of Appeals for Veterans Claims",
+        decision_date="2022-03-03",
+        url="https://www.courtlistener.com/opinion/301/",
+        opinion_id="301",
+        opinion_type="020lead",
+        opinion_role="majority",
+        precedential_status="Published",
+        precedential_tier="precedential",
+        treatment_eligible=True,
+    )
+    undated = LaterCitingOpinion(
+        case_name="Undated v. McDonough",
+        decision_date="",
+        opinion_id="302",
+    )
+    finding = NegativeTreatment(
+        citing_case="Later v. McDonough",
+        citing_url="https://www.courtlistener.com/opinion/301/",
+        citing_date="2022-03-03",
+        treatment="overruled",
+        scope="all",
+        binding=True,
+        confidence="high",
+        opinion_type="020lead",
+        opinion_role="majority",
+        precedential_status="Published",
+        precedential_tier="precedential",
+        authoritative=True,
+        excerpt="The later court overruled Smith v. Wilkie.",
+    )
+    gated_finding = NegativeTreatment(
+        citing_case="Later Dissent v. McDonough",
+        citing_date="2022-04-04",
+        treatment="questioned",
+        scope="unclear",
+        binding=False,
+        opinion_type="040dissent",
+        opinion_role="separate",
+        precedential_status="Published",
+        precedential_tier="precedential",
+        authoritative=False,
+        gate_reason="opinion role is separate",
+        excerpt="The later dissent questioned Smith v. Wilkie.",
+    )
+    check = _check().model_copy(
+        update={
+            "as_of_date": "2021-01-01",
+            "undated_citing_opinions": [undated],
+            "post_as_of_citing_opinions": [post],
+            "post_as_of_treatment_findings": [finding, gated_finding],
+            "post_as_of_incomplete": True,
+            "post_as_of_flags": ["Post-as-of review had a bounded gap."],
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "As-of cutoff: 2021-01-01 (inclusive)" in text
+    assert "Undated citing opinions excluded from the as-of result" in text
+    assert "Undated v. McDonough" in text
+    assert "Post-as-of citing opinions reviewed" in text
+    assert "Later v. McDonough" in text
+    assert "Post-as-of treatment findings" in text
+    assert "The later court overruled Smith v. Wilkie." in text
+    assert "gated; opinion role is separate" in text
+    assert "Post-as-of review incomplete" in text
+    assert "Post-as-of note: Post-as-of review had a bounded gap." in text
+
+    data = json.loads(render_analysis(_analysis(check), "json"))
+    assert data["citator_checks"][0]["as_of_date"] == "2021-01-01"
+    assert data["citator_checks"][0]["post_as_of_citing_opinions"][0][
+        "opinion_id"
+    ] == "301"
+    assert data["citator_checks"][0]["post_as_of_treatment_findings"][0][
+        "treatment"
+    ] == "overruled"
+    assert data["citator_checks"][0]["undated_citing_opinions"][0][
+        "opinion_id"
+    ] == "302"
+    assert data["citator_checks"][0]["post_as_of_incomplete"] is True
+
+
 def test_citator_text_renders_history_candidates_and_verified_records():
     record = AppellateHistoryRecord(
         target_cluster_id="777",
@@ -378,6 +516,7 @@ def test_good_law_text_states_the_reviewed_citation_scope():
     )
     assert "good-law cutoff: 2021-03-03" in text
     assert "subsequent history: not assessed" in text
+    assert "Review required: no" in text
 
 
 def test_citator_json_and_csv_carry_structured_checks_and_excerpts():
@@ -443,6 +582,78 @@ def test_gated_only_text_makes_clear_the_finding_is_not_counted():
     assert "Gated treatment findings (not counted toward status):" in text
 
 
+def test_citator_text_renders_advisory_source_validity_identifiers():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "Source validity (advisory; never counted toward status)" in text
+    assert "source opinion 201; cluster 888; status not_assessed" in text
+
+
+def test_citator_text_renders_advisory_source_validity_reason():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    status="invalid",
+                    reason="source was overruled by Later v. Secretary",
+                    precedence="authoritative",
+                    withheld=False,
+                    history_complete=True,
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert (
+        "source opinion 201; cluster 888; status invalid; "
+        "source was overruled by Later v. Secretary" in text
+    )
+
+
+def test_citator_text_renders_source_validity_enforcement_actions():
+    check = _check().model_copy(
+        update={
+            "status": "unknown",
+            "source_validity_enforced": True,
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    status="precedence_defect",
+                    reason="source court is lower than the target court",
+                    precedence="persuasive",
+                    withheld=True,
+                )
+            ],
+            "source_validity_actions": [
+                "source 201 withheld from enforcement (precedence_defect)"
+            ],
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "Source validity (enforcement enabled;" in text
+    assert "status precedence_defect; withheld" in text
+    assert "Source-validity enforcement actions:" in text
+    assert "source 201 withheld from enforcement" in text
+
+
 def test_citator_text_renders_prioritized_authority_queue():
     from va_legal_agent.models import AuthorityQueueEntry
 
@@ -468,6 +679,73 @@ def test_citator_text_renders_prioritized_authority_queue():
     assert "authority tier 2; precedential" in text
 
 
+def test_citator_text_renders_queue_demotion_provenance():
+    from va_legal_agent.models import AuthorityQueueEntry, NegativeTreatment
+
+    finding = NegativeTreatment(
+        citing_case="Later v. McDonough",
+        citing_citation="35 Vet.App. 10",
+        citing_date="2023-04-05",
+        treatment="overruled",
+        excerpt="Later v. McDonough overruled the earlier decision.",
+    )
+    analysis = _analysis(_check())
+    analysis.authority_queue = [
+        AuthorityQueueEntry(
+            priority=1,
+            base_priority=2,
+            case_title="Smith v. Wilkie",
+            citation="30 Vet.App. 123",
+            eligible=True,
+            citator_status="negative",
+            citator_demoted=True,
+            citator_reasons=[
+                "citator demotion: overruled by Later v. McDonough "
+                "(2023-04-05); excerpt: \"Later v. McDonough overruled "
+                "the earlier decision.\""
+            ],
+            citator_findings=[finding],
+        )
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "[citator: demoted]" in text
+    assert "citator: citator demotion: overruled by Later v. McDonough" in text
+    assert finding.excerpt in text
+
+
+def test_citator_text_renders_queue_flag_and_clean_status():
+    from va_legal_agent.models import AuthorityQueueEntry
+
+    analysis = _analysis(_check())
+    analysis.authority_queue = [
+        AuthorityQueueEntry(
+            priority=1,
+            case_title="Flagged",
+            eligible=True,
+            citator_status="unknown",
+            citator_flagged=True,
+            citator_reasons=[
+                "citator review flag: coverage gap [review_cap]: unread opinion"
+            ],
+        ),
+        AuthorityQueueEntry(
+            priority=2,
+            case_title="Clean",
+            eligible=True,
+            citator_status="good_law",
+        ),
+    ]
+
+    text = render_analysis(analysis, "text")
+
+    assert "Flagged (no citation; court unknown)" in text
+    assert "[citator: flagged]" in text
+    assert "citator: citator review flag: coverage gap [review_cap]" in text
+    assert "[citator: good_law]" in text
+
+
 def test_citator_csv_carries_authority_queue():
     from va_legal_agent.models import AuthorityQueueEntry
 
@@ -480,4 +758,6 @@ def test_citator_csv_carries_authority_queue():
     queue = json.loads(rows[0]["authority_queue"])
 
     assert queue[0]["priority"] == 1
+    assert queue[0]["base_priority"] == 0
     assert queue[0]["case_title"] == "Smith v. Wilkie"
+    assert queue[0]["citator_demoted"] is False

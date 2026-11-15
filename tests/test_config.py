@@ -11,8 +11,10 @@ from va_legal_agent.config import (
     MAX_ENV_FLOAT_SECONDS,
     Settings,
     env_bool,
+    env_choice,
     env_float,
     env_int,
+    env_iso_date,
     get_settings,
 )
 
@@ -55,6 +57,9 @@ _ENV_VARS = (
     "CITATOR_MAX_CASES",
     "CITATOR_MAX_CITING_OPINIONS",
     "CITATOR_MAX_PAGES",
+    "CITATOR_AS_OF_DATE",
+    "CITATOR_SOURCE_VALIDITY",
+    "CITATOR_SOURCE_VALIDITY_MODE",
     "ENRICH_CASE_LIMIT",
     "INTERPRET_CASE_LIMIT",
     "PRINCIPLE_SCAN_LIMIT",
@@ -188,6 +193,20 @@ def test_env_bool_falls_back_to_default(monkeypatch):
     assert env_bool("SOME_BOOL", False) is False
 
 
+def test_env_choice_accepts_valid_value_case_insensitively(monkeypatch):
+    monkeypatch.setenv("SOME_CHOICE", " ADVISORY ")
+    assert env_choice("SOME_CHOICE", "extract", {"extract", "advisory"}) == "advisory"
+
+
+def test_env_choice_falls_back_for_unknown_value(monkeypatch, caplog):
+    monkeypatch.setenv("SOME_CHOICE", "unsupported")
+
+    with caplog.at_level("WARNING"):
+        assert env_choice("SOME_CHOICE", "extract", {"extract", "advisory"}) == "extract"
+
+    assert "using default" in caplog.text
+
+
 def test_settings_defaults(monkeypatch):
     for var in _ENV_VARS:
         monkeypatch.delenv(var, raising=False)
@@ -227,6 +246,9 @@ def test_settings_defaults(monkeypatch):
     assert settings.citator_max_cases == 10
     assert settings.citator_max_citing_opinions == 5
     assert settings.citator_max_pages == 1
+    assert settings.citator_as_of_date == ""
+    assert settings.citator_source_validity is False
+    assert settings.citator_source_validity_mode == "extract"
     assert settings.enrich_case_limit == 5
     assert settings.interpret_case_limit == 3
     assert settings.principle_scan_limit == 5
@@ -288,6 +310,9 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("CITATOR_MAX_CASES", "2")
     monkeypatch.setenv("CITATOR_MAX_CITING_OPINIONS", "7")
     monkeypatch.setenv("CITATOR_MAX_PAGES", "3")
+    monkeypatch.setenv("CITATOR_AS_OF_DATE", "2021-03-04")
+    monkeypatch.setenv("CITATOR_SOURCE_VALIDITY", "1")
+    monkeypatch.setenv("CITATOR_SOURCE_VALIDITY_MODE", "enforce")
     monkeypatch.setenv("ENRICH_CASE_LIMIT", "4")
     monkeypatch.setenv("INTERPRET_CASE_LIMIT", "7")
     monkeypatch.setenv("PRINCIPLE_SCAN_LIMIT", "9")
@@ -336,6 +361,9 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.citator_max_cases == 2
     assert settings.citator_max_citing_opinions == 7
     assert settings.citator_max_pages == 3
+    assert settings.citator_as_of_date == "2021-03-04"
+    assert settings.citator_source_validity is True
+    assert settings.citator_source_validity_mode == "enforce"
     assert settings.enrich_case_limit == 4
     assert settings.interpret_case_limit == 7
     assert settings.principle_scan_limit == 9
@@ -350,6 +378,19 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.deep_read_limit == 5
     assert settings.deep_read_pages == 0
     assert settings.deep_chunk_chars == 4000
+
+
+def test_env_iso_date_normalizes_valid_values_and_falls_back_on_garbage(
+    monkeypatch,
+):
+    monkeypatch.delenv("SOME_DATE", raising=False)
+    assert env_iso_date("SOME_DATE") == ""
+
+    monkeypatch.setenv("SOME_DATE", "2021-03-04")
+    assert env_iso_date("SOME_DATE") == "2021-03-04"
+
+    monkeypatch.setenv("SOME_DATE", "03/04/2021")
+    assert env_iso_date("SOME_DATE", "2020-01-01") == "2020-01-01"
 
 
 def test_env_provider_int_map_skips_malformed_entries(monkeypatch):
@@ -400,7 +441,15 @@ def _env_vars_read_in(tree: ast.Module) -> set[str]:
         fn = node.func
         is_helper = (
             isinstance(fn, ast.Name)
-            and fn.id in {"env_int", "env_float", "env_bool", "_env_int"}
+            and fn.id
+            in {
+                "env_int",
+                "env_float",
+                "env_bool",
+                "env_iso_date",
+                "env_choice",
+                "_env_int",
+            }
         )
         is_getenv = (
             isinstance(fn, ast.Attribute)

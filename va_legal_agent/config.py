@@ -7,6 +7,7 @@ import math
 import os
 import tempfile
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,25 @@ def env_float(
     return value
 
 
+def env_iso_date(name: str, default: str = "") -> str:
+    """Read an optional ISO date, falling back to *default* when invalid.
+
+    The returned value is normalized to ``YYYY-MM-DD`` so later string and
+    ``date`` comparisons cannot disagree about formatting. Garbage is logged
+    and replaced with the default rather than crashing the run at import time.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        logger.warning(
+            "%s=%r is not an ISO date; using default %r.", name, raw, default
+        )
+        return default
+
+
 def env_bool(name: str, default: bool) -> bool:
     """Read a boolean flag from the environment, falling back to *default*.
 
@@ -148,6 +168,27 @@ def env_bool(name: str, default: bool) -> bool:
         return True
     if raw in {"0", "false", "no", "off"}:
         return False
+    return default
+
+
+def env_choice(name: str, default: str, choices: set[str]) -> str:
+    """Read a lower-case choice from the environment, falling back safely.
+
+    Unknown values are logged and replaced with *default* rather than
+    silently enabling an unsupported behavior.
+    """
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in choices:
+        return raw
+    logger.warning(
+        "%s=%r is not one of %s; using default %r.",
+        name,
+        raw,
+        sorted(choices),
+        default,
+    )
     return default
 
 
@@ -290,6 +331,23 @@ class Settings:
     # Pagination is sized and stopped adaptively around the citing-opinion cap;
     # any remaining pages are reported as incomplete coverage.
     citator_max_pages: int = 1
+    # Optional inclusive decision-date cutoff for the citator. Only citing
+    # opinions dated on or before this value affect status and coverage.
+    # Later opinions and their treatment are reported separately. Empty
+    # disables the cutoff and keeps the ordinary forward-citation review.
+    citator_as_of_date: str = ""
+    # Opt-in source-validity signals. Findings always keep stable identifiers
+    # for the source (citing) opinion; when enabled, each check also gets a
+    # source_validity list. The default mode only extracts identifiers and
+    # makes no new requests; advisory mode adds bounded validation without
+    # changing status, ranking, or queue order. Enforce mode additionally
+    # applies conservative withholding. Off by default.
+    citator_source_validity: bool = False
+    # Source-validity mode: ``extract`` keeps the lookup-free identifier list;
+    # ``advisory`` adds one-hop source validation without changing status or
+    # queue behavior; ``enforce`` additionally withholds non-authoritative
+    # sources and recomputes status conservatively.
+    citator_source_validity_mode: str = "extract"
     # Optional JSON file of human-verified appellate-history records. The
     # citator still emits candidate signals without it, but no history label
     # is exposed until a record with an authoritative source and reviewer is
@@ -467,6 +525,17 @@ class Settings:
                 d.citator_max_pages,
                 min_value=1,
                 max_value=10,
+            ),
+            citator_as_of_date=env_iso_date(
+                "CITATOR_AS_OF_DATE", d.citator_as_of_date
+            ),
+            citator_source_validity=env_bool(
+                "CITATOR_SOURCE_VALIDITY", d.citator_source_validity
+            ),
+            citator_source_validity_mode=env_choice(
+                "CITATOR_SOURCE_VALIDITY_MODE",
+                d.citator_source_validity_mode,
+                {"extract", "advisory", "enforce"},
             ),
             appellate_history_file=os.getenv(
                 "APPELLATE_HISTORY_FILE", d.appellate_history_file

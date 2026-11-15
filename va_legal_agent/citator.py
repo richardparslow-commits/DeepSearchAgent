@@ -34,8 +34,8 @@ reads. Every unread candidate or page remains an explicit coverage gap.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, urlsplit
 
 from .appellate_history import build_appellate_history
@@ -51,6 +51,7 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    SourceValiditySignal,
     TreatmentTimelineEntry,
 )
 from .providers import (
@@ -74,6 +75,45 @@ _CITING_PRIORITY_POOL_MIN = 20
 _CITING_PRIORITY_POOL_FACTOR = 4
 _CITING_PRIORITY_POOL_MAX = 100
 
+# Source validation is advisory and deliberately bounded. A source is only a
+# provenance check for one finding, so it gets a much smaller history budget
+# than a target case. The cap is also the point at which the result becomes
+# unverified rather than claiming the source is valid.
+_SOURCE_HISTORY_MAX_CITING = 3
+_SOURCE_HISTORY_MAX_PAGES = 1
+_SOURCE_INVALIDATING_TREATMENTS = frozenset(
+    {"overruled", "abrogated", "superseded", "vacated"}
+)
+
+# Deterministic confidence deductions. The score is a review-quality signal,
+# not a statistical probability: it starts at 1.0 and subtracts known ways the
+# review can be incomplete or misattributed. Status and good_law_as_of are
+# computed separately and never consume this score.
+_CONFIDENCE_GAP_PENALTIES = {
+    "citing_opinion_cap": 0.15,
+    "citing_date_missing": 0.15,
+    "page_cap": 0.15,
+    "count_mismatch": 0.20,
+    "no_forward_citations": 0.20,
+    "pagination_cursor_missing": 0.20,
+    "pagination_cursor_repeated": 0.20,
+    "cluster_unresolved": 0.25,
+    "citing_metadata_unavailable": 0.25,
+    "citing_text_empty": 0.25,
+    "no_usable_citing_ids": 0.25,
+    "target_not_located": 0.25,
+    "citing_metadata_fetch_failed": 0.30,
+    "citing_text_fetch_failed": 0.30,
+    "forward_fetch_failed": 0.35,
+}
+_CONFIDENCE_DEFAULT_GAP_PENALTY = 0.10
+_CONFIDENCE_MAX_GAP_PENALTY = 0.75
+_CONFIDENCE_AMBIGUOUS_PENALTY = 0.10
+_CONFIDENCE_MAX_AMBIGUOUS_PENALTY = 0.30
+_METADATA_GAP_CODES = frozenset(
+    {"citing_metadata_unavailable", "citing_metadata_fetch_failed"}
+)
+
 # Terms CourtListener does not label for us. Keep this list limited to
 # explicit negative verbs; "distinguished" is intentionally absent because it
 # is not necessarily negative treatment.
@@ -81,6 +121,7 @@ _NEGATIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\boverrul(?:e|ed|es|ing)\b", re.I), "overruled"),
     (re.compile(r"\babrogat(?:e|ed|es|ing)\b", re.I), "abrogated"),
     (re.compile(r"\bsupersed(?:e|ed|es|ing)\b", re.I), "superseded"),
+    (re.compile(r"\bvacat(?:e|ed|es|ing)\b", re.I), "vacated"),
     (re.compile(r"\bquestion(?:s|ed|ing)?\b", re.I), "questioned"),
     (re.compile(r"\bcriticiz(?:e|ed|es|ing)\b", re.I), "criticized"),
     (re.compile(r"\blimit(?:ed|s|ing)?\b", re.I), "limited"),
@@ -110,6 +151,62 @@ _CITATION_RE = re.compile(
 _CASE_NAME_RE = re.compile(
     r"\b[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}\s+v\.\s+"
     r"[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}"
+)
+# A short-form case name is only a candidate for a party's first distinctive
+# capitalized word. Skip ordinary legal and institutional words so a target
+# such as "State v. Smith" does not make "State" a target alias.
+_SHORT_NAME_STOPWORDS = frozenset(
+    {
+        "affairs",
+        "animal",
+        "american",
+        "association",
+        "board",
+        "casualty",
+        "center",
+        "city",
+        "coalition",
+        "commission",
+        "committee",
+        "company",
+        "corporation",
+        "council",
+        "county",
+        "defense",
+        "department",
+        "district",
+        "federal",
+        "general",
+        "government",
+        "group",
+        "health",
+        "inc",
+        "institute",
+        "insurance",
+        "legal",
+        "life",
+        "llc",
+        "ltd",
+        "national",
+        "natural",
+        "office",
+        "planned",
+        "public",
+        "school",
+        "secretary",
+        "service",
+        "services",
+        "society",
+        "state",
+        "states",
+        "the",
+        "union",
+        "united",
+        "university",
+        "veteran",
+        "veterans",
+        "welfare",
+    }
 )
 _ATTRIBUTION_NOUNS = (
     r"(?:argument|assertion|contention|position|views?|claim|notion|theory|"
@@ -174,11 +271,16 @@ _REPORTED_ATTRIBUTION_RE = re.compile(
 )
 _CLAUSE_BOUNDARY_RE = re.compile(
     r";|:|\s+[—–-]\s+|(?:,\s*|\s+)(?:but|yet|while|whereas|although|though|"
-    r"however|because|since|after|before|when|where|unless|until|which)\b"
+    r"however|because|since|after|before|when|where|unless|until|which|so)\b"
     r"|,\s*and\b",
     re.I,
 )
 _INTERPOSED_ARGUMENT_RE = re.compile(_ATTRIBUTION_FRAME, re.I)
+_PASSIVE_TARGET_RE = re.compile(
+    r"\s*,?\s*(?:was|were|is|are|has\s+been|have\s+been)\s+"
+    r"(?:\w+\s+){0,2}$",
+    re.I,
+)
 
 # Periods after these tokens are not sentence boundaries. This matters for
 # reporter citations ("30 Vet.App. 123"), party names ("U.S."), and the
@@ -224,6 +326,9 @@ class TreatmentMatch:
     excerpt: str
     scope: str
     confidence: str
+    attribution_basis: str = "citation"
+    attribution_ambiguous: bool = False
+    attribution_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -254,9 +359,53 @@ class _CitingCandidate:
     source_index: int
 
 
+@dataclass(frozen=True)
+class _SourceAudit:
+    """Raw, target-independent result of one source-history review."""
+
+    source_cluster_id: str = ""
+    metadata: dict[str, object] | None = None
+    validity_status: str = "unverified"
+    reason: str = ""
+    history_complete: bool = False
+
+
+@dataclass
+class _SourceValidationCache:
+    """Run-scoped cache for source audits, shared by citator checks."""
+
+    audits: dict[tuple[int, str], _SourceAudit] = field(default_factory=dict)
+
+
 def _checked_at() -> str:
     """Return a stable UTC timestamp for a citator check."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _normalize_as_of_date(value: str | None) -> str:
+    """Validate and normalize an optional inclusive as-of cutoff."""
+    if value is None:
+        return ""
+    normalized = str(value).strip()
+    if not normalized:
+        return ""
+    try:
+        return date.fromisoformat(normalized).isoformat()
+    except ValueError as exc:
+        raise ValueError(
+            "as_of_date must be an ISO date in YYYY-MM-DD form."
+        ) from exc
+
+
+def _candidate_date_relation(value: str, cutoff: date) -> str:
+    """Classify a citing date relative to an inclusive as-of cutoff."""
+    if not value:
+        return "undated"
+    try:
+        parsed = date.fromisoformat(value[:10])
+    except ValueError:
+        return "undated"
+    return "in_scope" if parsed <= cutoff else "post_as_of"
 
 
 def _safe_int(value: object) -> int:
@@ -297,8 +446,13 @@ def _temporal_confidence(
     reviewed: int,
     latest: str,
     gaps: list[CitatorCoverageGap],
+    excluded_undated: bool = False,
 ) -> tuple[str, str]:
-    """Describe how strongly the reviewed citation dates bound the check."""
+    """Describe how strongly the reviewed citation dates bound the check.
+
+    ``excluded_undated`` distinguishes an as-of check, where an opinion with
+    no usable date is excluded rather than reviewed, from the ordinary path.
+    """
     if reviewed == 0:
         return (
             "none",
@@ -310,6 +464,13 @@ def _temporal_confidence(
             "No reviewed citing opinion had a usable decision date.",
         )
     if any(gap.code == "citing_date_missing" for gap in gaps):
+        if excluded_undated:
+            return (
+                "low",
+                f"Latest reviewed citing opinion is {latest}, but at least one "
+                "citing opinion was excluded from the as-of result because it "
+                "has no usable decision date.",
+            )
         return (
             "low",
             f"Latest reviewed citing opinion is {latest}, but at least one "
@@ -326,6 +487,87 @@ def _temporal_confidence(
         f"Latest reviewed citing opinion is {latest}; coverage is incomplete, "
         "so later citing opinions may exist.",
     )
+
+
+def _confidence_assessment(
+    *,
+    reviewed: int,
+    complete: bool,
+    gaps: list[CitatorCoverageGap],
+    ambiguous_findings: list[NegativeTreatment],
+) -> tuple[float, str, str, bool, list[str]]:
+    """Return score, level, reason, review flag, and explicit review reasons.
+
+    The score is penalty-based rather than statistical: complete, explicit
+    coverage starts at 1.0 and known coverage, metadata, or attribution
+    problems reduce it. It is intentionally independent of the status rule.
+    """
+    review_reasons: list[str] = []
+    gap_penalty = 0.0
+    metadata_failures = 0
+    for gap in gaps:
+        if gap.code in _METADATA_GAP_CODES:
+            metadata_failures += 1
+            review_reasons.append(
+                f"metadata failure [{gap.code}]: {gap.detail}"
+            )
+        else:
+            review_reasons.append(f"coverage gap [{gap.code}]: {gap.detail}")
+        gap_penalty += _CONFIDENCE_GAP_PENALTIES.get(
+            gap.code, _CONFIDENCE_DEFAULT_GAP_PENALTY
+        )
+    gap_penalty = min(gap_penalty, _CONFIDENCE_MAX_GAP_PENALTY)
+
+    ambiguous: list[NegativeTreatment] = []
+    for finding in ambiguous_findings:
+        if not finding.attribution_ambiguous:
+            continue
+        ambiguous.append(finding)
+        review_reasons.append(
+            f"ambiguous attribution [{finding.treatment} by "
+            f"{finding.citing_case or 'unknown citing opinion'}]: "
+            f"{finding.attribution_reason or 'attribution is not explicit'}: "
+            f"\"{finding.excerpt}\""
+        )
+
+    ambiguous_penalty = min(
+        len(ambiguous) * _CONFIDENCE_AMBIGUOUS_PENALTY,
+        _CONFIDENCE_MAX_AMBIGUOUS_PENALTY,
+    )
+    if reviewed == 0:
+        return (
+            0.0,
+            "none",
+            "No citing opinion was reviewed, so the check cannot support a "
+            "confidence score.",
+            bool(review_reasons),
+            review_reasons,
+        )
+
+    score = round(
+        max(0.0, 1.0 - gap_penalty - ambiguous_penalty),
+        2,
+    )
+    if complete and not review_reasons:
+        level = "high"
+    elif score >= 0.60:
+        level = "medium"
+    else:
+        level = "low"
+
+    coverage_count = len(gaps)
+    if not review_reasons:
+        reason = (
+            "Complete coverage with explicit attribution and no metadata "
+            "failures."
+        )
+    else:
+        reason = (
+            f"Penalty-based score {score:.2f}: {coverage_count} coverage "
+            f"gap(s), including {metadata_failures} metadata failure(s), and "
+            f"{len(ambiguous)} ambiguous attribution(s)."
+        )
+    return score, level, reason, bool(review_reasons), review_reasons
 
 
 def _normalize_citation(value: object) -> str:
@@ -716,14 +958,72 @@ def _phrase_spans(text: str, phrase: str) -> list[tuple[int, int]]:
     return [(match.start(), match.end()) for match in pattern.finditer(text)]
 
 
-def _target_spans(
-    text: str, target_title: str, target_citations: str | tuple[str, ...]
+def _target_short_names(title: str) -> tuple[str, ...]:
+    """Return conservative short-form aliases for a case title.
+
+    Only the first distinctive word of each party is eligible. This captures
+    the usual reporter style ("Roe," "Casey," "Chevron," "AMA") without
+    treating a generic institutional word as a case-name alias.
+    """
+    cleaned = " ".join(title.replace("’", "'").split())
+    parties = re.split(r"\s+v\.?\s+", cleaned, maxsplit=1, flags=re.I)
+    names: list[str] = []
+    for party in parties:
+        party = re.sub(r"^(?:the)\s+", "", party, flags=re.I)
+        words = re.findall(r"[A-Z][A-Za-z'.-]*", party)
+        if not words:
+            continue
+        candidate = words[0].strip(".,")
+        if len(candidate) < 3:
+            continue
+        if candidate.casefold() in _SHORT_NAME_STOPWORDS:
+            continue
+        names.append(candidate)
+    return tuple(dict.fromkeys(names))
+
+
+def _short_name_spans(
+    text: str, short_names: tuple[str, ...]
 ) -> list[tuple[int, int]]:
-    """Find any parallel citation or case-name span for the target in *text*."""
-    citations = (target_citations,) if isinstance(target_citations, str) else target_citations
+    """Find case-sensitive whole-word spans for conservative short names."""
     spans: set[tuple[int, int]] = set()
-    for phrase in (*citations, target_title):
-        spans.update(_phrase_spans(text, phrase))
+    for name in short_names:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){re.escape(name)}(?![A-Za-z0-9])"
+        )
+        spans.update((match.start(), match.end()) for match in pattern.finditer(text))
+    return sorted(spans)
+
+
+def _matching_citation_spans(
+    text: str, target_citations: tuple[str, ...]
+) -> list[tuple[int, int]]:
+    """Find target citations, tolerating reporter spacing such as ``U. S.``."""
+    target_keys = {
+        _normalize_citation(citation)
+        for citation in target_citations
+        if citation
+    }
+    spans: set[tuple[int, int]] = set()
+    for match in _CITATION_RE.finditer(text):
+        if _normalize_citation(match.group(0)) in target_keys:
+            spans.add((match.start(), match.end()))
+    for citation in target_citations:
+        spans.update(_phrase_spans(text, citation))
+    return sorted(spans)
+
+
+def _target_spans(
+    text: str,
+    target_title: str,
+    target_citations: str | tuple[str, ...],
+    target_short_names: tuple[str, ...] = (),
+) -> list[tuple[int, int]]:
+    """Find any parallel citation, case-name, or short-name target span."""
+    citations = (target_citations,) if isinstance(target_citations, str) else target_citations
+    spans = set(_matching_citation_spans(text, citations))
+    spans.update(_phrase_spans(text, target_title))
+    spans.update(_short_name_spans(text, target_short_names))
     return sorted(spans)
 
 
@@ -790,33 +1090,35 @@ def _attribution_rejects(
     )
 
 
-def _binds_to_target(
+def _target_binding(
     sentence: str,
     verb: tuple[int, int],
     target_title: str,
     target_citations: tuple[str, ...],
-) -> bool:
-    """Whether *verb* is bound to the target rather than a competing case."""
+    target_short_names: tuple[str, ...] = (),
+) -> tuple[bool, str, tuple[int, int] | None]:
+    """Whether *verb* binds to the target, and the basis for that match.
+
+    Returns ``(bound, basis, target_span)``. ``basis`` is ``citation`` for an
+    explicit reporter-citation match, ``case_name`` for a bare full-name match,
+    ``short_name`` for a conservative short-form match, and an empty string
+    when no binding was established.
+    """
     citation_spans = [
         (match.start(), match.end()) for match in _CITATION_RE.finditer(sentence)
     ]
-    target_keys = {
-        _normalize_citation(citation)
-        for citation in target_citations
-        if citation
-    }
-    target_citation_spans = [
-        span
-        for span in citation_spans
-        if _normalize_citation(sentence[span[0] : span[1]]) in target_keys
-    ]
-    for citation in target_citations:
-        target_citation_spans.extend(_phrase_spans(sentence, citation))
-    target_citation_spans = sorted(set(target_citation_spans))
+    target_citation_spans = _matching_citation_spans(
+        sentence, tuple(target_citations)
+    )
     target_title_spans = _phrase_spans(sentence, target_title)
-    target_references = [*target_citation_spans, *target_title_spans]
+    target_short_spans = _short_name_spans(sentence, target_short_names)
+    target_references = [
+        *target_citation_spans,
+        *target_title_spans,
+        *target_short_spans,
+    ]
     if not target_references:
-        return False
+        return False, "", None
 
     clause_start, clause_end = _clause_bounds(sentence, verb[0])
     citations_in_clause = _spans_within(citation_spans, clause_start, clause_end)
@@ -826,23 +1128,39 @@ def _binds_to_target(
     target_titles_in_clause = _spans_within(
         target_title_spans, clause_start, clause_end
     )
+    target_short_in_clause = _spans_within(
+        target_short_spans, clause_start, clause_end
+    )
     if target_citations_in_clause:
         target_span = min(
             target_citations_in_clause,
             key=lambda span: _span_distance(verb, span),
         )
+        basis = "citation"
     elif target_titles_in_clause:
         # A bare case name is usable only when no different reporter citation
         # appears in the same clause. This rejects same-name/different-citation
         # sentences before they can become treatment findings.
         if citations_in_clause:
-            return False
+            return False, "", None
         target_span = min(
             target_titles_in_clause,
             key=lambda span: _span_distance(verb, span),
         )
+        basis = "case_name"
+    elif target_short_in_clause:
+        # A short name is usable only when the clause does not contain a
+        # different reporter citation. A competing full case name is handled
+        # by the same-side competitor check below.
+        if citations_in_clause:
+            return False, "", None
+        target_span = min(
+            target_short_in_clause,
+            key=lambda span: _span_distance(verb, span),
+        )
+        basis = "short_name"
     else:
-        return False
+        return False, "", None
 
     case_name_spans = [
         (match.start(), match.end()) for match in _CASE_NAME_RE.finditer(sentence)
@@ -868,14 +1186,16 @@ def _binds_to_target(
     competitor_distance = _nearest_distance(verb, competitors_in_clause)
     target_distance = _span_distance(verb, target_span)
     if competitor_distance is not None and competitor_distance < target_distance:
-        return False
+        return False, "", None
 
     between = (
         sentence[verb[1] : target_span[0]]
         if target_span[0] >= verb[1]
         else sentence[target_span[1] : verb[0]]
     )
-    return not _INTERPOSED_ARGUMENT_RE.search(between)
+    if _INTERPOSED_ARGUMENT_RE.search(between):
+        return False, "", None
+    return True, basis, target_span
 
 
 def _is_abbreviation(text: str, position: int) -> bool:
@@ -916,6 +1236,22 @@ def _is_negated(sentence: str, term_start: int) -> bool:
     )
 
 
+def _is_non_verb_negative(
+    treatment: str, phrase: str, sentence: str, verb_end: int
+) -> bool:
+    """Whether a matched negative term is a noun or adjective, not a verb."""
+    lowered = phrase.casefold()
+    if treatment == "questioned" and lowered in {"question", "questions"}:
+        return True
+    if treatment == "limited" and re.match(
+        r"\s+to\s+(?:the\s+)?(?:question|issue|extent|scope|whether)\b",
+        sentence[verb_end:],
+        re.I,
+    ):
+        return True
+    return False
+
+
 def _scope_for(treatment: str, sentence: str) -> str:
     """Classify the scope stated for a negative treatment."""
     if re.search(r"\bin part\b", sentence, re.I):
@@ -924,6 +1260,7 @@ def _scope_for(treatment: str, sentence: str) -> str:
         "overruled",
         "abrogated",
         "superseded",
+        "vacated",
         "reaffirmed",
         "adhered to",
         "declined to overrule",
@@ -1019,6 +1356,7 @@ def _extract_treatment_matches(
     patterns: tuple[tuple[re.Pattern[str], str], ...],
     *,
     opinion_role: str,
+    target_short_names: tuple[str, ...] = (),
 ) -> list[TreatmentMatch]:
     """Return target-bound treatment sentences for the supplied patterns."""
     citations = (
@@ -1045,20 +1383,58 @@ def _extract_treatment_matches(
                 continue
             if _is_negated(sentence, verb_start):
                 continue
-            if not _binds_to_target(
-                sentence, (verb_start, verb_end), target_title, citations
+            if _is_non_verb_negative(
+                treatment, match.group(0), sentence, verb_end
             ):
+                continue
+            bound, attribution_basis, target_span = _target_binding(
+                sentence,
+                (verb_start, verb_end),
+                target_title,
+                citations,
+                target_short_names,
+            )
+            if not bound:
                 continue
             key = (treatment, sentence)
             if key in seen:
                 continue
             seen.add(key)
+            attribution_reasons: list[str] = []
+            if attribution_basis == "case_name":
+                attribution_reasons.append(
+                    "target matched by case name only, without a reporter "
+                    "citation"
+                )
+            elif attribution_basis == "short_name":
+                attribution_reasons.append(
+                    "target matched by short name only, without a full case "
+                    "name or reporter citation"
+                )
+            if (
+                target_span is not None
+                and target_span[1] <= verb_start
+                and _PASSIVE_TARGET_RE.fullmatch(
+                    sentence[target_span[1] : verb_start]
+                )
+            ):
+                attribution_reasons.append(
+                    "passive treatment verb has no explicit actor"
+                )
             findings.append(
                 TreatmentMatch(
                     treatment=treatment,
                     excerpt=sentence,
                     scope=_scope_for(treatment, sentence),
-                    confidence="medium" if treatment == "limited" else "high",
+                    confidence=(
+                        "medium"
+                        if treatment == "limited"
+                        or attribution_basis == "short_name"
+                        else "high"
+                    ),
+                    attribution_basis=attribution_basis,
+                    attribution_ambiguous=bool(attribution_reasons),
+                    attribution_reason="; ".join(attribution_reasons),
                 )
             )
     return findings
@@ -1070,19 +1446,28 @@ def extract_negative_treatments(
     target_citations: str | tuple[str, ...],
     *,
     opinion_role: str = "majority",
+    target_short_names: tuple[str, ...] | None = None,
 ) -> list[TreatmentMatch]:
     """Return target-specific negative-treatment holdings from *text*.
 
-    The verb must bind to the target citation, or to a bare target name only
-    when no competing citation is present. For a majority opinion, treatment
-    attributed to a dissent, party argument, or hypothetical is ignored.
+    The verb must bind to the target citation, full case name, or conservative
+    short-form name. A bare name is used only when no competing citation is
+    present, and short-form attribution is flagged for review. For a majority
+    opinion, treatment attributed to a dissent, party argument, or hypothetical
+    is ignored.
     """
+    short_names = (
+        _target_short_names(target_title)
+        if target_short_names is None
+        else target_short_names
+    )
     return _extract_treatment_matches(
         text,
         target_title,
         target_citations,
         _NEGATIVE_PATTERNS,
         opinion_role=opinion_role,
+        target_short_names=short_names,
     )
 
 
@@ -1092,29 +1477,41 @@ def extract_reaffirmance_signals(
     target_citations: str | tuple[str, ...],
     *,
     opinion_role: str = "majority",
+    target_short_names: tuple[str, ...] | None = None,
 ) -> list[TreatmentMatch]:
     """Return target-specific reaffirmance signals from *text*.
 
     These signals are advisory and never clear an authoritative negative
     finding. They use the same target-binding and attribution rules as
-    negative-treatment extraction.
+    negative-treatment extraction, including conservative short-name matches.
     """
+    short_names = (
+        _target_short_names(target_title)
+        if target_short_names is None
+        else target_short_names
+    )
     return _extract_treatment_matches(
         text,
         target_title,
         target_citations,
         _REAFFIRMANCE_PATTERNS,
         opinion_role=opinion_role,
+        target_short_names=short_names,
     )
 
 
-def _binding_for(target: _Target, citing_court: str) -> bool | None:
+def _binding_for_courts(target_court: str, citing_court: str) -> bool | None:
     """Whether a citing court outranks (or matches) the target court."""
-    target_weight = AUTHORITY_WEIGHTS.get(target.case.court, 0)
+    target_weight = AUTHORITY_WEIGHTS.get(target_court, 0)
     citing_weight = AUTHORITY_WEIGHTS.get(citing_court, 0)
     if not target_weight or not citing_weight:
         return None
     return citing_weight >= target_weight
+
+
+def _binding_for(target: _Target, citing_court: str) -> bool | None:
+    """Whether a citing court outranks (or matches) the target court."""
+    return _binding_for_courts(target.case.court, citing_court)
 
 
 def _binding_class(value: bool | None) -> str:
@@ -1140,6 +1537,8 @@ def _timeline_entry(
         citing_court=finding.citing_court,
         citing_date=finding.citing_date,
         citing_url=finding.citing_url,
+        source_opinion_id=finding.source_opinion_id,
+        source_cluster_id=finding.source_cluster_id,
         binding=finding.binding,
         binding_class=_binding_class(finding.binding),
         authoritative=finding.authoritative,
@@ -1149,6 +1548,33 @@ def _timeline_entry(
         precedential_tier=finding.precedential_tier,
         gate_reason=finding.gate_reason,
     )
+
+
+def _source_validity_signals(
+    findings: list[NegativeTreatment],
+) -> list[SourceValiditySignal]:
+    """Extract stable source identifiers without assessing validity.
+
+    This is deliberately schema-only: it performs no lookups and returns
+    ``status="not_assessed"`` for every distinct source opinion. Production
+    callers enable it through ``CITATOR_SOURCE_VALIDITY``; the result is never
+    used in status, coverage, ranking, or queue calculations.
+    """
+    signals: list[SourceValiditySignal] = []
+    seen: set[str] = set()
+    for finding in findings:
+        if not finding.source_opinion_id:
+            continue
+        if finding.source_opinion_id in seen:
+            continue
+        seen.add(finding.source_opinion_id)
+        signals.append(
+            SourceValiditySignal(
+                source_opinion_id=finding.source_opinion_id,
+                source_cluster_id=finding.source_cluster_id,
+            )
+        )
+    return signals
 
 
 def _batch_citing_metadata(
@@ -1238,11 +1664,40 @@ def _load_citing_candidates(
     return candidates, flags, gaps
 
 
-def _review_citing_opinions(
+def _citing_summary(
+    opinion_id: int, metadata: dict[str, object]
+) -> LaterCitingOpinion:
+    """Build the advisory summary and authority gate for one citing opinion."""
+    opinion_type = str(metadata.get("opinion_type") or "")
+    precedential_status = str(metadata.get("precedential_status") or "")
+    opinion_role, precedential_tier, eligible, gate_reason = _authority_gate(
+        opinion_type, precedential_status
+    )
+    return LaterCitingOpinion(
+        case_name=str(metadata.get("title") or f"Opinion {opinion_id}"),
+        citation=str(metadata.get("citation") or ""),
+        court=str(metadata.get("court") or ""),
+        decision_date=str(metadata.get("decision_date") or ""),
+        url=str(metadata.get("url") or ""),
+        opinion_id=str(opinion_id),
+        cluster_id=str(metadata.get("cluster_id") or ""),
+        opinion_type=opinion_type,
+        opinion_role=opinion_role,
+        precedential_status=precedential_status,
+        precedential_tier=precedential_tier,
+        treatment_eligible=eligible,
+        gate_reason=gate_reason,
+    )
+
+
+def _review_candidates(
     provider: CourtListenerProvider,
     target: _Target,
-    citing_ids: list[int],
+    candidates: list[_CitingCandidate],
     max_citing: int,
+    *,
+    source_ids: list[int],
+    total_citing: int,
 ) -> tuple[
     list[NegativeTreatment],
     list[NegativeTreatment],
@@ -1254,20 +1709,16 @@ def _review_citing_opinions(
     list[TreatmentTimelineEntry],
     bool,
 ]:
-    """Read capped citing opinions and collect gated and authoritative signals."""
+    """Read one capped temporal bucket and collect its treatment signals."""
     treatments: list[NegativeTreatment] = []
     gated: list[NegativeTreatment] = []
-    later_citing: list[LaterCitingOpinion] = []
+    reviewed_citing: list[LaterCitingOpinion] = []
     timeline: list[TreatmentTimelineEntry] = []
     reviewed = 0
     latest = ""
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
-    candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
-        provider, citing_ids
-    )
-    flags.extend(candidate_flags)
-    gaps.extend(candidate_gaps)
+    short_names = _target_short_names(target.case_name)
     for candidate in candidates:
         if reviewed >= max_citing:
             break
@@ -1287,7 +1738,9 @@ def _review_citing_opinions(
             flags.append(detail)
             gaps.append(_coverage_gap("citing_text_empty", detail))
             continue
-        if not _target_spans(text, target.case_name, target.citations):
+        if not _target_spans(
+            text, target.case_name, target.citations, short_names
+        ):
             detail = (
                 f"Citator could not locate '{target.case_name}' in citing opinion "
                 f"{opinion_id}; treatment was not verified."
@@ -1296,29 +1749,16 @@ def _review_citing_opinions(
             gaps.append(_coverage_gap("target_not_located", detail))
             continue
         reviewed += 1
-        citing_date = str(metadata.get("decision_date") or "")
-        citing_court = str(metadata.get("court") or "")
-        opinion_type = str(metadata.get("opinion_type") or "")
-        precedential_status = str(metadata.get("precedential_status") or "")
-        opinion_role, precedential_tier, eligible, gate_reason = _authority_gate(
-            opinion_type, precedential_status
-        )
-        later_citing.append(
-            LaterCitingOpinion(
-                case_name=str(metadata.get("title") or f"Opinion {opinion_id}"),
-                citation=str(metadata.get("citation") or ""),
-                court=citing_court,
-                decision_date=citing_date,
-                url=str(metadata.get("url") or ""),
-                opinion_id=str(opinion_id),
-                opinion_type=opinion_type,
-                opinion_role=opinion_role,
-                precedential_status=precedential_status,
-                precedential_tier=precedential_tier,
-                treatment_eligible=eligible,
-                gate_reason=gate_reason,
-            )
-        )
+        summary = _citing_summary(opinion_id, metadata)
+        reviewed_citing.append(summary)
+        citing_date = summary.decision_date
+        citing_court = summary.court
+        opinion_type = summary.opinion_type
+        opinion_role = summary.opinion_role
+        precedential_status = summary.precedential_status
+        precedential_tier = summary.precedential_tier
+        eligible = summary.treatment_eligible
+        gate_reason = summary.gate_reason
         if not citing_date:
             detail = (
                 f"Citator could not establish a decision date for citing opinion "
@@ -1333,13 +1773,16 @@ def _review_citing_opinions(
             target.case_name,
             target.citations,
             opinion_role=opinion_role,
+            target_short_names=short_names,
         ):
             item = NegativeTreatment(
-                citing_case=str(metadata.get("title") or f"Opinion {opinion_id}"),
-                citing_citation=str(metadata.get("citation") or ""),
+                citing_case=summary.case_name,
+                citing_citation=summary.citation,
                 citing_court=citing_court,
                 citing_date=citing_date,
-                citing_url=str(metadata.get("url") or ""),
+                citing_url=summary.url,
+                source_opinion_id=summary.opinion_id,
+                source_cluster_id=summary.cluster_id,
                 treatment=finding.treatment,
                 scope=finding.scope,
                 binding=_binding_for(target, citing_court),
@@ -1350,6 +1793,9 @@ def _review_citing_opinions(
                 precedential_tier=precedential_tier,
                 authoritative=eligible,
                 gate_reason=gate_reason,
+                attribution_basis=finding.attribution_basis,
+                attribution_ambiguous=finding.attribution_ambiguous,
+                attribution_reason=finding.attribution_reason,
                 excerpt=finding.excerpt,
             )
             if eligible:
@@ -1362,15 +1808,18 @@ def _review_citing_opinions(
             target.case_name,
             target.citations,
             opinion_role=opinion_role,
+            target_short_names=short_names,
         ):
             # Reuse the treatment metadata shape for the timeline; this
             # positive entry never enters a negative-treatment list.
             reaffirmance = NegativeTreatment(
-                citing_case=str(metadata.get("title") or f"Opinion {opinion_id}"),
-                citing_citation=str(metadata.get("citation") or ""),
+                citing_case=summary.case_name,
+                citing_citation=summary.citation,
                 citing_court=citing_court,
                 citing_date=citing_date,
-                citing_url=str(metadata.get("url") or ""),
+                citing_url=summary.url,
+                source_opinion_id=summary.opinion_id,
+                source_cluster_id=summary.cluster_id,
                 treatment=finding.treatment,
                 scope=finding.scope,
                 binding=_binding_for(target, citing_court),
@@ -1381,12 +1830,15 @@ def _review_citing_opinions(
                 precedential_tier=precedential_tier,
                 authoritative=eligible,
                 gate_reason=gate_reason,
+                attribution_basis=finding.attribution_basis,
+                attribution_ambiguous=finding.attribution_ambiguous,
+                attribution_reason=finding.attribution_reason,
                 excerpt=finding.excerpt,
             )
             timeline.append(_timeline_entry("reaffirmed", reaffirmance))
-    if len(citing_ids) > max_citing:
+    if total_citing > max_citing:
         detail = (
-            f"Citator reviewed {reviewed} of {len(citing_ids)} citing "
+            f"Citator reviewed {reviewed} of {total_citing} citing "
             f"opinions because of the {max_citing}-opinion cap; candidates "
             "were prioritized by decision date and court authority."
         )
@@ -1424,15 +1876,15 @@ def _review_citing_opinions(
     # Review order is priority order, but the report keeps the API's citation
     # order so a capped run remains comparable with an uncapped one.
     source_order = {
-        str(opinion_id): index for index, opinion_id in enumerate(citing_ids)
+        str(opinion_id): index for index, opinion_id in enumerate(source_ids)
     }
-    later_citing.sort(
+    reviewed_citing.sort(
         key=lambda cited: source_order.get(cited.opinion_id, len(source_order))
     )
     return (
         treatments,
         gated,
-        later_citing,
+        reviewed_citing,
         reviewed,
         latest,
         flags,
@@ -1442,8 +1894,450 @@ def _review_citing_opinions(
     )
 
 
-def _unknown_check(case: CaseRecord, flags: list[str]) -> CitatorCheck:
+def _review_citing_opinions(
+    provider: CourtListenerProvider,
+    target: _Target,
+    citing_ids: list[int],
+    max_citing: int,
+) -> tuple[
+    list[NegativeTreatment],
+    list[NegativeTreatment],
+    list[LaterCitingOpinion],
+    int,
+    str,
+    list[str],
+    list[CitatorCoverageGap],
+    list[TreatmentTimelineEntry],
+    bool,
+]:
+    """Read capped citing opinions and collect gated and authoritative signals."""
+    candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
+        provider, citing_ids
+    )
+    (
+        treatments,
+        gated,
+        reviewed_citing,
+        reviewed,
+        latest,
+        review_flags,
+        review_gaps,
+        timeline,
+        later_reaffirmance,
+    ) = _review_candidates(
+        provider,
+        target,
+        candidates,
+        max_citing,
+        source_ids=citing_ids,
+        total_citing=len(citing_ids),
+    )
+    return (
+        treatments,
+        gated,
+        reviewed_citing,
+        reviewed,
+        latest,
+        candidate_flags + review_flags,
+        candidate_gaps + review_gaps,
+        timeline,
+        later_reaffirmance,
+    )
+
+
+def _source_metadata(
+    provider: CourtListenerProvider, source_id: int
+) -> dict[str, object] | None:
+    """Fetch current metadata for one source."""
+    try:
+        return provider.opinion_metadata(source_id)
+    except SearchError:
+        return None
+
+
+def _source_precedence(
+    metadata: dict[str, object] | None, target_court: str
+) -> tuple[str, str]:
+    """Classify a source's current role, status, and court relationship."""
+    if not metadata:
+        return "unverified", "source metadata unavailable"
+    role = _opinion_role(str(metadata.get("opinion_type") or ""))
+    tier = _precedential_tier(str(metadata.get("precedential_status") or ""))
+    source_court = str(metadata.get("court") or "")
+    if role in {"separate", "plurality"}:
+        return "separate", f"source opinion role is {role}"
+    if role != "majority":
+        return "unverified", f"source opinion role is {role}"
+    if tier == "nonprecedential":
+        return "nonprecedential", "source is currently nonprecedential"
+    if tier != "precedential":
+        return "unverified", f"source precedential status is {tier}"
+    binding = _binding_for_courts(target_court, source_court)
+    if binding is False:
+        return (
+            "persuasive",
+            "source court is lower than the target court; identified lower-court "
+            "sources are withheld from enforcement",
+        )
+    if binding is True:
+        return "authoritative", ""
+    return "unverified", "source court relationship is unknown"
+
+
+def _source_history_audit(
+    provider: CourtListenerProvider,
+    source_target: _Target,
+    metadata: dict[str, object],
+    as_of_date: str,
+) -> _SourceAudit:
+    """Review a bounded one-hop history for one source opinion."""
+    max_ids = max(1, _SOURCE_HISTORY_MAX_CITING * 4)
+    (
+        citing_ids,
+        _found,
+        _pages,
+        edges_complete,
+        _truncated,
+        edge_flags,
+        edge_gaps,
+    ) = _fetch_cluster_forward_edges(
+        provider,
+        source_target,
+        _SOURCE_HISTORY_MAX_PAGES,
+        page_size=max_ids,
+        max_ids=max_ids,
+    )
+    candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
+        provider, citing_ids
+    )
+    # Policy: as-of source validation stops at the cutoff. Only source-history
+    # candidates dated on or before the cutoff can invalidate or qualify the
+    # source. Later candidates are ignored; undated candidates make the as-of
+    # review incomplete rather than being treated as in scope.
+    if as_of_date:
+        cutoff = date.fromisoformat(as_of_date)
+        scoped: list[_CitingCandidate] = []
+        undated = False
+        for candidate in candidates:
+            relation = _candidate_date_relation(candidate.decision_date, cutoff)
+            if relation == "in_scope":
+                scoped.append(candidate)
+            elif relation == "undated":
+                undated = True
+        candidates = scoped
+        if undated:
+            candidate_flags.append(
+                "Source-history candidate had no usable decision date; "
+                "as-of source validation is incomplete."
+            )
+    scope_ids = [candidate.opinion_id for candidate in candidates]
+    (
+        treatments,
+        gated,
+        _later_citing,
+        reviewed,
+        _latest,
+        review_flags,
+        review_gaps,
+        _timeline,
+        _later_reaffirmance,
+    ) = _review_candidates(
+        provider,
+        source_target,
+        candidates,
+        _SOURCE_HISTORY_MAX_CITING,
+        source_ids=scope_ids,
+        total_citing=len(scope_ids),
+    )
+    incomplete = (
+        not edges_complete
+        or bool(
+            edge_flags
+            or edge_gaps
+            or candidate_flags
+            or candidate_gaps
+            or review_flags
+            or review_gaps
+        )
+        or reviewed < len(scope_ids)
+    )
+    invalidating = [
+        finding
+        for finding in treatments
+        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+        and finding.scope == "all"
+    ]
+    partial = [
+        finding
+        for finding in treatments
+        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+        and finding.scope != "all"
+    ]
+    gated_invalidating = [
+        finding
+        for finding in gated
+        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+    ]
+    if invalidating:
+        first = invalidating[0]
+        return _SourceAudit(
+            source_cluster_id=source_target.cluster_id,
+            metadata=metadata,
+            validity_status="invalid",
+            reason=(
+                f"source was {first.treatment} by {first.citing_case} "
+                f"({first.citing_date or 'date unknown'})"
+            ),
+            history_complete=not incomplete,
+        )
+    if partial:
+        first = partial[0]
+        return _SourceAudit(
+            source_cluster_id=source_target.cluster_id,
+            metadata=metadata,
+            validity_status="qualified",
+            reason=(
+                f"source was {first.treatment} only in part by "
+                f"{first.citing_case} ({first.citing_date or 'date unknown'})"
+            ),
+            history_complete=not incomplete,
+        )
+    if gated_invalidating:
+        first = gated_invalidating[0]
+        return _SourceAudit(
+            source_cluster_id=source_target.cluster_id,
+            metadata=metadata,
+            validity_status="unverified",
+            reason=(
+                f"only a gated source-history finding was found: "
+                f"{first.treatment} by {first.citing_case}"
+            ),
+            history_complete=not incomplete,
+        )
+    if incomplete:
+        detail = (
+            next(iter(edge_flags or candidate_flags or review_flags), "")
+            or "bounded source-history review was incomplete"
+        )
+        return _SourceAudit(
+            source_cluster_id=source_target.cluster_id,
+            metadata=metadata,
+            validity_status="unverified",
+            reason=detail,
+            history_complete=False,
+        )
+    return _SourceAudit(
+        source_cluster_id=source_target.cluster_id,
+        metadata=metadata,
+        validity_status="valid",
+        reason="no invalidating treatment found in the bounded source history",
+        history_complete=True,
+    )
+
+
+def _source_audit(
+    provider: CourtListenerProvider,
+    source_id: int,
+    as_of_date: str,
+    cache: _SourceValidationCache,
+) -> _SourceAudit:
+    """Return a cached source audit, fetching current metadata and history once."""
+    key = (source_id, as_of_date)
+    if key in cache.audits:
+        return cache.audits[key]
+    metadata = _source_metadata(provider, source_id)
+    if not metadata:
+        audit = _SourceAudit(
+            validity_status="unverified",
+            reason="source metadata unavailable",
+        )
+        cache.audits[key] = audit
+        return audit
+    cluster_id = str(metadata.get("cluster_id") or "")
+    role = _opinion_role(str(metadata.get("opinion_type") or ""))
+    tier = _precedential_tier(str(metadata.get("precedential_status") or ""))
+    if role != "majority" or tier != "precedential":
+        audit = _SourceAudit(
+            source_cluster_id=cluster_id,
+            metadata=metadata,
+            validity_status="unverified",
+            reason="source history was not reviewed because its precedence gate failed",
+        )
+        cache.audits[key] = audit
+        return audit
+    source_case = CaseRecord(
+        title=str(metadata.get("title") or f"Opinion {source_id}"),
+        court=str(metadata.get("court") or ""),
+        citation=str(metadata.get("citation") or ""),
+        decision_date=str(metadata.get("decision_date") or ""),
+        courtlistener_opinion_id=str(source_id),
+        url=str(metadata.get("url") or ""),
+    )
+    source_target = _target_from_metadata(
+        source_case, source_id, metadata, source_case.title
+    )
+    if not source_target.cluster_resolved:
+        audit = _SourceAudit(
+            source_cluster_id=cluster_id,
+            metadata=metadata,
+            validity_status="unverified",
+            reason="source cluster could not be resolved for history review",
+        )
+        cache.audits[key] = audit
+        return audit
+    audit = _source_history_audit(provider, source_target, metadata, as_of_date)
+    cache.audits[key] = audit
+    return audit
+
+
+def _apply_source_audit(
+    signal: SourceValiditySignal,
+    audit: _SourceAudit,
+    target_court: str,
+) -> None:
+    """Merge one audit into a signal without touching citator or queue state.
+
+    A ``precedence_defect`` signal remains visible in advisory output but is
+    not enforceable. This is where a known lower-court source is withheld:
+    enforcement must not let it set or downgrade citator status.
+    """
+    precedence, precedence_reason = _source_precedence(
+        audit.metadata, target_court
+    )
+    if audit.source_cluster_id and not signal.source_cluster_id:
+        signal.source_cluster_id = audit.source_cluster_id
+    if (
+        signal.source_cluster_id
+        and audit.source_cluster_id
+        and signal.source_cluster_id != audit.source_cluster_id
+    ):
+        status = "unverified"
+        reason = "source cluster id did not match the fetched cluster"
+    elif audit.validity_status == "invalid":
+        status = "invalid"
+        reason = audit.reason
+    elif precedence in {"separate", "nonprecedential", "persuasive"}:
+        status = "precedence_defect"
+        reason = precedence_reason
+    elif audit.validity_status == "qualified":
+        status = "qualified"
+        reason = audit.reason
+    elif audit.validity_status == "unverified" or precedence == "unverified":
+        status = "unverified"
+        reason = audit.reason or precedence_reason
+    else:
+        status = "valid"
+        reason = audit.reason
+    signal.status = status
+    signal.reason = reason
+    signal.precedence = precedence
+    signal.withheld = not (
+        precedence == "authoritative" and status in {"valid", "invalid", "qualified"}
+    )
+    signal.history_complete = audit.history_complete
+    signal.checked_at = _checked_at()
+
+
+def _validate_source_validity(
+    provider: CourtListenerProvider,
+    check: CitatorCheck,
+    cache: _SourceValidationCache,
+) -> None:
+    """Fill advisory source statuses; never change status or queue inputs."""
+    for signal in check.source_validity:
+        source_id = _positive_id(signal.source_opinion_id)
+        if source_id is None:
+            signal.status = "not_assessed"
+            signal.reason = "source opinion id is not usable for validation"
+            continue
+        audit = _source_audit(provider, source_id, check.as_of_date, cache)
+        _apply_source_audit(signal, audit, check.target_court)
+
+
+def _source_enforcement_action(signal: SourceValiditySignal) -> str:
+    """Describe one source's enforcement treatment for the audit trail."""
+    source = signal.source_opinion_id or "unknown"
+    if signal.withheld:
+        detail = signal.status or "not assessed"
+        if signal.reason:
+            detail += f": {signal.reason}"
+        return f"source {source} withheld from enforcement ({detail})"
+    reason = signal.reason or "no reason recorded"
+    return f"source {source} {signal.status}: {reason}"
+
+
+def _apply_source_validity_enforcement(check: CitatorCheck) -> None:
+    """Apply opt-in enforcement without deleting advisory findings.
+
+    A source is blocked when it is withheld or authoritative-but-invalid. If
+    every authoritative negative finding is blocked, status is downgraded to
+    unknown rather than claiming good law. Withheld lower-court sources are
+    kept in the audit trail and filtered from queue demotion separately.
+    """
+    check.source_validity_enforced = True
+    blocked_ids = check.source_validity_blocked_source_ids()
+    if not blocked_ids:
+        return
+    reasons: list[str] = []
+    for signal in check.source_validity:
+        if signal.source_opinion_id not in blocked_ids:
+            continue
+        action = _source_enforcement_action(signal)
+        if action not in check.source_validity_actions:
+            check.source_validity_actions.append(action)
+        if signal.withheld or signal.status not in {"invalid", "qualified"}:
+            continue
+        detail = signal.reason or "no reason recorded"
+        reasons.append(
+            "source-validity enforcement blocked "
+            f"source {signal.source_opinion_id or 'unknown'} "
+            f"({signal.status}: {detail})"
+        )
+    remaining = [
+        finding
+        for finding in check.negative_treatments
+        if not (
+            finding.source_opinion_id
+            and finding.source_opinion_id in blocked_ids
+        )
+    ]
+    if check.status in {"negative", "good_law"} and not remaining:
+        check.status = "unknown"
+        check.good_law_as_of = ""
+        reasons.insert(
+            0,
+            "source-validity enforcement removed all authoritative support; "
+            "status was downgraded to unknown for manual review.",
+        )
+    for reason in reasons:
+        if reason not in check.review_reasons:
+            check.review_reasons.append(reason)
+    if reasons:
+        check.review_required = True
+
+
+def _unknown_check(
+    case: CaseRecord, flags: list[str], as_of_date: str = ""
+) -> CitatorCheck:
     """Build an unknown check for a target that could not be resolved."""
+    gaps = [
+        _coverage_gap(
+            "target_unresolved",
+            "; ".join(flags) or "The target case could not be resolved.",
+        )
+    ]
+    (
+        confidence_score,
+        confidence,
+        confidence_reason,
+        review_required,
+        review_reasons,
+    ) = _confidence_assessment(
+        reviewed=0,
+        complete=False,
+        gaps=gaps,
+        ambiguous_findings=[],
+    )
     return CitatorCheck(
         target_case=case.title or "Untitled case",
         target_citation=case.citation,
@@ -1458,14 +2352,15 @@ def _unknown_check(case: CaseRecord, flags: list[str]) -> CitatorCheck:
             else []
         ),
         status="unknown",
+        as_of_date=as_of_date,
+        confidence=confidence,
+        confidence_score=confidence_score,
+        confidence_reason=confidence_reason,
+        review_required=review_required,
+        review_reasons=review_reasons,
         checked_at=_checked_at(),
         coverage=CitatorCoverage(
-            gaps=[
-                _coverage_gap(
-                    "target_unresolved",
-                    "; ".join(flags) or "The target case could not be resolved.",
-                )
-            ],
+            gaps=gaps,
             temporal_confidence="none",
             temporal_confidence_reason=(
                 "No target cluster was resolved, so no citing-opinion date could "
@@ -1506,14 +2401,35 @@ def check_case(
     max_citing_opinions: int = 5,
     max_pages: int = 1,
     max_same_docket: int = 5,
+    as_of_date: str = "",
     history_records: list[AppellateHistoryRecord] | None = None,
     snapshot_store: SnapshotStore | None = None,
     authority_entry: AuthorityQueueEntry | None = None,
+    source_validity: bool = False,
+    source_validity_mode: str = "extract",
+    source_validation_cache: _SourceValidationCache | None = None,
 ) -> CitatorCheck:
-    """Resolve and check one queued authority, returning an advisory result."""
+    """Resolve and check one queued authority, returning an advisory result.
+
+    When *as_of_date* is set, only citing opinions dated on or before that
+    inclusive cutoff can affect status, the good-law date, or as-of coverage.
+    Later opinions are reviewed separately and their findings never change the
+    as-of result. Citing opinions without a usable date are excluded and make
+    as-of coverage incomplete, since they cannot be placed on either side of
+    the cutoff. Findings always retain stable source opinion identifiers;
+    when *source_validity* is true, the check also gets an advisory list of
+    those sources. In ``advisory`` mode the source list is bounded and
+    validated against current metadata and later history; that validation
+    never changes status, coverage, ranking, or queue order. In ``enforce``
+    mode the validated signals additionally withhold non-authoritative or
+    invalid sources from status support and queue demotion. Enforcement is
+    opt-in and never upgrades status.
+    """
+    as_of_date = _normalize_as_of_date(as_of_date)
+    cutoff = date.fromisoformat(as_of_date) if as_of_date else None
     target, flags = _resolve_target(case, provider)
     if target is None:
-        check = _unknown_check(case, flags)
+        check = _unknown_check(case, flags, as_of_date)
         return _persist_check(
             _apply_authority_entry(check, authority_entry), snapshot_store
         )
@@ -1571,26 +2487,125 @@ def check_case(
     )
     flags.extend(edge_flags)
     gaps.extend(edge_gaps)
-    (
-        treatments,
-        gated_treatments,
-        later_citing,
-        reviewed,
-        latest,
-        review_flags,
-        review_gaps,
-        treatment_timeline,
-        later_reaffirmance,
-    ) = _review_citing_opinions(provider, target, citing_ids, max_citing_opinions)
-    flags.extend(review_flags)
-    gaps.extend(review_gaps)
-
-    complete = (
-        target.cluster_resolved
-        and edges_complete
-        and not review_flags
-        and reviewed == len(citing_ids)
-    )
+    post_as_of_citing: list[LaterCitingOpinion] = []
+    post_as_of_findings: list[NegativeTreatment] = []
+    undated_citing: list[LaterCitingOpinion] = []
+    post_as_of_incomplete = False
+    post_as_of_flags: list[str] = []
+    scope_citing_count = len(citing_ids)
+    if cutoff is not None:
+        candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
+            provider, citing_ids
+        )
+        flags.extend(candidate_flags)
+        gaps.extend(candidate_gaps)
+        in_scope: list[_CitingCandidate] = []
+        post_as_of: list[_CitingCandidate] = []
+        undated: list[_CitingCandidate] = []
+        for candidate in candidates:
+            relation = _candidate_date_relation(
+                candidate.decision_date, cutoff
+            )
+            if relation == "in_scope":
+                in_scope.append(candidate)
+            elif relation == "post_as_of":
+                post_as_of.append(candidate)
+            else:
+                undated.append(candidate)
+        if undated:
+            undated_ids = ", ".join(
+                str(candidate.opinion_id) for candidate in undated
+            )
+            detail = (
+                "Citator could not establish a usable decision date for "
+                f"citing opinion(s) {undated_ids}; they could fall on either "
+                f"side of the {as_of_date} as-of cutoff and were not used in "
+                "the as-of result."
+            )
+            flags.append(detail)
+            gaps.append(_coverage_gap("citing_date_missing", detail))
+            undated_citing = [
+                _citing_summary(candidate.opinion_id, candidate.metadata)
+                for candidate in undated
+            ]
+        in_scope_ids = [candidate.opinion_id for candidate in in_scope]
+        post_as_of_ids = [
+            candidate.opinion_id for candidate in post_as_of
+        ]
+        (
+            treatments,
+            gated_treatments,
+            later_citing,
+            reviewed,
+            latest,
+            review_flags,
+            review_gaps,
+            treatment_timeline,
+            later_reaffirmance,
+        ) = _review_candidates(
+            provider,
+            target,
+            in_scope,
+            max_citing_opinions,
+            source_ids=in_scope_ids,
+            total_citing=len(in_scope_ids),
+        )
+        flags.extend(review_flags)
+        gaps.extend(review_gaps)
+        scope_citing_count = len(in_scope_ids)
+        if post_as_of_ids:
+            (
+                post_treatments,
+                post_gated,
+                post_as_of_citing,
+                _post_reviewed,
+                _post_latest,
+                post_as_of_flags,
+                post_gaps,
+                _post_timeline,
+                _post_reaffirmance,
+            ) = _review_candidates(
+                provider,
+                target,
+                post_as_of,
+                max_citing_opinions,
+                source_ids=post_as_of_ids,
+                total_citing=len(post_as_of_ids),
+            )
+            post_as_of_findings = [*post_treatments, *post_gated]
+            # Any post-cutoff review gap makes the separate later-treatment
+            # report incomplete, not just the opinion cap.
+            post_as_of_incomplete = bool(post_gaps)
+        complete = (
+            target.cluster_resolved
+            and edges_complete
+            and not review_flags
+            and not candidate_gaps
+            and not undated
+            and reviewed == len(in_scope_ids)
+        )
+    else:
+        (
+            treatments,
+            gated_treatments,
+            later_citing,
+            reviewed,
+            latest,
+            review_flags,
+            review_gaps,
+            treatment_timeline,
+            later_reaffirmance,
+        ) = _review_citing_opinions(
+            provider, target, citing_ids, max_citing_opinions
+        )
+        flags.extend(review_flags)
+        gaps.extend(review_gaps)
+        complete = (
+            target.cluster_resolved
+            and edges_complete
+            and not review_flags
+            and reviewed == len(citing_ids)
+        )
     if found and not citing_ids:
         detail = (
             f"Citator forward-citation response for '{target.case_name}' reported "
@@ -1599,7 +2614,7 @@ def check_case(
         flags.append(detail)
         gaps.append(_coverage_gap("no_usable_citing_ids", detail))
         complete = False
-    if len(citing_ids) > max_citing_opinions:
+    if scope_citing_count > max_citing_opinions:
         truncated = True
         complete = False
     if not found and edges_complete:
@@ -1607,9 +2622,14 @@ def check_case(
         flags.append(detail)
         gaps.append(_coverage_gap("no_forward_citations", detail))
     if not complete:
+        reviewed_scope = (
+            f"{reviewed}/{scope_citing_count} as-of citing opinions"
+            if as_of_date
+            else f"{reviewed}/{found} citing opinions"
+        )
         flags.append(
             f"Citator coverage for '{target.case_name}' is incomplete "
-            f"({reviewed}/{found} citing opinions reviewed)."
+            f"({reviewed_scope} reviewed)."
         )
 
     temporal_confidence, temporal_reason = _temporal_confidence(
@@ -1617,6 +2637,7 @@ def check_case(
         reviewed=reviewed,
         latest=latest,
         gaps=gaps,
+        excluded_undated=bool(undated_citing),
     )
 
     status = "unknown"
@@ -1639,6 +2660,19 @@ def check_case(
     persuasive_treatments = [
         treatment for treatment in treatments if treatment.binding is False
     ]
+    ambiguous_findings = [*treatments, *gated_treatments]
+    (
+        confidence_score,
+        confidence,
+        confidence_reason,
+        review_required,
+        review_reasons,
+    ) = _confidence_assessment(
+        reviewed=reviewed,
+        complete=complete,
+        gaps=gaps,
+        ambiguous_findings=ambiguous_findings,
+    )
 
     check = CitatorCheck(
         target_case=target.case_name,
@@ -1652,6 +2686,12 @@ def check_case(
         target_opinion_ids=[str(value) for value in target.opinion_ids],
         status=status,
         good_law_as_of=good_law_as_of,
+        as_of_date=as_of_date,
+        confidence=confidence,
+        confidence_score=confidence_score,
+        confidence_reason=confidence_reason,
+        review_required=review_required,
+        review_reasons=review_reasons,
         checked_at=_checked_at(),
         coverage=CitatorCoverage(
             forward_citations_found=found,
@@ -1666,12 +2706,24 @@ def check_case(
         ),
         same_docket_decisions=same_docket,
         later_citing_opinions=later_citing,
+        post_as_of_citing_opinions=post_as_of_citing,
+        post_as_of_treatment_findings=post_as_of_findings,
+        undated_citing_opinions=undated_citing,
+        post_as_of_incomplete=post_as_of_incomplete,
+        post_as_of_flags=post_as_of_flags,
         negative_treatments=treatments,
         gated_treatment_findings=gated_treatments,
         binding_negative_treatments=binding_treatments,
         persuasive_negative_treatments=persuasive_treatments,
         treatment_timeline=treatment_timeline,
         later_reaffirmance=later_reaffirmance,
+        source_validity=(
+            _source_validity_signals(
+                [*treatments, *gated_treatments, *post_as_of_findings]
+            )
+            if source_validity
+            else []
+        ),
         flags=flags,
     )
     check.appellate_history = build_appellate_history(
@@ -1680,6 +2732,14 @@ def check_case(
     check.subsequent_history_assessed = (
         check.appellate_history.status == "verified"
     )
+    if source_validity and source_validity_mode in {"advisory", "enforce"}:
+        _validate_source_validity(
+            provider,
+            check,
+            source_validation_cache or _SourceValidationCache(),
+        )
+    if source_validity and source_validity_mode == "enforce":
+        _apply_source_validity_enforcement(check)
     _apply_authority_entry(check, authority_entry)
     return _persist_check(check, snapshot_store)
 
@@ -1691,14 +2751,21 @@ def run_citator(
     max_cases: int = 10,
     max_citing_opinions: int = 5,
     max_pages: int = 1,
+    as_of_date: str = "",
     history_records: list[AppellateHistoryRecord] | None = None,
     snapshot_store: SnapshotStore | None = None,
     authority_queue: list[QueuedAuthority] | None = None,
+    source_validity: bool = False,
+    source_validity_mode: str = "extract",
 ) -> list[CitatorCheck]:
     """Check the prioritized authority queue up to *max_cases*.
 
     Callers may pass a pre-built queue; otherwise the queue is built from
     *cases*. The queue changes review order only, never ranking or status.
+    *source_validity* adds source identifiers to each check; in ``advisory``
+    mode it also validates those sources without changing status or queue
+    behavior. ``enforce`` mode additionally applies the withheld-source rules
+    to status and queue demotion.
     """
     active_provider = (
         SnapshottingCourtListenerProvider(provider, snapshot_store)
@@ -1710,15 +2777,20 @@ def run_citator(
         if authority_queue is None
         else authority_queue[: max(0, max_cases)]
     )
+    validation_cache = _SourceValidationCache()
     return [
         check_case(
             item.case,
             active_provider,
             max_citing_opinions=max_citing_opinions,
             max_pages=max_pages,
+            as_of_date=as_of_date,
             history_records=history_records,
             snapshot_store=snapshot_store,
             authority_entry=item.entry,
+            source_validity=source_validity,
+            source_validity_mode=source_validity_mode,
+            source_validation_cache=validation_cache,
         )
         for item in queued
     ]

@@ -31,6 +31,8 @@ def _treatment(
     authoritative: bool = True,
     gate_reason: str = "",
     url: str = "https://www.courtlistener.com/opinion/201/",
+    source_opinion_id: str = "",
+    source_cluster_id: str = "",
 ) -> NegativeTreatment:
     return NegativeTreatment(
         citing_case="Jones v. McDonough",
@@ -38,6 +40,8 @@ def _treatment(
         citing_court="Court of Appeals for Veterans Claims",
         citing_date="2021-02-02",
         citing_url=url,
+        source_opinion_id=source_opinion_id,
+        source_cluster_id=source_cluster_id,
         treatment=treatment,
         scope=scope,
         binding=True,
@@ -69,6 +73,24 @@ def _check(
         negative_treatments=authoritative or [],
         gated_treatment_findings=gated or [],
     )
+
+
+def test_queue_evidence_carries_source_opinion_identifiers():
+    queue = build_adjudication_queue(
+        [
+            _check(
+                authoritative=[
+                    _treatment(
+                        source_opinion_id="201", source_cluster_id="888"
+                    )
+                ]
+            )
+        ]
+    )
+
+    evidence = queue.items[0].evidence
+    assert evidence.source_opinion_id == "201"
+    assert evidence.source_cluster_id == "888"
 
 
 def test_build_queue_is_evidence_first_and_prioritizes_authoritative_findings():

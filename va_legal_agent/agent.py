@@ -11,7 +11,7 @@ from collections import Counter
 from urllib.parse import urlsplit
 
 from .appellate_history import load_appellate_history_records
-from .authority_queue import build_authority_queue
+from .authority_queue import apply_citator_findings
 from .authorities import (
     authority_flags,
     statutory_supersession_flags,
@@ -1323,18 +1323,30 @@ def analyze_cases_for_claim(
                 "max_citing_opinions": settings.citator_max_citing_opinions,
                 "max_pages": settings.citator_max_pages,
             }
+            if settings.citator_as_of_date:
+                citator_kwargs["as_of_date"] = settings.citator_as_of_date
+            if settings.citator_source_validity:
+                citator_kwargs["source_validity"] = True
+                citator_kwargs["source_validity_mode"] = (
+                    settings.citator_source_validity_mode
+                )
             if history_records:
                 citator_kwargs["history_records"] = history_records
             if snapshot_store is not None:
                 citator_kwargs["snapshot_store"] = snapshot_store
-            analysis.authority_queue = build_authority_queue(
-                cases, settings.citator_max_cases
-            )
             analysis.citator_checks = run_citator(
                 cases,
                 CourtListenerProvider(),
                 **citator_kwargs,
             )
+            analysis.authority_queue = [
+                item.entry
+                for item in apply_citator_findings(
+                    cases,
+                    analysis.citator_checks,
+                    settings.citator_max_cases,
+                )
+            ]
             if settings.appellate_history_file:
                 for check in analysis.citator_checks:
                     if check.appellate_history is not None:

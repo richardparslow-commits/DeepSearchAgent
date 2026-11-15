@@ -405,11 +405,20 @@ def _authority_queue_lines(queue: list[AuthorityQueueEntry]) -> list[str]:
     ]
     for item in queue:
         reasons = "; ".join(item.reasons) or "no priority details"
-        lines.append(
+        line = (
             f"  {item.priority}. {item.case_title} "
             f"({item.citation or 'no citation'}; "
             f"{item.court or 'court unknown'}) — {reasons}"
         )
+        if item.citator_demoted:
+            line += " [citator: demoted]"
+        elif item.citator_flagged:
+            line += " [citator: flagged]"
+        elif item.citator_status:
+            line += f" [citator: {item.citator_status}]"
+        lines.append(line)
+        for citator_reason in item.citator_reasons:
+            lines.append(f"      citator: {citator_reason}")
     return lines
 
 
@@ -446,6 +455,12 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
             f"subsequent history: {history_state}"
         )
         lines.append(status)
+        if check.as_of_date:
+            lines.append(
+                f"  As-of cutoff: {check.as_of_date} (inclusive); only citing "
+                "opinions through this date affect status. Later treatment is "
+                "reported separately."
+            )
         if coverage.gaps:
             lines.append("  Coverage gaps:")
             for gap in coverage.gaps:
@@ -456,6 +471,17 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
             f"  Temporal confidence: {coverage.temporal_confidence} "
             f"({coverage.temporal_confidence_reason or 'no basis recorded'})"
         )
+        lines.append(
+            f"  Calibrated confidence: {check.confidence} "
+            f"({check.confidence_score:.2f}) "
+            f"({check.confidence_reason or 'no basis recorded'})"
+        )
+        if check.review_required:
+            lines.append("  Review required: yes")
+            for reason in check.review_reasons:
+                lines.append(f"  - {reason}")
+        else:
+            lines.append("  Review required: no")
         history = check.appellate_history
         if history is None:
             lines.append(
@@ -549,6 +575,90 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                     f"{cited.precedential_status or 'status unknown'}; "
                     f"{eligible}) {cited.url}".rstrip()
                 )
+        if check.undated_citing_opinions:
+            lines.append(
+                "  Undated citing opinions excluded from the as-of result "
+                "(they make coverage incomplete):"
+            )
+            for cited in check.undated_citing_opinions:
+                eligible = "eligible" if cited.treatment_eligible else "gated"
+                lines.append(
+                    f"  - {cited.case_name} ({cited.citation or 'no citation'}; "
+                    f"{cited.decision_date or 'date unknown'}; "
+                    f"{cited.court or 'court unknown'}; "
+                    f"{cited.opinion_role}; "
+                    f"{cited.precedential_status or 'status unknown'}; "
+                    f"{eligible}) {cited.url}".rstrip()
+                )
+        if check.post_as_of_citing_opinions:
+            lines.append(
+                "  Post-as-of citing opinions reviewed (advisory only; not "
+                "counted toward as-of status):"
+            )
+            for cited in check.post_as_of_citing_opinions:
+                eligible = "eligible" if cited.treatment_eligible else "gated"
+                lines.append(
+                    f"  - {cited.case_name} ({cited.citation or 'no citation'}; "
+                    f"{cited.decision_date or 'date unknown'}; "
+                    f"{cited.court or 'court unknown'}; "
+                    f"{cited.opinion_role}; "
+                    f"{cited.precedential_status or 'status unknown'}; "
+                    f"{eligible}) {cited.url}".rstrip()
+                )
+        if check.post_as_of_treatment_findings:
+            lines.append(
+                "  Post-as-of treatment findings (not counted toward as-of "
+                "status):"
+            )
+            for treatment in check.post_as_of_treatment_findings:
+                location = treatment.citing_case
+                if treatment.citing_url:
+                    location += f" {treatment.citing_url}"
+                gate = (
+                    "authoritative"
+                    if treatment.authoritative
+                    else f"gated; {treatment.gate_reason}"
+                )
+                attribution = (
+                    f"; attribution ambiguous: {treatment.attribution_reason}"
+                    if treatment.attribution_ambiguous
+                    else ""
+                )
+                lines.append(
+                    f"  - {treatment.treatment} ({treatment.scope}, "
+                    f"{treatment.opinion_role}, {gate}{attribution}): "
+                    f"\"{treatment.excerpt}\" — {location} "
+                    f"({treatment.citing_date or 'date unknown'})"
+                )
+        if check.post_as_of_incomplete:
+            lines.append(
+                "  Post-as-of review incomplete; later treatment may be "
+                "missing or unverified."
+            )
+        for flag in check.post_as_of_flags:
+            lines.append(f"  Post-as-of note: {flag}")
+        if check.source_validity:
+            if check.source_validity_enforced:
+                lines.append(
+                    "  Source validity (enforcement enabled; non-authoritative "
+                    "sources withheld):"
+                )
+            else:
+                lines.append(
+                    "  Source validity (advisory; never counted toward status):"
+                )
+            for signal in check.source_validity:
+                detail = f"; {signal.reason}" if signal.reason else ""
+                withheld = "; withheld" if signal.withheld else ""
+                lines.append(
+                    f"  - source opinion {signal.source_opinion_id or 'unknown'}; "
+                    f"cluster {signal.source_cluster_id or 'unknown'}; "
+                    f"status {signal.status}{withheld}{detail}"
+                )
+            if check.source_validity_actions:
+                lines.append("  Source-validity enforcement actions:")
+                for action in check.source_validity_actions:
+                    lines.append(f"  - {action}")
         if check.negative_treatments:
             lines.append("  Authoritative negative treatment findings:")
         for treatment in check.negative_treatments:
@@ -561,10 +671,16 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
             location = treatment.citing_case
             if treatment.citing_url:
                 location += f" {treatment.citing_url}"
+            attribution = (
+                f", attribution ambiguous: {treatment.attribution_reason}"
+                if treatment.attribution_ambiguous
+                else ""
+            )
             lines.append(
                 f"  - {treatment.treatment} ({treatment.scope}, "
                 f"{treatment.confidence}, {treatment.opinion_role}, "
-                f"{treatment.precedential_status or 'status unknown'}): "
+                f"{treatment.precedential_status or 'status unknown'})"
+                f"{attribution}: "
                 f"\"{treatment.excerpt}\" — {location} "
                 f"({treatment.citing_date or 'date unknown'}, {binding})"
             )
@@ -576,11 +692,17 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
             location = treatment.citing_case
             if treatment.citing_url:
                 location += f" {treatment.citing_url}"
+            attribution = (
+                f"; attribution ambiguous: {treatment.attribution_reason}"
+                if treatment.attribution_ambiguous
+                else ""
+            )
             lines.append(
                 f"  - {treatment.treatment} ({treatment.scope}, "
                 f"{treatment.opinion_role}, "
                 f"{treatment.precedential_status or 'status unknown'}; "
-                f"{treatment.gate_reason}): \"{treatment.excerpt}\" — "
+                f"{treatment.gate_reason}{attribution}): "
+                f"\"{treatment.excerpt}\" — "
                 f"{location} ({treatment.citing_date or 'date unknown'})"
             )
         if check.treatment_timeline:

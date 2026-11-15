@@ -84,6 +84,8 @@ def _queue_item(
             citing_court=finding.citing_court,
             citing_date=finding.citing_date,
             citing_url=finding.citing_url,
+            source_opinion_id=finding.source_opinion_id,
+            source_cluster_id=finding.source_cluster_id,
             opinion_type=finding.opinion_type,
             opinion_role=finding.opinion_role,
             precedential_status=finding.precedential_status,
