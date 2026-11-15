@@ -845,12 +845,8 @@ class CourtListenerProvider:
                     if absolute_url
                     else ""
                 )
-                first_citation = (cluster.get("citations") or [{}])[0]
-                citation = (
-                    str(first_citation.get("cite", ""))
-                    if isinstance(first_citation, dict)
-                    else str(first_citation)
-                )
+                citations = _cluster_citation_values(cluster.get("citations"))
+                citation = citations[0] if citations else ""
                 decisions.append(
                     {
                         "case_name": str(

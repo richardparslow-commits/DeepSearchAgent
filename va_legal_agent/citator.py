@@ -44,7 +44,13 @@ from .models import (
     NegativeTreatment,
     SameDocketDecision,
 )
-from .providers import CourtListenerProvider, extract_courtlistener_opinion_id
+from .providers import (
+    CourtListenerProvider,
+    _cluster_citation_values,
+    _cluster_identifier as _provider_cluster_identifier,
+    _cluster_opinion_ids as _provider_cluster_opinion_ids,
+    _positive_id,
+)
 from .search import SearchError
 from .topics import AUTHORITY_WEIGHTS
 
@@ -181,16 +187,7 @@ def _temporal_confidence(
 
 def _as_opinion_id(value: object) -> int | None:
     """Extract a positive CourtListener opinion id from an id or URL."""
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    if text.isdigit():
-        parsed = int(text)
-        return parsed if parsed > 0 else None
-    parsed = extract_courtlistener_opinion_id(text)
-    return parsed if parsed and parsed > 0 else None
+    return _positive_id(value)
 
 
 def _normalize_citation(value: object) -> str:
@@ -224,23 +221,9 @@ def _select_lookup_row(
     return matches[0] if len(matches) == 1 else None
 
 
-def _string_values(values: object) -> tuple[str, ...]:
-    """Return unique non-empty strings from a citation/list value."""
-    if not isinstance(values, list):
-        return ()
-    result: list[str] = []
-    for value in values:
-        if isinstance(value, dict):
-            value = value.get("cite") or value.get("citation") or ""
-        text = str(value or "").strip()
-        if text and text not in result:
-            result.append(text)
-    return tuple(result)
-
-
 def _cluster_citations(cluster: dict[str, object]) -> tuple[str, ...]:
     """Return every parallel reporter citation on a lookup cluster."""
-    return _string_values(cluster.get("citations"))
+    return tuple(_cluster_citation_values(cluster.get("citations")))
 
 
 def _cluster_citation(cluster: dict[str, object]) -> str:
@@ -251,18 +234,7 @@ def _cluster_citation(cluster: dict[str, object]) -> str:
 
 def _cluster_opinion_ids(cluster: dict[str, object]) -> tuple[int, ...]:
     """Return every valid sub-opinion id in a cluster, preserving order."""
-    ids: list[int] = []
-    for key in ("sub_opinions", "opinions"):
-        values = cluster.get(key)
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            if isinstance(value, dict):
-                value = value.get("resource_uri") or value.get("url") or value.get("id")
-            parsed = _as_opinion_id(value)
-            if parsed is not None and parsed not in ids:
-                ids.append(parsed)
-    return tuple(ids)
+    return tuple(_provider_cluster_opinion_ids(cluster))
 
 
 def _cluster_opinion_id(cluster: dict[str, object]) -> int | None:
@@ -273,24 +245,13 @@ def _cluster_opinion_id(cluster: dict[str, object]) -> int | None:
 
 def _cluster_identifier(cluster: dict[str, object]) -> str:
     """Return a cluster id from the object or one of its URL fields."""
-    raw_id = cluster.get("id")
-    if raw_id is not None and str(raw_id).strip().isdigit():
-        return str(int(str(raw_id).strip()))
-    for value in (
-        cluster.get("resource_uri"),
-        cluster.get("url"),
-        cluster.get("absolute_url"),
-    ):
-        match = re.search(r"/clusters?/(\d+)", str(value or ""))
-        if match:
-            return match.group(1)
-    return ""
+    return _provider_cluster_identifier(cluster)
 
 
 def _merged_citations(primary: str, values: object) -> tuple[str, ...]:
     """Put the case's known citation first, then every cluster citation."""
     citations: list[str] = []
-    for value in (primary, *_string_values(values)):
+    for value in (primary, *_cluster_citation_values(values)):
         text = str(value or "").strip()
         if text and text not in citations:
             citations.append(text)
@@ -307,18 +268,20 @@ def _target_from_metadata(
         if parsed is not None and parsed not in opinion_ids:
             opinion_ids.append(parsed)
     raw_citations = metadata.get("citations")
-    citations = _merged_citations(
-        case.citation,
-        raw_citations if isinstance(raw_citations, list)
-        else [metadata.get("citation")],
-    )
+    citations = _merged_citations(case.citation, raw_citations)
     cluster_id = str(metadata.get("cluster_id") or "")
     case_name = case.title or str(metadata.get("title") or "") or title
-    resolved = bool(cluster_id or metadata.get("opinion_ids") or metadata.get("citations"))
+    # The provider always carries at least the requested opinion id, so a
+    # single id alone does not prove the cluster was expanded.
+    resolved = bool(
+        cluster_id
+        or len(opinion_ids) > 1
+        or _cluster_citation_values(raw_citations)
+    )
     return _Target(
         case,
         opinion_id,
-        citations[0] if citations else case.citation,
+        citations[0] if citations else "",
         case_name,
         cluster_id,
         tuple(opinion_ids),
@@ -564,7 +527,7 @@ def _fetch_cluster_forward_edges(
     truncated = False
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
-    opinion_ids = target.opinion_ids or (target.opinion_id,)
+    opinion_ids = target.opinion_ids
     for opinion_id in opinion_ids:
         (
             found_ids,
@@ -585,7 +548,7 @@ def _fetch_cluster_forward_edges(
             if citing_id not in seen:
                 seen.add(citing_id)
                 ids.append(citing_id)
-    count = count if len(opinion_ids) == 1 else len(ids)
+    count = len(ids) if len(opinion_ids) > 1 else count
     return ids, count, pages, complete, truncated, flags, gaps
 
 

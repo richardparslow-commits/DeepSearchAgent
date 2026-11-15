@@ -94,6 +94,7 @@ class FakeProvider:
         self.pages: dict[str | None, dict[str, object]] = {}
         self.opinion_pages: dict[tuple[int, str | None], dict[str, object]] = {}
         self.page_errors: dict[str | None, SearchError] = {}
+        self.opinion_page_errors: dict[int, SearchError] = {}
         self.metadata: dict[int, dict[str, object] | None] = {
             111: _target_meta(111),
             112: _target_meta(112),
@@ -117,6 +118,8 @@ class FakeProvider:
 
     def citing_edges(self, opinion_id: int, page_size: int = 100, cursor=None):
         self.edge_calls.append((opinion_id, page_size, cursor))
+        if opinion_id in self.opinion_page_errors:
+            raise self.opinion_page_errors[opinion_id]
         if cursor in self.page_errors:
             raise self.page_errors[cursor]
         key = (opinion_id, cursor)
@@ -471,6 +474,25 @@ def test_cluster_forward_edges_deduplicate_a_shared_citing_opinion():
     assert check.status == "good_law"
 
 
+def test_cluster_forward_edges_partial_failure_keeps_coverage_incomplete():
+    provider = FakeProvider()
+    provider.metadata[111] = {
+        **_target_meta(111),
+        "opinion_ids": [111, 112],
+    }
+    provider.opinion_pages[(111, None)] = _page([201])
+    provider.opinion_page_errors[112] = SearchError("edge unavailable")
+    _wire_good_citing_opinions(provider, 201)
+
+    check = check_case(_case(), provider)
+
+    assert check.coverage.forward_citations_found == 1
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.complete is False
+    assert "forward_fetch_failed" in _gap_codes(check)
+    assert check.status == "unknown"
+
+
 def test_direct_opinion_without_cluster_metadata_is_incomplete():
     provider = FakeProvider()
     provider.metadata[111] = None
@@ -503,13 +525,22 @@ def test_direct_opinion_cluster_lookup_error_is_incomplete():
 
 def test_direct_opinion_metadata_without_cluster_fields_is_incomplete():
     provider = FakeProvider()
-    provider.metadata[111] = {"title": "Smith v. Wilkie"}
+    # The provider always carries the requested opinion id, even when the
+    # cluster link is missing; that fallback alone is not cluster evidence.
+    provider.metadata[111] = {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "citations": [],
+        "cluster_id": "",
+        "opinion_ids": [111],
+    }
     provider.pages[None] = _page([201])
     _wire_good_citing_opinions(provider, 201)
 
     check = check_case(_case(), provider)
 
     assert check.coverage.complete is False
+    assert _gap_codes(check) == ["cluster_unresolved"]
     assert check.status == "unknown"
     assert any("only opinion 111" in flag for flag in check.flags)
 
