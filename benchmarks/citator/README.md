@@ -3,7 +3,8 @@
 This benchmark measures the production `check_case` citator against a committed,
 hand-labeled set of synthetic opinions. It is deterministic and offline: a
 fixture provider supplies the citation graph, metadata, and opinion text, so the
-benchmark never contacts CourtListener.
+benchmark never contacts CourtListener. Real-opinion attribution is measured
+separately in [`benchmarks/citator_real`](../citator_real/).
 
 The corpus is **not legal authority**. It uses short synthetic passages to test
 whether the citator attributes negative treatment to the correct target, applies
@@ -27,8 +28,8 @@ Each case contains:
 
 - `target` — the synthetic target case (`CaseRecord` fields).
 - `metadata` — opinion metadata keyed by CourtListener opinion id, including
-  `opinion_type`, `precedential_status`, `citations`, `cluster_id`, and
-  `opinion_ids`.
+  `opinion_type`, `precedential_status`, `citations`, `cluster_id`,
+  `cluster_resolved`, and `opinion_ids`.
 - `texts` — citing-opinion bodies keyed by opinion id.
 - `edges` — forward-citation pages. Each page has an opinion id, cursor, count,
   citing ids, and optional next cursor. Pages for the same opinion model
@@ -53,7 +54,7 @@ and `precedential_status`.
 
 ## Corpus
 
-There are 18 cases across these adversarial categories:
+There are 19 cases across these adversarial categories:
 
 | Category | Cases | What it tests |
 | --- | --- | --- |
@@ -68,19 +69,15 @@ There are 18 cases across these adversarial categories:
 | Coverage | `truncated-page-cap`, `missing-target-text` | A page cap or unverifiable body makes coverage incomplete. |
 | Resolution | `ambiguous-lookup`, `direct-cluster-error` | Ambiguous lookups are not guessed; failed cluster expansion falls back to one opinion and marks coverage incomplete. |
 | Advisory separation | `same-docket-advisory` | Same-docket context does not affect treatment status. |
-| Adversarial false positive | `same-name-different-citation`, `dissent-attribution-trap` | Same-name/different-citation and attributed-criticism traps expose current extraction limits. |
+| Adversarial false positive | `same-name-different-citation`, `dissent-attribution-trap` | A negative verb must bind to the target citation and to the court's own holding, not a same-named case or a dissent. |
+| Cap prioritization | `cap-prioritizes-later-authority` | Under a citing-opinion cap, older API-order citations are skipped so the later decisions are reviewed first. |
 
 ## Baseline
 
-`baseline.json` records the current known misses:
+`baseline.json` records the current known misses. It is empty: every case has
+an expected label that the production citator must satisfy.
 
-- `same-name-different-citation` — the extractor accepts the target's case name
-  even when the sentence's negative verb applies to a different reporter
-  citation for a same-named case.
-- `dissent-attribution-trap` — the extractor does not determine whether the
-  majority adopted a sentence's criticism or whether it belongs to a dissent.
-
-Current score: **16/18 cases pass; 2 known misses; 0 new misses.**
+Current score: **19/19 cases pass; 0 known misses; 0 new misses.**
 
 CI fails if a case not listed in `known_misses` fails. A listed case that starts
 passing is reported as `fixed`; remove it from the baseline when the production

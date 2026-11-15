@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "austin-citizens",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/112398/austin-v-michigan-state-chamber-of-commerce/",
+      "citing": "https://www.courtlistener.com/opinion/1741/citizens-united-v-federal-election-commission/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/112398/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=112398",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/1741/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/1741/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "Austin v. Michigan State Chamber of Commerce",
+    "citation": "494 U.S. 652",
+    "court": "Supreme Court of the United States",
+    "decision_date": "1990-03-27",
+    "courtlistener_opinion_id": "112398",
+    "url": "https://www.courtlistener.com/opinion/112398/austin-v-michigan-state-chamber-of-commerce/"
+  },
+  "metadata": {
+    "112398": {
+      "title": "Austin v. Michigan State Chamber of Commerce",
+      "citation": "494 U.S. 652",
+      "citations": [
+        "494 U.S. 652",
+        "110 S. Ct. 1391",
+        "108 L. Ed. 2d 652"
+      ],
+      "cluster_id": "112398",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        112398
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "1990-03-27",
+      "url": "https://www.courtlistener.com/opinion/112398/austin-v-michigan-state-chamber-of-commerce/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "1741": {
+      "title": "Citizens United v. Federal Election Commission",
+      "citation": "558 U.S. 310",
+      "citations": [
+        "558 U.S. 310",
+        "130 S. Ct. 876",
+        "175 L. Ed. 2d 753"
+      ],
+      "cluster_id": "1741",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        1741
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "2010-01-21",
+      "url": "https://www.courtlistener.com/opinion/1741/citizens-united-v-federal-election-commission/",
+      "opinion_type": "010combined",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "1741": "Due consideration leads to this conclusion: Austin, 494 U. S. 652, should be and now is overruled. We return to the principle established in Buckley and Bellotti that the Government may not suppress political speech on the basis of the speaker's corporate identity. Austin is overruled, so it provides no basis for allowing the Government to limit corporate independent expenditures. Given our conclusion we are further required to overrule the part of McConnell that upheld BCRA §203's extension of §441b's restrictions on corporate independent expenditures."
+  },
+  "edges": [
+    {
+      "opinion_id": 112398,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        1741
+      ],
+      "next": null
+    }
+  ]
+}

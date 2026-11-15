@@ -21,6 +21,12 @@ was fully fetched, every citing opinion was read, the target reference was
 found in each body, and at least one citing date is available. Otherwise the
 result is ``unknown`` (or ``negative`` when explicit negative language was
 actually found).
+
+When the citing-opinion cap binds, a bounded candidate pool is ranked by
+decision date and court authority before review; API edge order is only a
+stable tie-break. Pagination is sized around that pool so later, higher-
+authority candidates are not skipped merely because they appeared later in the
+API response. Every unread candidate or page remains an explicit coverage gap.
 """
 
 from __future__ import annotations
@@ -43,16 +49,25 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    TreatmentTimelineEntry,
 )
 from .providers import (
     CourtListenerProvider,
     _cluster_citation_values,
-    _cluster_identifier as _provider_cluster_identifier,
-    _cluster_opinion_ids as _provider_cluster_opinion_ids,
+    _cluster_identifier,
+    _cluster_opinion_ids,
     _positive_id,
 )
 from .search import SearchError
 from .topics import AUTHORITY_WEIGHTS
+
+# Ranking requires one metadata read per candidate, so the candidate pool is
+# deliberately bounded. Four times the review cap (at least 20, at most one
+# API page) leaves room for metadata/text failures and for lower-ranked
+# candidates without turning a capped review into a full citation dump.
+_CITING_PRIORITY_POOL_MIN = 20
+_CITING_PRIORITY_POOL_FACTOR = 4
+_CITING_PRIORITY_POOL_MAX = 100
 
 # Terms CourtListener does not label for us. Keep this list limited to
 # explicit negative verbs; "distinguished" is intentionally absent because it
@@ -65,6 +80,68 @@ _NEGATIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bcriticiz(?:e|ed|es|ing)\b", re.I), "criticized"),
     (re.compile(r"\blimit(?:ed|s|ing)?\b", re.I), "limited"),
     (re.compile(r"\bdeclin(?:e|ed|es|ing)\s+to\s+follow\b", re.I), "declined to follow"),
+)
+
+# Explicit reaffirmance language. "Affirmed" is deliberately absent because
+# it usually describes an appellate disposition, not treatment of the target.
+_REAFFIRMANCE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\breaffirm(?:ed|s|ing|ance|ation)\b", re.I), "reaffirmed"),
+    (re.compile(r"\badher(?:ed|es|ing|ence)\s+to\b", re.I), "adhered to"),
+    (
+        re.compile(r"\bdeclin(?:ed|es|ing)\s+to\s+overrule\b", re.I),
+        "declined to overrule",
+    ),
+)
+
+# A reporter citation is a competing case reference. Keep this deliberately
+# narrow to avoid treating docket numbers or regulations as case citations.
+_CITATION_RE = re.compile(
+    r"\b\d{4}\s+WL\s+\d+\b"
+    r"|\b\d{1,3}\s+(?:Vet\.?\s*App\.?|F\.?\s*(?:2d|3d|4th|App'x|Supp\.?\s*2d)?"
+    r"|S\.?\s*Ct\.?|U\.?\s*S\.?|L\.?\s*Ed\.?(?:\s*2d)?|Ct\.?\s*Cl\.?"
+    r"|Fed\.?\s*Cir\.?|B\.?\s*R\.?)\s+\d+\b",
+    re.I,
+)
+_CASE_NAME_RE = re.compile(
+    r"\b[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}\s+v\.\s+"
+    r"[A-Z][A-Za-z'’.-]*(?:\s+[A-Z][A-Za-z'’.-]*){0,4}"
+)
+_ADVOCACY_ATTRIBUTION_RE = re.compile(
+    r"\b(?:argument|assertion|contention|position|view)\s+that\b"
+    r"|\b(?:appellant|appellee|claimant|veteran|petitioner|respondent|secretary|"
+    r"government|amici?|counsel|brief|board|department)\b"
+    r"(?:\W+\w+){0,5}\W+(?:argues?|argued|contends?|contended|asserts?|asserted|"
+    r"maintains?|maintained|submits?|submitted|urges?|urged|requests?|requested|"
+    r"asks?|asked|concedes?|conceded|acknowledges?|acknowledged|argument|"
+    r"position|view|held|found|concluded|determined)\b",
+    re.I,
+)
+_SEPARATE_VOICE_RE = re.compile(
+    r"\b(?:dissent(?:ed|ing|er|ers)?|concurrence|concurring|plurality)\b"
+    r"(?:\W+\w+){0,5}\W+(?:argues?|argued|contends?|contended|asserts?|asserted|"
+    r"maintains?|maintained|submits?|submitted|urges?|urged|requests?|requested|"
+    r"asks?|asked|criticiz(?:e|ed|es|ing)|would|could|should|might|may|noted|"
+    r"observed|stated|said|explained|concluded|held|found|view|position|"
+    r"argument)\b",
+    re.I,
+)
+_SEPARATE_SUBJECT_RE = re.compile(
+    r"\b(?:dissent(?:ed|ing|er|ers)?|concurrence|concurring|plurality)\b"
+    r"(?:\s+(?:in|of|to)\s+[A-Z][A-Za-z'’.-]*)?"
+    r"(?:\s+(?:judge|justice|opinion|opinions?))?"
+    r"(?:\s*,\s*(?:however|though|also))?\s*$",
+    re.I,
+)
+_HYPOTHETICAL_PREFIX_RE = re.compile(
+    r"\b(?:would|could|should|might|may)\b(?:\W+\w+){0,3}\W*$", re.I
+)
+_CLAUSE_BOUNDARY_RE = re.compile(
+    r";|:|\s+[—–-]\s+|(?:,\s*|\s+)(?:but|yet|while|whereas|although|though|however)\b"
+    r"|,\s*and\b",
+    re.I,
+)
+_INTERPOSED_ARGUMENT_RE = re.compile(
+    r"\b(?:argument|assertion|contention|position|view)\s+that\b", re.I
 )
 
 # Periods after these tokens are not sentence boundaries. This matters for
@@ -130,6 +207,17 @@ class _Target:
     cluster_resolved: bool = True
 
 
+@dataclass(frozen=True)
+class _CitingCandidate:
+    """A citing opinion with the metadata needed to prioritize its review."""
+
+    opinion_id: int
+    metadata: dict[str, object]
+    decision_date: str
+    authority: int
+    source_index: int
+
+
 def _checked_at() -> str:
     """Return a stable UTC timestamp for a citator check."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -146,6 +234,25 @@ def _safe_int(value: object) -> int:
 def _coverage_gap(code: str, detail: str) -> CitatorCoverageGap:
     """Build one structured coverage gap."""
     return CitatorCoverageGap(code=code, detail=detail)
+
+
+def _citing_priority_page_size(max_citing: int) -> int:
+    """Return the adaptive forward-citation page size for a review cap."""
+    return min(
+        _CITING_PRIORITY_POOL_MAX,
+        max(
+            _CITING_PRIORITY_POOL_MIN,
+            max(max_citing, 1) * _CITING_PRIORITY_POOL_FACTOR,
+        ),
+    )
+
+
+def _citing_priority_pool_size(max_citing: int, max_pages: int) -> int:
+    """Return the bounded metadata pool available to the review cap."""
+    return min(
+        _CITING_PRIORITY_POOL_MAX,
+        _citing_priority_page_size(max_citing) * max(max_pages, 1),
+    )
 
 
 def _temporal_confidence(
@@ -185,11 +292,6 @@ def _temporal_confidence(
     )
 
 
-def _as_opinion_id(value: object) -> int | None:
-    """Extract a positive CourtListener opinion id from an id or URL."""
-    return _positive_id(value)
-
-
 def _normalize_citation(value: object) -> str:
     """Normalize a citation for comparison across lookup response variants."""
     return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
@@ -221,33 +323,6 @@ def _select_lookup_row(
     return matches[0] if len(matches) == 1 else None
 
 
-def _cluster_citations(cluster: dict[str, object]) -> tuple[str, ...]:
-    """Return every parallel reporter citation on a lookup cluster."""
-    return tuple(_cluster_citation_values(cluster.get("citations")))
-
-
-def _cluster_citation(cluster: dict[str, object]) -> str:
-    """Return the first reporter citation on a citation-lookup cluster."""
-    citations = _cluster_citations(cluster)
-    return citations[0] if citations else ""
-
-
-def _cluster_opinion_ids(cluster: dict[str, object]) -> tuple[int, ...]:
-    """Return every valid sub-opinion id in a cluster, preserving order."""
-    return tuple(_provider_cluster_opinion_ids(cluster))
-
-
-def _cluster_opinion_id(cluster: dict[str, object]) -> int | None:
-    """Return the first opinion id from a cluster's sub-opinion links."""
-    ids = _cluster_opinion_ids(cluster)
-    return ids[0] if ids else None
-
-
-def _cluster_identifier(cluster: dict[str, object]) -> str:
-    """Return a cluster id from the object or one of its URL fields."""
-    return _provider_cluster_identifier(cluster)
-
-
 def _merged_citations(primary: str, values: object) -> tuple[str, ...]:
     """Put the case's known citation first, then every cluster citation."""
     citations: list[str] = []
@@ -264,20 +339,15 @@ def _target_from_metadata(
     """Expand a direct opinion id with its cluster's citations and sub-opinions."""
     opinion_ids = [opinion_id]
     for value in metadata.get("opinion_ids") or []:
-        parsed = _as_opinion_id(value)
+        parsed = _positive_id(value)
         if parsed is not None and parsed not in opinion_ids:
             opinion_ids.append(parsed)
-    raw_citations = metadata.get("citations")
-    citations = _merged_citations(case.citation, raw_citations)
+    citations = _merged_citations(case.citation, metadata.get("citations"))
     cluster_id = str(metadata.get("cluster_id") or "")
     case_name = case.title or str(metadata.get("title") or "") or title
-    # The provider always carries at least the requested opinion id, so a
-    # single id alone does not prove the cluster was expanded.
-    resolved = bool(
-        cluster_id
-        or len(opinion_ids) > 1
-        or _cluster_citation_values(raw_citations)
-    )
+    # Only the provider's explicit flag proves the cluster fetch succeeded;
+    # sparse metadata always carries the lone requested opinion id.
+    resolved = metadata.get("cluster_resolved") is True
     return _Target(
         case,
         opinion_id,
@@ -301,7 +371,7 @@ def _resolve_target(
     lookup results are left as unknown rather than guessed.
     """
     title = case.title or "Untitled case"
-    direct_id = _as_opinion_id(case.courtlistener_opinion_id)
+    direct_id = _positive_id(case.courtlistener_opinion_id)
     if direct_id is not None:
         flags: list[str] = []
         try:
@@ -385,7 +455,9 @@ def _resolve_target(
             "cluster without an opinion id."
         ]
     case_name = case.title or str(cluster.get("case_name") or "") or title
-    citations = _merged_citations(case.citation, list(_cluster_citations(cluster)))
+    citations = _merged_citations(
+        case.citation, _cluster_citation_values(cluster.get("citations"))
+    )
     return (
         _Target(
             case,
@@ -393,7 +465,7 @@ def _resolve_target(
             citations[0],
             case_name,
             _cluster_identifier(cluster),
-            opinion_ids,
+            tuple(opinion_ids),
             citations,
             True,
         ),
@@ -413,6 +485,8 @@ def _fetch_forward_edges(
     provider: CourtListenerProvider,
     opinion_id: int,
     max_pages: int,
+    page_size: int = 100,
+    max_ids: int = _CITING_PRIORITY_POOL_MAX,
 ) -> tuple[
     list[int], int, int, bool, bool, list[str], list[CitatorCoverageGap]
 ]:
@@ -422,6 +496,11 @@ def _fetch_forward_edges(
     gaps)``. The ids are de-duplicated in API order. ``count`` is the API's
     full forward-citation count when available; ``complete`` is true only when
     no page cap, count mismatch, cursor problem, or request error intervened.
+
+    ``page_size`` and ``max_ids`` adapt pagination to the citator's bounded
+    review pool: the page request never fetches far beyond the candidates the
+    caller can rank, and paging stops once that pool is full. Any remaining
+    cursor is still reported as an explicit ``page_cap`` gap.
     """
     ids: list[int] = []
     seen: set[int] = set()
@@ -434,9 +513,11 @@ def _fetch_forward_edges(
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
 
-    while pages < max_pages:
+    while pages < max_pages and len(ids) < max_ids:
         try:
-            data = provider.citing_edges(opinion_id, page_size=100, cursor=cursor)
+            data = provider.citing_edges(
+                opinion_id, page_size=page_size, cursor=cursor
+            )
         except SearchError as exc:
             detail = (
                 f"Citator forward-citation fetch failed for opinion "
@@ -455,7 +536,7 @@ def _fetch_forward_edges(
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                citing_id = _as_opinion_id(row.get("citing_opinion"))
+                citing_id = _positive_id(row.get("citing_opinion"))
                 if citing_id is not None and citing_id not in seen:
                     seen.add(citing_id)
                     ids.append(citing_id)
@@ -484,12 +565,16 @@ def _fetch_forward_edges(
 
     if count < len(ids):
         count = len(ids)
-    if pages >= max_pages and cursor:
+    if cursor and (pages >= max_pages or len(ids) >= max_ids):
         truncated = True
         complete = False
+        if pages >= max_pages:
+            boundary = f"the {max_pages}-page cap"
+        else:
+            boundary = f"the {max_ids}-candidate priority pool"
         detail = (
-            f"Citator forward-citation coverage for opinion {opinion_id} hit "
-            f"the {max_pages}-page cap."
+            f"Citator forward-citation coverage for opinion {opinion_id} "
+            f"stopped at {boundary}; more pages remain."
         )
         flags.append(detail)
         gaps.append(_coverage_gap("page_cap", detail))
@@ -506,7 +591,11 @@ def _fetch_forward_edges(
 
 
 def _fetch_cluster_forward_edges(
-    provider: CourtListenerProvider, target: _Target, max_pages: int
+    provider: CourtListenerProvider,
+    target: _Target,
+    max_pages: int,
+    page_size: int = 100,
+    max_ids: int = _CITING_PRIORITY_POOL_MAX,
 ) -> tuple[
     list[int], int, int, bool, bool, list[str], list[CitatorCoverageGap]
 ]:
@@ -537,7 +626,13 @@ def _fetch_cluster_forward_edges(
             found_truncated,
             edge_flags,
             edge_gaps,
-        ) = _fetch_forward_edges(provider, opinion_id, max_pages)
+        ) = _fetch_forward_edges(
+            provider,
+            opinion_id,
+            max_pages,
+            page_size=page_size,
+            max_ids=max_ids,
+        )
         pages += found_pages
         count += found_count
         complete = complete and found_complete
@@ -552,24 +647,165 @@ def _fetch_cluster_forward_edges(
     return ids, count, pages, complete, truncated, flags, gaps
 
 
+def _phrase_spans(text: str, phrase: str) -> list[tuple[int, int]]:
+    """Return non-overlapping exact-phrase spans, ignoring whitespace runs."""
+    cleaned = " ".join(phrase.split())
+    if not cleaned:
+        return []
+    body = r"\s+".join(re.escape(part) for part in cleaned.split())
+    pattern = re.compile(rf"(?<!\w){body}(?!\w)", re.I)
+    return [(match.start(), match.end()) for match in pattern.finditer(text)]
+
+
 def _target_spans(
     text: str, target_title: str, target_citations: str | tuple[str, ...]
 ) -> list[tuple[int, int]]:
     """Find any parallel citation or case-name span for the target in *text*."""
-    if isinstance(target_citations, str):
-        phrases = (target_citations, target_title)
-    else:
-        phrases = (*target_citations, target_title)
+    citations = (target_citations,) if isinstance(target_citations, str) else target_citations
     spans: set[tuple[int, int]] = set()
-    for phrase in phrases:
-        cleaned = " ".join(phrase.split())
-        if not cleaned:
-            continue
-        body = r"\s+".join(re.escape(part) for part in cleaned.split())
-        pattern = re.compile(rf"(?<!\w){body}(?!\w)", re.I)
-        for match in pattern.finditer(text):
-            spans.add((match.start(), match.end()))
+    for phrase in (*citations, target_title):
+        spans.update(_phrase_spans(text, phrase))
     return sorted(spans)
+
+
+def _span_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
+    """Return the distance between two spans, or zero when they overlap."""
+    if left[1] <= right[0]:
+        return right[0] - left[1]
+    if right[1] <= left[0]:
+        return left[0] - right[1]
+    return 0
+
+
+def _overlaps(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
+
+
+def _spans_within(
+    spans: list[tuple[int, int]], start: int, end: int
+) -> list[tuple[int, int]]:
+    return [span for span in spans if span[0] >= start and span[1] <= end]
+
+
+def _clause_bounds(text: str, position: int) -> tuple[int, int]:
+    """Return the clause containing *position* within a sentence."""
+    start = 0
+    end = len(text)
+    for match in _CLAUSE_BOUNDARY_RE.finditer(text):
+        if match.end() <= position:
+            start = match.end()
+            continue
+        end = match.start()
+        break
+    return start, end
+
+
+def _nearest_distance(
+    span: tuple[int, int], candidates: list[tuple[int, int]]
+) -> int | None:
+    """Return the distance to the nearest candidate span, if any."""
+    return min((_span_distance(span, candidate) for candidate in candidates), default=None)
+
+
+def _attribution_rejects(prefix: str, opinion_role: str) -> bool:
+    """Whether a treatment clause belongs to an advocate or another voice."""
+    if _ADVOCACY_ATTRIBUTION_RE.search(prefix):
+        return True
+    if opinion_role != "majority":
+        return False
+    return bool(
+        _SEPARATE_VOICE_RE.search(prefix)
+        or _SEPARATE_SUBJECT_RE.search(prefix)
+        or _HYPOTHETICAL_PREFIX_RE.search(prefix)
+    )
+
+
+def _binds_to_target(
+    sentence: str,
+    verb: tuple[int, int],
+    target_title: str,
+    target_citations: tuple[str, ...],
+) -> bool:
+    """Whether *verb* is bound to the target rather than a competing case."""
+    citation_spans = [
+        (match.start(), match.end()) for match in _CITATION_RE.finditer(sentence)
+    ]
+    target_keys = {
+        _normalize_citation(citation)
+        for citation in target_citations
+        if citation
+    }
+    target_citation_spans = [
+        span
+        for span in citation_spans
+        if _normalize_citation(sentence[span[0] : span[1]]) in target_keys
+    ]
+    for citation in target_citations:
+        target_citation_spans.extend(_phrase_spans(sentence, citation))
+    target_citation_spans = sorted(set(target_citation_spans))
+    target_title_spans = _phrase_spans(sentence, target_title)
+    target_references = [*target_citation_spans, *target_title_spans]
+    if not target_references:
+        return False
+
+    clause_start, clause_end = _clause_bounds(sentence, verb[0])
+    citations_in_clause = _spans_within(citation_spans, clause_start, clause_end)
+    target_citations_in_clause = _spans_within(
+        target_citation_spans, clause_start, clause_end
+    )
+    target_titles_in_clause = _spans_within(
+        target_title_spans, clause_start, clause_end
+    )
+    if target_citations_in_clause:
+        target_span = min(
+            target_citations_in_clause,
+            key=lambda span: _span_distance(verb, span),
+        )
+    elif target_titles_in_clause:
+        # A bare case name is usable only when no different reporter citation
+        # appears in the same clause. This rejects same-name/different-citation
+        # sentences before they can become treatment findings.
+        if citations_in_clause:
+            return False
+        target_span = min(
+            target_titles_in_clause,
+            key=lambda span: _span_distance(verb, span),
+        )
+    else:
+        return False
+
+    case_name_spans = [
+        (match.start(), match.end()) for match in _CASE_NAME_RE.finditer(sentence)
+    ]
+    competitors = [
+        span
+        for span in (*citation_spans, *case_name_spans)
+        if not any(_overlaps(span, target) for target in target_references)
+    ]
+    competitors_in_clause = _spans_within(
+        competitors, clause_start, clause_end
+    )
+    # Only compare references on the same side of the verb. A preceding
+    # subject is not competing to be the verb's object.
+    if target_span[0] >= verb[1]:
+        competitors_in_clause = [
+            span for span in competitors_in_clause if span[0] >= verb[1]
+        ]
+    else:
+        competitors_in_clause = [
+            span for span in competitors_in_clause if span[1] <= verb[0]
+        ]
+    competitor_distance = _nearest_distance(verb, competitors_in_clause)
+    target_distance = _span_distance(verb, target_span)
+    if competitor_distance is not None and competitor_distance < target_distance:
+        return False
+
+    between = (
+        sentence[verb[1] : target_span[0]]
+        if target_span[0] >= verb[1]
+        else sentence[target_span[1] : verb[0]]
+    )
+    return not _INTERPOSED_ARGUMENT_RE.search(between)
 
 
 def _is_abbreviation(text: str, position: int) -> bool:
@@ -602,7 +838,11 @@ def _is_negated(sentence: str, term_start: int) -> bool:
     """Whether a negative term is itself negated (e.g. 'not overruled')."""
     prefix = sentence[max(0, term_start - 40) : term_start].lower()
     return bool(
-        re.search(r"\b(?:not|never|without|no\s+longer)\b(?:\W+\w+){0,3}\W*$", prefix)
+        re.search(
+            r"\b(?:not|never|without|no\s+longer|declined\s+to|refused\s+to|"
+            r"failed\s+to)\b(?:\W+\w+){0,3}\W*$",
+            prefix,
+        )
     )
 
 
@@ -610,7 +850,14 @@ def _scope_for(treatment: str, sentence: str) -> str:
     """Classify the scope stated for a negative treatment."""
     if re.search(r"\bin part\b", sentence, re.I):
         return "part"
-    if treatment in {"overruled", "abrogated", "superseded"}:
+    if treatment in {
+        "overruled",
+        "abrogated",
+        "superseded",
+        "reaffirmed",
+        "adhered to",
+        "declined to overrule",
+    }:
         return "all"
     return "unclear"
 
@@ -695,40 +942,98 @@ def _authority_gate(
     return role, tier, not reasons, "; ".join(reasons)
 
 
-def extract_negative_treatments(
-    text: str, target_title: str, target_citations: str | tuple[str, ...]
+def _extract_treatment_matches(
+    text: str,
+    target_title: str,
+    target_citations: str | tuple[str, ...],
+    patterns: tuple[tuple[re.Pattern[str], str], ...],
+    *,
+    opinion_role: str,
 ) -> list[TreatmentMatch]:
-    """Return target-specific negative-treatment sentences from *text*.
-
-    Detection requires a target citation or case-name reference in the same
-    sentence as the negative verb. This avoids turning a whole-opinion word
-    count into a treatment finding. The excerpt is the exact sentence slice
-    from the source text.
-    """
+    """Return target-bound treatment sentences for the supplied patterns."""
+    citations = (
+        (target_citations,)
+        if isinstance(target_citations, str)
+        else target_citations
+    )
     findings: list[TreatmentMatch] = []
     seen: set[tuple[str, str]] = set()
-    for span_start, span_end in _target_spans(text, target_title, target_citations):
-        start, end = _sentence_bounds(text, span_start)
-        if span_end > end:
-            continue
-        sentence = text[start:end].strip()
-        for pattern, treatment in _NEGATIVE_PATTERNS:
-            for match in pattern.finditer(sentence):
-                if _is_negated(sentence, match.start()):
-                    continue
-                key = (treatment, sentence)
-                if key in seen:
-                    continue
-                seen.add(key)
-                findings.append(
-                    TreatmentMatch(
-                        treatment=treatment,
-                        excerpt=sentence,
-                        scope=_scope_for(treatment, sentence),
-                        confidence="medium" if treatment == "limited" else "high",
-                    )
+    for pattern, treatment in patterns:
+        for match in pattern.finditer(text):
+            start, end = _sentence_bounds(text, match.start())
+            raw = text[start:end]
+            lead = len(raw) - len(raw.lstrip())
+            sentence = raw.strip()
+            verb_start = match.start() - start - lead
+            verb_end = match.end() - start - lead
+            clause_start, _ = _clause_bounds(sentence, verb_start)
+            if _attribution_rejects(
+                sentence[clause_start:verb_start], opinion_role
+            ):
+                continue
+            if _is_negated(sentence, verb_start):
+                continue
+            if not _binds_to_target(
+                sentence, (verb_start, verb_end), target_title, citations
+            ):
+                continue
+            key = (treatment, sentence)
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append(
+                TreatmentMatch(
+                    treatment=treatment,
+                    excerpt=sentence,
+                    scope=_scope_for(treatment, sentence),
+                    confidence="medium" if treatment == "limited" else "high",
                 )
+            )
     return findings
+
+
+def extract_negative_treatments(
+    text: str,
+    target_title: str,
+    target_citations: str | tuple[str, ...],
+    *,
+    opinion_role: str = "majority",
+) -> list[TreatmentMatch]:
+    """Return target-specific negative-treatment holdings from *text*.
+
+    The verb must bind to the target citation, or to a bare target name only
+    when no competing citation is present. For a majority opinion, treatment
+    attributed to a dissent, party argument, or hypothetical is ignored.
+    """
+    return _extract_treatment_matches(
+        text,
+        target_title,
+        target_citations,
+        _NEGATIVE_PATTERNS,
+        opinion_role=opinion_role,
+    )
+
+
+def extract_reaffirmance_signals(
+    text: str,
+    target_title: str,
+    target_citations: str | tuple[str, ...],
+    *,
+    opinion_role: str = "majority",
+) -> list[TreatmentMatch]:
+    """Return target-specific reaffirmance signals from *text*.
+
+    These signals are advisory and never clear an authoritative negative
+    finding. They use the same target-binding and attribution rules as
+    negative-treatment extraction.
+    """
+    return _extract_treatment_matches(
+        text,
+        target_title,
+        target_citations,
+        _REAFFIRMANCE_PATTERNS,
+        opinion_role=opinion_role,
+    )
 
 
 def _binding_for(target: _Target, citing_court: str) -> bool | None:
@@ -740,29 +1045,54 @@ def _binding_for(target: _Target, citing_court: str) -> bool | None:
     return citing_weight >= target_weight
 
 
-def _review_citing_opinions(
-    provider: CourtListenerProvider,
-    target: _Target,
-    citing_ids: list[int],
-    max_citing: int,
-) -> tuple[
-    list[NegativeTreatment],
-    list[NegativeTreatment],
-    list[LaterCitingOpinion],
-    int,
-    str,
-    list[str],
-    list[CitatorCoverageGap],
-]:
-    """Read capped citing opinions and collect gated and authoritative signals."""
-    treatments: list[NegativeTreatment] = []
-    gated: list[NegativeTreatment] = []
-    later_citing: list[LaterCitingOpinion] = []
-    reviewed = 0
-    latest = ""
+def _binding_class(value: bool | None) -> str:
+    """Return the report label for a treatment's binding relationship."""
+    if value is True:
+        return "binding"
+    if value is False:
+        return "persuasive"
+    return "unknown"
+
+
+def _timeline_entry(
+    signal: str, finding: NegativeTreatment
+) -> TreatmentTimelineEntry:
+    """Build one chronological timeline view from a treatment finding."""
+    return TreatmentTimelineEntry(
+        signal=signal,
+        treatment=finding.treatment,
+        citing_case=finding.citing_case,
+        excerpt=finding.excerpt,
+        scope=finding.scope,
+        citing_citation=finding.citing_citation,
+        citing_court=finding.citing_court,
+        citing_date=finding.citing_date,
+        citing_url=finding.citing_url,
+        binding=finding.binding,
+        binding_class=_binding_class(finding.binding),
+        authoritative=finding.authoritative,
+        opinion_type=finding.opinion_type,
+        opinion_role=finding.opinion_role,
+        precedential_status=finding.precedential_status,
+        precedential_tier=finding.precedential_tier,
+        gate_reason=finding.gate_reason,
+    )
+
+
+def _load_citing_candidates(
+    provider: CourtListenerProvider, citing_ids: list[int]
+) -> tuple[list[_CitingCandidate], list[str], list[CitatorCoverageGap]]:
+    """Fetch ranking metadata once, then order candidates for a capped review.
+
+    Later decisions come first because they are the most probative of current
+    treatment. Court authority breaks date ties. API order is used only as the
+    final stable tie-break. Metadata failures are retained as coverage gaps,
+    since a failed candidate could have outranked the selected set.
+    """
+    candidates: list[_CitingCandidate] = []
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
-    for opinion_id in citing_ids[:max_citing]:
+    for source_index, opinion_id in enumerate(citing_ids):
         try:
             metadata = provider.opinion_metadata(opinion_id)
         except SearchError as exc:
@@ -781,6 +1111,63 @@ def _review_citing_opinions(
             flags.append(detail)
             gaps.append(_coverage_gap("citing_metadata_unavailable", detail))
             continue
+        citing_court = str(metadata.get("court") or "")
+        candidates.append(
+            _CitingCandidate(
+                opinion_id=opinion_id,
+                metadata=metadata,
+                decision_date=str(metadata.get("decision_date") or ""),
+                authority=AUTHORITY_WEIGHTS.get(citing_court, 0),
+                source_index=source_index,
+            )
+        )
+    candidates.sort(
+        key=lambda candidate: (
+            bool(candidate.decision_date),
+            candidate.decision_date,
+            candidate.authority,
+            -candidate.source_index,
+        ),
+        reverse=True,
+    )
+    return candidates, flags, gaps
+
+
+def _review_citing_opinions(
+    provider: CourtListenerProvider,
+    target: _Target,
+    citing_ids: list[int],
+    max_citing: int,
+) -> tuple[
+    list[NegativeTreatment],
+    list[NegativeTreatment],
+    list[LaterCitingOpinion],
+    int,
+    str,
+    list[str],
+    list[CitatorCoverageGap],
+    list[TreatmentTimelineEntry],
+    bool,
+]:
+    """Read capped citing opinions and collect gated and authoritative signals."""
+    treatments: list[NegativeTreatment] = []
+    gated: list[NegativeTreatment] = []
+    later_citing: list[LaterCitingOpinion] = []
+    timeline: list[TreatmentTimelineEntry] = []
+    reviewed = 0
+    latest = ""
+    flags: list[str] = []
+    gaps: list[CitatorCoverageGap] = []
+    candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
+        provider, citing_ids
+    )
+    flags.extend(candidate_flags)
+    gaps.extend(candidate_gaps)
+    for candidate in candidates:
+        if reviewed >= max_citing:
+            break
+        opinion_id = candidate.opinion_id
+        metadata = candidate.metadata
         try:
             text = provider.fetch_opinion_text(opinion_id)
         except SearchError as exc:
@@ -837,7 +1224,10 @@ def _review_citing_opinions(
         elif not latest or citing_date > latest:
             latest = citing_date
         for finding in extract_negative_treatments(
-            text, target.case_name, target.citations
+            text,
+            target.case_name,
+            target.citations,
+            opinion_role=opinion_role,
         ):
             item = NegativeTreatment(
                 citing_case=str(metadata.get("title") or f"Opinion {opinion_id}"),
@@ -861,15 +1251,90 @@ def _review_citing_opinions(
                 treatments.append(item)
             else:
                 gated.append(item)
+            timeline.append(_timeline_entry("negative", item))
+        for finding in extract_reaffirmance_signals(
+            text,
+            target.case_name,
+            target.citations,
+            opinion_role=opinion_role,
+        ):
+            # Reuse the treatment metadata shape for the timeline; this
+            # positive entry never enters a negative-treatment list.
+            reaffirmance = NegativeTreatment(
+                citing_case=str(metadata.get("title") or f"Opinion {opinion_id}"),
+                citing_citation=str(metadata.get("citation") or ""),
+                citing_court=citing_court,
+                citing_date=citing_date,
+                citing_url=str(metadata.get("url") or ""),
+                treatment=finding.treatment,
+                scope=finding.scope,
+                binding=_binding_for(target, citing_court),
+                confidence=finding.confidence,
+                opinion_type=opinion_type,
+                opinion_role=opinion_role,
+                precedential_status=precedential_status,
+                precedential_tier=precedential_tier,
+                authoritative=eligible,
+                gate_reason=gate_reason,
+                excerpt=finding.excerpt,
+            )
+            timeline.append(_timeline_entry("reaffirmed", reaffirmance))
     if len(citing_ids) > max_citing:
         detail = (
-            f"Citator reviewed {len(citing_ids[:max_citing])} of "
-            f"{len(citing_ids)} citing opinions because of the "
-            f"{max_citing}-opinion cap."
+            f"Citator reviewed {reviewed} of {len(citing_ids)} citing "
+            f"opinions because of the {max_citing}-opinion cap; candidates "
+            "were prioritized by decision date and court authority."
         )
         flags.append(detail)
         gaps.append(_coverage_gap("citing_opinion_cap", detail))
-    return treatments, gated, later_citing, reviewed, latest, flags, gaps
+    negative_dates = sorted(
+        entry.citing_date
+        for entry in timeline
+        if entry.signal == "negative"
+        and entry.authoritative
+        and entry.citing_date
+    )
+    latest_negative = negative_dates[-1] if negative_dates else ""
+    for entry in timeline:
+        entry.later_than_negative = bool(
+            entry.signal == "reaffirmed"
+            and latest_negative
+            and entry.citing_date
+            and entry.citing_date > latest_negative
+        )
+    timeline.sort(
+        key=lambda entry: (
+            not bool(entry.citing_date),
+            entry.citing_date,
+            entry.signal != "negative",
+            entry.citing_case.casefold(),
+        )
+    )
+    later_reaffirmance = any(
+        entry.signal == "reaffirmed"
+        and entry.authoritative
+        and entry.later_than_negative
+        for entry in timeline
+    )
+    # Review order is priority order, but the report keeps the API's citation
+    # order so a capped run remains comparable with an uncapped one.
+    source_order = {
+        str(opinion_id): index for index, opinion_id in enumerate(citing_ids)
+    }
+    later_citing.sort(
+        key=lambda cited: source_order.get(cited.opinion_id, len(source_order))
+    )
+    return (
+        treatments,
+        gated,
+        later_citing,
+        reviewed,
+        latest,
+        flags,
+        gaps,
+        timeline,
+        later_reaffirmance,
+    )
 
 
 def _unknown_check(case: CaseRecord, flags: list[str]) -> CitatorCheck:
@@ -980,6 +1445,10 @@ def check_case(
             for row in same_docket_rows
         ]
 
+    priority_page_size = _citing_priority_page_size(max_citing_opinions)
+    priority_pool = _citing_priority_pool_size(
+        max_citing_opinions, max_pages
+    )
     (
         citing_ids,
         found,
@@ -988,7 +1457,13 @@ def check_case(
         truncated,
         edge_flags,
         edge_gaps,
-    ) = _fetch_cluster_forward_edges(provider, target, max_pages)
+    ) = _fetch_cluster_forward_edges(
+        provider,
+        target,
+        max_pages,
+        page_size=priority_page_size,
+        max_ids=priority_pool,
+    )
     flags.extend(edge_flags)
     gaps.extend(edge_gaps)
     (
@@ -999,6 +1474,8 @@ def check_case(
         latest,
         review_flags,
         review_gaps,
+        treatment_timeline,
+        later_reaffirmance,
     ) = _review_citing_opinions(provider, target, citing_ids, max_citing_opinions)
     flags.extend(review_flags)
     gaps.extend(review_gaps)
@@ -1051,6 +1528,13 @@ def check_case(
         status = "good_law"
         good_law_as_of = latest
 
+    binding_treatments = [
+        treatment for treatment in treatments if treatment.binding is True
+    ]
+    persuasive_treatments = [
+        treatment for treatment in treatments if treatment.binding is False
+    ]
+
     check = CitatorCheck(
         target_case=target.case_name,
         target_citation=target.citation,
@@ -1079,6 +1563,10 @@ def check_case(
         later_citing_opinions=later_citing,
         negative_treatments=treatments,
         gated_treatment_findings=gated_treatments,
+        binding_negative_treatments=binding_treatments,
+        persuasive_negative_treatments=persuasive_treatments,
+        treatment_timeline=treatment_timeline,
+        later_reaffirmance=later_reaffirmance,
         flags=flags,
     )
     check.appellate_history = build_appellate_history(

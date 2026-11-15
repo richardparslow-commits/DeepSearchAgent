@@ -16,6 +16,7 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     SameDocketDecision,
+    TreatmentTimelineEntry,
 )
 
 
@@ -165,6 +166,64 @@ def test_citator_text_includes_every_exact_excerpt_and_coverage():
     assert "binding status unknown" in text
     assert "Citator flags:" in text
     assert "Appellate history: not assessed (history layer did not run)" in text
+
+
+def test_citator_text_and_json_render_treatment_timeline():
+    base = _check()
+    binding = base.negative_treatments[0]
+    check = base.model_copy(
+        update={
+            "binding_negative_treatments": [binding],
+            "persuasive_negative_treatments": [base.negative_treatments[1]],
+            "treatment_timeline": [
+                TreatmentTimelineEntry(
+                    signal="negative",
+                    treatment="overruled",
+                    citing_case="Alpha v. McDonough",
+                    excerpt=binding.excerpt,
+                    scope="all",
+                    citing_date="2019-01-01",
+                    binding=True,
+                    binding_class="binding",
+                    authoritative=True,
+                    opinion_role="majority",
+                    precedential_status="Published",
+                ),
+                TreatmentTimelineEntry(
+                    signal="reaffirmed",
+                    treatment="reaffirmed",
+                    citing_case="Beta v. McDonough",
+                    excerpt="The court reaffirmed Smith v. Wilkie.",
+                    citing_date="2020-05-05",
+                    binding=False,
+                    binding_class="persuasive",
+                    authoritative=False,
+                    gate_reason="opinion role is separate",
+                    later_than_negative=True,
+                ),
+            ],
+            "later_reaffirmance": True,
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "Treatment timeline (chronological; reaffirmance is advisory" in text
+    assert "negative: overruled (all, binding, authoritative)" in text
+    assert "reaffirmed: reaffirmed (unclear, persuasive, gated; opinion role is separate; after latest negative)" in text
+    assert "Later authoritative reaffirmance noted" in text
+
+    data = json.loads(render_analysis(_analysis(check), "json"))
+    assert data["citator_checks"][0]["binding_negative_treatments"][0][
+        "citing_case"
+    ] == "Alpha v. McDonough"
+    assert data["citator_checks"][0]["persuasive_negative_treatments"][0][
+        "treatment"
+    ] == "limited"
+    assert data["citator_checks"][0]["treatment_timeline"][1][
+        "later_than_negative"
+    ] is True
+    assert data["citator_checks"][0]["later_reaffirmance"] is True
 
 
 def test_citator_text_renders_history_candidates_and_verified_records():

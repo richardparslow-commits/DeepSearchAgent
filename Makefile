@@ -9,6 +9,7 @@
 #   make test-w       full suite with deprecation warnings promoted to errors
 #   make benchmark-extraction  real BVA/CAVC extraction benchmark
 #   make benchmark-citator  labeled adversarial citator evaluation
+#   make benchmark-citator-real  hand-labeled real-opinion citator attribution evaluation
 #   make lint         ruff static checks
 #   make lint-fix     auto-fix what ruff can
 #   make coverage     full suite with coverage report
@@ -28,7 +29,7 @@ PYTEST = $(PYTHON) -m pytest
 ARGS =
 QUERY =
 
-.PHONY: test test-search test-fetch test-cli test-config test-core test-w benchmark-extraction benchmark-citator lint lint-fix coverage mutate mutate-check smoke help
+.PHONY: test test-search test-fetch test-cli test-config test-core test-w benchmark-extraction benchmark-citator benchmark-citator-real lint lint-fix coverage mutate mutate-check smoke help
 
 test: ## Run the full test suite
 	$(PYTEST) -q $(ARGS)
@@ -56,6 +57,9 @@ benchmark-extraction: ## Real BVA/CAVC extraction benchmark (known-miss baseline
 
 benchmark-citator: ## Labeled adversarial citator evaluation (known-miss baseline)
 	$(PYTHON) scripts/run_citator_benchmark.py
+
+benchmark-citator-real: ## Hand-labeled real-opinion citator attribution evaluation
+	$(PYTHON) scripts/run_citator_real_benchmark.py
 
 lint: ## Static checks with ruff (pyflakes + pycodestyle rules)
 	$(PYTHON) -m ruff check va_legal_agent tests scripts webapp.py

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "roe-dobbs",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/108713/roe-v-wade/",
+      "citing": "https://www.courtlistener.com/opinion/6481357/dobbs-v-jackson-womens-health-organization/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/108713/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=108713",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/6481357/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/6481357/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "Roe v. Wade",
+    "citation": "410 U.S. 113",
+    "court": "Supreme Court of the United States",
+    "decision_date": "1973-01-22",
+    "courtlistener_opinion_id": "108713",
+    "url": "https://www.courtlistener.com/opinion/108713/roe-v-wade/"
+  },
+  "metadata": {
+    "108713": {
+      "title": "Roe v. Wade",
+      "citation": "410 U.S. 113",
+      "citations": [
+        "410 U.S. 113",
+        "93 S. Ct. 705",
+        "35 L. Ed. 2d 147"
+      ],
+      "cluster_id": "108713",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        108713
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "1973-01-22",
+      "url": "https://www.courtlistener.com/opinion/108713/roe-v-wade/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "6481357": {
+      "title": "Dobbs v. Jackson Women's Health Organization",
+      "citation": "597 U.S. 215",
+      "citations": [
+        "597 U.S. 215",
+        "142 S. Ct. 2228",
+        "213 L. Ed. 2d 545"
+      ],
+      "cluster_id": "6481357",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        6481357
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "2022-06-24",
+      "url": "https://www.courtlistener.com/opinion/6481357/dobbs-v-jackson-womens-health-organization/",
+      "opinion_type": "010combined",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "6481357": "We hold that Roe and Casey must be overruled. The Constitution makes no reference to abortion, and no such right is implicitly protected by any constitutional provision, including the one on which the defenders of Roe and Casey now chiefly rely—the Due Process Clause of the Fourteenth Amendment. We therefore hold that the Constitution does not confer a right to abortion. Roe and Casey must be overruled, and the authority to regulate abortion must be returned to the people and their elected representatives. In defending this law, the State's primary argument is that we should reconsider and overrule Roe and Casey and once again allow each State to regulate abortion as its citizens wish."
+  },
+  "edges": [
+    {
+      "opinion_id": 108713,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        6481357
+      ],
+      "next": null
+    }
+  ]
+}

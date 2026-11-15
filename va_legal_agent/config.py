@@ -282,10 +282,13 @@ class Settings:
     # How many prioritized authorities are checked. The queue is ordered by
     # court authority, resolvability, live/precedential status, then ranking.
     citator_max_cases: int = 10
-    # How many forward citing opinions are read per target. A lower cap keeps
-    # the request cost bounded; the result is marked incomplete when it bites.
+    # How many forward citing opinions are read per target. Candidates are
+    # prioritized by decision date and court authority, and the result is
+    # marked incomplete whenever this cap leaves candidates unread.
     citator_max_citing_opinions: int = 5
-    # How many forward-citation cursor pages are fetched per target.
+    # Maximum forward-citation cursor pages fetched per target sub-opinion.
+    # Pagination is sized and stopped adaptively around the citing-opinion cap;
+    # any remaining pages are reported as incomplete coverage.
     citator_max_pages: int = 1
     # Optional JSON file of human-verified appellate-history records. The
     # citator still emits candidate signals without it, but no history label

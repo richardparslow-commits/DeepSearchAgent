@@ -583,6 +583,32 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                 f"{treatment.gate_reason}): \"{treatment.excerpt}\" — "
                 f"{location} ({treatment.citing_date or 'date unknown'})"
             )
+        if check.treatment_timeline:
+            lines.append(
+                "  Treatment timeline (chronological; reaffirmance is advisory "
+                "and does not change status):"
+            )
+            for entry in check.treatment_timeline:
+                later = (
+                    "; after latest negative"
+                    if entry.later_than_negative
+                    else ""
+                )
+                gate = "" if entry.authoritative else f"; {entry.gate_reason}"
+                authority = (
+                    "authoritative" if entry.authoritative else "gated"
+                )
+                lines.append(
+                    f"  - {entry.citing_date or 'date unknown'} "
+                    f"{entry.signal}: {entry.treatment} ({entry.scope}, "
+                    f"{entry.binding_class}, {authority}{gate}{later}): "
+                    f"\"{entry.excerpt}\" — {entry.citing_case}"
+                )
+        if check.later_reaffirmance:
+            lines.append(
+                "  Later authoritative reaffirmance noted (advisory; negative "
+                "status is unchanged)."
+            )
     return lines
 
 

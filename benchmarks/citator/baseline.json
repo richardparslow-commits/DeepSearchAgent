@@ -1,8 +1,5 @@
 {
   "version": 1,
-  "known_misses": [
-    "same-name-different-citation",
-    "dissent-attribution-trap"
-  ],
-  "notes": "Both are real extraction limitations: the current extractor is sentence-scoped and does not resolve which decision a negative verb targets, or whether the criticism was adopted by the majority. Remove a case when its expected labels pass."
+  "known_misses": [],
+  "notes": "No known misses. Add a case only after confirming that the expected labels are correct and the gap is a documented implementation limitation."
 }

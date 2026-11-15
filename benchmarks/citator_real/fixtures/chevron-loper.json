@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "chevron-loper",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/111221/chevron-u-s-a-inc-v-natural-resources-defense-council-inc/",
+      "citing": "https://www.courtlistener.com/opinion/9986254/loper-bright-enterprises-v-raimondo/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/111221/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=111221",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/9986254/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/9986254/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "Chevron U. S. A. Inc. v. Natural Resources Defense Council, Inc.",
+    "citation": "467 U.S. 837",
+    "court": "Supreme Court of the United States",
+    "decision_date": "1984-06-25",
+    "courtlistener_opinion_id": "111221",
+    "url": "https://www.courtlistener.com/opinion/111221/chevron-u-s-a-inc-v-natural-resources-defense-council-inc/"
+  },
+  "metadata": {
+    "111221": {
+      "title": "Chevron U. S. A. Inc. v. Natural Resources Defense Council, Inc.",
+      "citation": "467 U.S. 837",
+      "citations": [
+        "467 U.S. 837",
+        "104 S. Ct. 2778",
+        "81 L. Ed. 2d 694"
+      ],
+      "cluster_id": "111221",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        111221
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "1984-06-25",
+      "url": "https://www.courtlistener.com/opinion/111221/chevron-u-s-a-inc-v-natural-resources-defense-council-inc/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "9986254": {
+      "title": "Loper Bright Enterprises v. Raimondo",
+      "citation": "603 U.S. 369",
+      "citations": [
+        "603 U.S. 369",
+        "144 S. Ct. 2244",
+        "219 L. Ed. 2d 832"
+      ],
+      "cluster_id": "9986254",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        9986254
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "2024-06-28",
+      "url": "https://www.courtlistener.com/opinion/9986254/loper-bright-enterprises-v-raimondo/",
+      "opinion_type": "010combined",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "9986254": "The Court granted certiorari in these cases limited to the question whether Chevron U. S. A. Inc. v. Natural Resources Defense Council, Inc., 467 U. S. 837, should be overruled or clarified. Chevron is overruled. Courts must exercise their independent judgment in deciding whether an agency has acted within its statutory authority, as the APA requires."
+  },
+  "edges": [
+    {
+      "opinion_id": 111221,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        9986254
+      ],
+      "next": null
+    }
+  ]
+}

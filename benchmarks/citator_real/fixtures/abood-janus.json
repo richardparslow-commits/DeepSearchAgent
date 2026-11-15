@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "abood-janus",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/109661/abood-v-detroit-board-of-education/",
+      "citing": "https://www.courtlistener.com/opinion/4511640/janus-v-state-county-and-municipal-employees/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/109661/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=109661",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/4511640/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/4511640/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "Abood v. Detroit Board of Education",
+    "citation": "431 U.S. 209",
+    "court": "Supreme Court of the United States",
+    "decision_date": "1977-05-23",
+    "courtlistener_opinion_id": "109661",
+    "url": "https://www.courtlistener.com/opinion/109661/abood-v-detroit-board-of-education/"
+  },
+  "metadata": {
+    "109661": {
+      "title": "Abood v. Detroit Board of Education",
+      "citation": "431 U.S. 209",
+      "citations": [
+        "431 U.S. 209",
+        "97 S. Ct. 1782",
+        "52 L. Ed. 2d 261"
+      ],
+      "cluster_id": "109661",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        109661
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "1977-05-23",
+      "url": "https://www.courtlistener.com/opinion/109661/abood-v-detroit-board-of-education/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "4511640": {
+      "title": "Janus v. American Federation of State, County, and Municipal Employees",
+      "citation": "585 U.S. 878",
+      "citations": [
+        "585 U.S. 878",
+        "138 S. Ct. 2448",
+        "201 L. Ed. 2d 924"
+      ],
+      "cluster_id": "4511640",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        4511640
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "2018-06-27",
+      "url": "https://www.courtlistener.com/opinion/4511640/janus-v-state-county-and-municipal-employees/",
+      "opinion_type": "010combined",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "4511640": "Abood is therefore overruled. Abood was wrongly decided and is now overruled. The judgment of the United States Court of Appeals for the Seventh Circuit is reversed, and the case is remanded for further proceedings consistent with this opinion."
+  },
+  "edges": [
+    {
+      "opinion_id": 109661,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        4511640
+      ],
+      "next": null
+    }
+  ]
+}

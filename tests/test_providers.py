@@ -4079,6 +4079,7 @@ def test_courtlistener_get_opinion_success(monkeypatch):
     assert result["opinion_type"] == "020lead"
     assert result["precedential_status"] == "Published"
     assert result["cluster_id"] == "98765"
+    assert result["cluster_resolved"] is True
     assert result["citations"] == ["35 Vet.App. 123", "2024 WL 123456"]
     assert result["opinion_ids"] == [12345, 12346]
     assert result["snippet"] == ""
@@ -4110,6 +4111,7 @@ def test_courtlistener_get_opinion_sparse_fallbacks(monkeypatch):
     assert result["opinion_type"] == ""
     assert result["precedential_status"] == ""
     assert result["cluster_id"] == ""
+    assert result["cluster_resolved"] is False
     assert result["citations"] == []
     assert result["opinion_ids"] == [12345]
     assert result["snippet"] == ""

@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "bowers-lawrence",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/111738/bowers-v-hardwick/",
+      "citing": "https://www.courtlistener.com/opinion/130160/lawrence-v-texas/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/111738/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=111738",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/130160/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/130160/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "Bowers v. Hardwick",
+    "citation": "478 U.S. 186",
+    "court": "Supreme Court of the United States",
+    "decision_date": "1986-06-30",
+    "courtlistener_opinion_id": "111738",
+    "url": "https://www.courtlistener.com/opinion/111738/bowers-v-hardwick/"
+  },
+  "metadata": {
+    "111738": {
+      "title": "Bowers v. Hardwick",
+      "citation": "478 U.S. 186",
+      "citations": [
+        "478 U.S. 186",
+        "106 S. Ct. 2841",
+        "92 L. Ed. 2d 140"
+      ],
+      "cluster_id": "111738",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        111738
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "1986-06-30",
+      "url": "https://www.courtlistener.com/opinion/111738/bowers-v-hardwick/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "130160": {
+      "title": "Lawrence v. Texas",
+      "citation": "539 U.S. 558",
+      "citations": [
+        "539 U.S. 558",
+        "123 S. Ct. 2472",
+        "156 L. Ed. 2d 508"
+      ],
+      "cluster_id": "130160",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        130160
+      ],
+      "court": "Supreme Court of the United States",
+      "decision_date": "2003-06-26",
+      "url": "https://www.courtlistener.com/opinion/130160/lawrence-v-texas/",
+      "opinion_type": "010combined",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "130160": "Bowers v. Hardwick was not correct when it was decided, and it is not correct today. It ought not to remain binding precedent. Bowers v. Hardwick should be and now is overruled."
+  },
+  "edges": [
+    {
+      "opinion_id": 111738,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        130160
+      ],
+      "next": null
+    }
+  ]
+}

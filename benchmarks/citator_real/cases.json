@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "description": "Hand-labeled real Supreme Court overruling-chain passages evaluated through the production citator with recorded CourtListener-shaped provider fixtures.",
+  "reviewed_at": "2026-11-15",
+  "label_rules": {
+    "attribution": "authoritative = the citing opinion's own majority/lead/combined holding; gated = a separate, plurality, or nonprecedential voice; none = a question, party argument, competing case, conditional, or other non-treatment reference.",
+    "positive": "A gold entry with attribution authoritative or gated is a target-bound negative-treatment passage and counts in attribution recall.",
+    "control": "A gold entry with attribution none is a labeled non-treatment passage. Any predicted negative finding on that passage is an attribution false positive.",
+    "treatment": "The canonical treatment term expected for a positive entry; controls use an empty string because no treatment is expected.",
+    "excerpt": "The exact opinion sentence, after whitespace and typographic-punctuation normalization, used to match a citator finding."
+  },
+  "cases": [
+    {
+      "id": "roe-dobbs",
+      "category": "short-form target name in holding",
+      "fixture": "fixtures/roe-dobbs.json",
+      "expected_status": "negative",
+      "review_notes": "The two holdings are the Dobbs Opinion of the Court. Mississippi's argument is not the Court's own treatment. Roe is referred to only by its short name in all three passages.",
+      "gold": [
+        {
+          "id": "roe-dobbs-holding-1",
+          "citing_id": "6481357",
+          "excerpt": "We hold that Roe and Casey must be overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "roe-dobbs-holding-2",
+          "citing_id": "6481357",
+          "excerpt": "Roe and Casey must be overruled, and the authority to regulate abortion must be returned to the people and their elected representatives.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "roe-dobbs-party-argument",
+          "citing_id": "6481357",
+          "excerpt": "In defending this law, the State's primary argument is that we should reconsider and overrule Roe and Casey and once again allow each State to regulate abortion as its citizens wish.",
+          "treatment": "",
+          "attribution": "none",
+          "kind": "party_argument"
+        }
+      ]
+    },
+    {
+      "id": "casey-dobbs",
+      "category": "short-form target name in holding",
+      "fixture": "fixtures/casey-dobbs.json",
+      "expected_status": "negative",
+      "review_notes": "The same Dobbs passages overrule Casey as well as Roe. Casey is referred to only by its short name, never by the full target title or a reporter citation.",
+      "gold": [
+        {
+          "id": "casey-dobbs-holding-1",
+          "citing_id": "6481357",
+          "excerpt": "We hold that Roe and Casey must be overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "casey-dobbs-holding-2",
+          "citing_id": "6481357",
+          "excerpt": "Roe and Casey must be overruled, and the authority to regulate abortion must be returned to the people and their elected representatives.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "casey-dobbs-party-argument",
+          "citing_id": "6481357",
+          "excerpt": "In defending this law, the State's primary argument is that we should reconsider and overrule Roe and Casey and once again allow each State to regulate abortion as its citizens wish.",
+          "treatment": "",
+          "attribution": "none",
+          "kind": "party_argument"
+        }
+      ]
+    },
+    {
+      "id": "chevron-loper",
+      "category": "question presented and short-form holding",
+      "fixture": "fixtures/chevron-loper.json",
+      "expected_status": "negative",
+      "review_notes": "The first sentence is the question presented, not a holding; 'question' is a noun and 'limited' modifies the grant. The second sentence is the Opinion of the Court's holding, but uses only the short name Chevron.",
+      "gold": [
+        {
+          "id": "chevron-loper-question",
+          "citing_id": "9986254",
+          "excerpt": "The Court granted certiorari in these cases limited to the question whether Chevron U. S. A. Inc. v. Natural Resources Defense Council, Inc., 467 U. S. 837, should be overruled or clarified.",
+          "treatment": "",
+          "attribution": "none",
+          "kind": "question_presented"
+        },
+        {
+          "id": "chevron-loper-holding",
+          "citing_id": "9986254",
+          "excerpt": "Chevron is overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        }
+      ]
+    },
+    {
+      "id": "abood-janus",
+      "category": "short-form target name in holding",
+      "fixture": "fixtures/abood-janus.json",
+      "expected_status": "negative",
+      "review_notes": "Both sentences are the Janus Opinion of the Court. Abood appears only by its short name; the target's full title and reporter citation are absent from the recorded passages.",
+      "gold": [
+        {
+          "id": "abood-janus-holding-1",
+          "citing_id": "4511640",
+          "excerpt": "Abood is therefore overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "abood-janus-holding-2",
+          "citing_id": "4511640",
+          "excerpt": "Abood was wrongly decided and is now overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        }
+      ]
+    },
+    {
+      "id": "austin-citizens",
+      "category": "cited holding versus short-form holding",
+      "fixture": "fixtures/austin-citizens.json",
+      "expected_status": "negative",
+      "review_notes": "The first holding names Austin with its reporter citation. The second uses only the short name. The McConnell sentence is a different target and must not be attributed to Austin.",
+      "gold": [
+        {
+          "id": "austin-citizens-cited-holding",
+          "citing_id": "1741",
+          "excerpt": "Due consideration leads to this conclusion: Austin, 494 U. S. 652, should be and now is overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "austin-citizens-short-name-holding",
+          "citing_id": "1741",
+          "excerpt": "Austin is overruled, so it provides no basis for allowing the Government to limit corporate independent expenditures.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        },
+        {
+          "id": "austin-citizens-mcconnell",
+          "citing_id": "1741",
+          "excerpt": "Given our conclusion we are further required to overrule the part of McConnell that upheld BCRA §203's extension of §441b's restrictions on corporate independent expenditures.",
+          "treatment": "",
+          "attribution": "none",
+          "kind": "competing_case"
+        }
+      ]
+    },
+    {
+      "id": "bowers-lawrence",
+      "category": "full-name target in holding",
+      "fixture": "fixtures/bowers-lawrence.json",
+      "expected_status": "negative",
+      "review_notes": "The Lawrence Opinion of the Court names Bowers v. Hardwick in full and overrules it. This is the positive control for target binding.",
+      "gold": [
+        {
+          "id": "bowers-lawrence-holding",
+          "citing_id": "130160",
+          "excerpt": "Bowers v. Hardwick should be and now is overruled.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        }
+      ]
+    }
+  ]
+}

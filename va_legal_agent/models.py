@@ -293,6 +293,36 @@ class LaterCitingOpinion(BaseModel):
     gate_reason: str = ""
 
 
+class TreatmentTimelineEntry(BaseModel):
+    """One chronological negative or reaffirmance signal.
+
+    The timeline is explanatory only. It never changes ``status``,
+    ``good_law_as_of``, coverage, ranking, or ``superseded_by``.
+    """
+
+    signal: str  # "negative" or "reaffirmed"
+    treatment: str
+    citing_case: str
+    excerpt: str
+    scope: str = "unclear"
+    citing_citation: str = ""
+    citing_court: str = ""
+    citing_date: str = ""
+    citing_url: str = ""
+    # None means the relative authority could not be established; it is not
+    # equivalent to persuasive.
+    binding: bool | None = None
+    binding_class: str = "unknown"  # "binding", "persuasive", or "unknown"
+    authoritative: bool = False
+    opinion_type: str = ""
+    opinion_role: str = "unknown"
+    precedential_status: str = ""
+    precedential_tier: str = "unknown"
+    gate_reason: str = ""
+    # True for a reaffirmance dated after the latest authoritative negative.
+    later_than_negative: bool = False
+
+
 class AppellateHistoryCandidate(BaseModel):
     """A history signal retained for review, never a history label by itself."""
 
@@ -450,6 +480,19 @@ class CitatorCheck(BaseModel):
     # are retained for review but never counted toward ``negative`` or
     # ``good_law``.
     gated_treatment_findings: list[NegativeTreatment] = Field(default_factory=list)
+    # Authoritative negatives split by the citing court's relationship to the
+    # target. ``negative_treatments`` remains the union and the only status
+    # input; unknown binding is intentionally left out of both splits.
+    binding_negative_treatments: list[NegativeTreatment] = Field(
+        default_factory=list
+    )
+    persuasive_negative_treatments: list[NegativeTreatment] = Field(
+        default_factory=list
+    )
+    # Chronological negative and reaffirmance signals. Reaffirmance is
+    # advisory and never clears or downgrades a negative finding.
+    treatment_timeline: list[TreatmentTimelineEntry] = Field(default_factory=list)
+    later_reaffirmance: bool = False
     flags: list[str] = Field(default_factory=list)
 
 

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "known_misses": [
+    "roe-dobbs",
+    "casey-dobbs",
+    "chevron-loper",
+    "abood-janus",
+    "austin-citizens"
+  ],
+  "metric_floor": {
+    "target_precision": 0.33,
+    "target_recall": 0.1,
+    "authoritative_precision": 0.33,
+    "authoritative_recall": 0.1
+  },
+  "notes": "This is a measurement baseline, not a correctness claim. The known misses record two real generalization gaps: short-form target names are not located or bound, and a question-presented sentence yields the non-treatment terms 'questioned' and 'limited'. A case listed here that starts passing is reported as fixed; remove it from known_misses when that happens. The metric_floor prevents a regression below the recorded target and authoritative precision/recall."
+}

@@ -694,6 +694,7 @@ class CourtListenerProvider:
             "citation": citation,
             "citations": citations,
             "cluster_id": _cluster_identifier(cluster, str(cluster_url or "")),
+            "cluster_resolved": bool(cluster),
             "opinion_ids": opinion_ids,
             "decision_date": cluster.get("date_filed") or "",
             "docket": docket.get("docket_number") or "",

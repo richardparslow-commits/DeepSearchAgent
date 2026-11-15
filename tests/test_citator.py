@@ -5,21 +5,19 @@ import json
 import pytest
 
 from va_legal_agent.citator import (
-    _as_opinion_id,
     _authority_gate,
-    _cluster_citation,
-    _cluster_citations,
-    _cluster_identifier,
-    _cluster_opinion_id,
-    _cluster_opinion_ids,
+    _citing_priority_page_size,
+    _citing_priority_pool_size,
     _is_abbreviation,
     _opinion_role,
     _precedential_tier,
     _safe_int,
     _scope_for,
     _sentence_bounds,
+    _span_distance,
     check_case,
     extract_negative_treatments,
+    extract_reaffirmance_signals,
     run_citator,
 )
 from va_legal_agent.models import AppellateHistoryRecord, CaseRecord
@@ -64,6 +62,7 @@ def _target_meta(opinion_id: int = 111) -> dict[str, object]:
         "citation": "30 Vet.App. 123",
         "citations": ["30 Vet.App. 123", "2020 WL 123456"],
         "cluster_id": "777",
+        "cluster_resolved": True,
         "opinion_ids": [opinion_id],
         "court": COURT_CAVC,
         "decision_date": "2018-01-01",
@@ -289,6 +288,189 @@ def test_extract_skips_target_span_crossing_a_sentence_boundary():
     assert extract_negative_treatments(text, "Smith v. Wilkie", "Foo. 123") == []
 
 
+def test_extract_rejects_same_name_with_a_different_citation():
+    text = (
+        "We overruled Smith v. Wilkie, 30 Vet.App. 999, a different case that "
+        "happens to share the name."
+    )
+
+    assert extract_negative_treatments(
+        text, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+
+
+def test_extract_rejects_dissent_attribution_in_a_majority_opinion():
+    text = (
+        "The majority affirmed, but the dissent criticized Smith v. Wilkie, "
+        "30 Vet.App. 123."
+    )
+
+    assert extract_negative_treatments(
+        text, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+
+    separate = extract_negative_treatments(
+        text,
+        "Smith v. Wilkie",
+        "30 Vet.App. 123",
+        opinion_role="separate",
+    )
+    assert [finding.treatment for finding in separate] == ["criticized"]
+
+
+def test_extract_reaffirmance_signals_use_explicit_target_bound_language():
+    text = (
+        "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123. "
+        "It also declined to overrule Smith v. Wilkie, 30 Vet.App. 123."
+    )
+
+    findings = extract_reaffirmance_signals(
+        text, "Smith v. Wilkie", "30 Vet.App. 123"
+    )
+
+    assert [finding.treatment for finding in findings] == [
+        "reaffirmed",
+        "declined to overrule",
+    ]
+    assert all(finding.scope == "all" for finding in findings)
+    assert all(finding.confidence == "high" for finding in findings)
+    assert findings[0].excerpt == "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+
+
+def test_extract_reaffirmance_accepts_noun_forms():
+    text = (
+        "The court's reaffirmance of Smith v. Wilkie, 30 Vet.App. 123 controls. "
+        "Its adherence to Smith v. Wilkie, 30 Vet.App. 123 is clear."
+    )
+
+    findings = extract_reaffirmance_signals(
+        text, "Smith v. Wilkie", "30 Vet.App. 123"
+    )
+
+    assert [finding.treatment for finding in findings] == [
+        "reaffirmed",
+        "adhered to",
+    ]
+
+
+def test_extract_reaffirmance_rejects_competing_citation_and_dissent_attribution():
+    competing = "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 999."
+    dissent = (
+        "The majority affirmed, but the dissent reaffirmed Smith v. Wilkie, "
+        "30 Vet.App. 123."
+    )
+
+    assert extract_reaffirmance_signals(
+        competing, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+    assert extract_reaffirmance_signals(
+        dissent, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+
+
+def test_extract_rejects_party_argument_and_hypothetical_holdings():
+    argument = "Appellant argues that the court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    hypothetical = "The court would overrule Smith v. Wilkie, 30 Vet.App. 123."
+
+    assert extract_negative_treatments(
+        argument, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+    assert extract_negative_treatments(
+        hypothetical, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+
+
+def test_extract_allows_the_courts_own_holding_after_other_actors():
+    text = (
+        "The court affirmed the Board and overruled Smith v. Wilkie, "
+        "30 Vet.App. 123."
+    )
+
+    findings = extract_negative_treatments(
+        text, "Smith v. Wilkie", "30 Vet.App. 123"
+    )
+    assert [finding.treatment for finding in findings] == ["overruled"]
+
+
+def test_extract_binds_the_verb_to_the_nearest_case_reference():
+    different_case = (
+        "We overruled Jones v. McDonough, 31 Vet.App. 456, and followed "
+        "Smith v. Wilkie, 30 Vet.App. 123."
+    )
+    target_case = (
+        "We followed Jones v. McDonough, 31 Vet.App. 456, and overruled "
+        "Smith v. Wilkie, 30 Vet.App. 123."
+    )
+
+    assert extract_negative_treatments(
+        different_case, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+    findings = extract_negative_treatments(
+        target_case, "Smith v. Wilkie", "30 Vet.App. 123"
+    )
+    assert [finding.treatment for finding in findings] == ["overruled"]
+
+
+def test_extract_rejects_a_competing_case_name_and_interposed_argument():
+    competing_name = (
+        "The court overruled Jones v. McDonough and followed Smith v. Wilkie."
+    )
+    interposed = (
+        "The court overruled the argument that Smith v. Wilkie, 30 Vet.App. 123, "
+        "was wrong."
+    )
+    different_object = (
+        "The Secretary's decision was overruled, and Smith v. Wilkie was followed."
+    )
+
+    assert extract_negative_treatments(
+        competing_name, "Smith v. Wilkie", ""
+    ) == []
+    assert extract_negative_treatments(
+        interposed, "Smith v. Wilkie", "30 Vet.App. 123"
+    ) == []
+    assert extract_negative_treatments(
+        different_object, "Smith v. Wilkie", ""
+    ) == []
+
+
+def test_extract_requires_the_target_in_the_negative_verb_clause():
+    text = (
+        "Smith v. Wilkie is discussed, but the court overruled Jones v. McDonough."
+    )
+
+    assert extract_negative_treatments(text, "Smith v. Wilkie", "") == []
+
+
+def test_extract_handles_clause_boundaries_and_duplicate_verbs():
+    before_boundary = (
+        "The court overruled Smith v. Wilkie, while the dissent would have "
+        "affirmed."
+    )
+    duplicate_verbs = (
+        "The court overruled and then overruled Smith v. Wilkie, 30 Vet.App. 123."
+    )
+
+    assert [
+        finding.treatment
+        for finding in extract_negative_treatments(
+            before_boundary, "Smith v. Wilkie", ""
+        )
+    ] == ["overruled"]
+    assert [
+        finding.treatment
+        for finding in extract_negative_treatments(
+            duplicate_verbs, "Smith v. Wilkie", "30 Vet.App. 123"
+        )
+    ] == ["overruled"]
+
+
+def test_span_distance_handles_order_and_overlap():
+    assert _span_distance((0, 5), (7, 9)) == 2
+    assert _span_distance((7, 9), (0, 5)) == 2
+    assert _span_distance((0, 5), (3, 8)) == 0
+
+
 def test_scope_for_overruled_without_in_part_is_all():
     assert _scope_for("overruled", "The case was overruled.") == "all"
     assert _scope_for("questioned", "The case was questioned.") == "unclear"
@@ -315,37 +497,6 @@ def test_safe_int_handles_malformed_values():
 def test_sentence_bounds_returns_whole_text_when_no_sentence_end_exists():
     text = "Smith v. Wilkie"
     assert _sentence_bounds(text, 0) == (0, len(text))
-
-
-def test_as_opinion_id_accepts_digits_urls_and_rejects_invalid_values():
-    assert _as_opinion_id("123") == 123
-    assert _as_opinion_id("https://www.courtlistener.com/opinion/456/") == 456
-    assert _as_opinion_id("0") is None
-    assert _as_opinion_id("") is None
-    assert _as_opinion_id(None) is None
-    assert _as_opinion_id("not-an-id") is None
-
-
-def test_cluster_helpers_handle_dicts_strings_and_empty_values():
-    cluster = {
-        "citations": [{"cite": "30 Vet.App. 123"}, {"citation": "31 Vet.App. 456"}],
-        "sub_opinions": [{"resource_uri": "https://www.courtlistener.com/opinions/789/"}],
-    }
-    assert _cluster_citation(cluster) == "30 Vet.App. 123"
-    assert _cluster_citations(cluster) == ("30 Vet.App. 123", "31 Vet.App. 456")
-    assert _cluster_opinion_id(cluster) == 789
-    assert _cluster_opinion_ids(cluster) == (789,)
-    assert _cluster_identifier(cluster) == ""
-    assert _cluster_identifier({"id": 98765}) == "98765"
-    assert _cluster_identifier(
-        {"resource_uri": "https://www.courtlistener.com/api/rest/v4/clusters/42/"}
-    ) == "42"
-    assert _cluster_citation({"citations": ["32 Vet.App. 1"]}) == "32 Vet.App. 1"
-    assert _cluster_citation({"citations": [{}, "33 Vet.App. 2"]}) == "33 Vet.App. 2"
-    assert _cluster_citation({"citations": []}) == ""
-    assert _cluster_citation({}) == ""
-    assert _cluster_opinion_id({"sub_opinions": ["bad", "https://x/opinions/9/"]}) == 9
-    assert _cluster_opinion_id({}) is None
 
 
 def test_direct_opinion_id_skips_citation_lookup():
@@ -532,6 +683,7 @@ def test_direct_opinion_metadata_without_cluster_fields_is_incomplete():
         "citation": "30 Vet.App. 123",
         "citations": [],
         "cluster_id": "",
+        "cluster_resolved": False,
         "opinion_ids": [111],
     }
     provider.pages[None] = _page([201])
@@ -785,6 +937,9 @@ def test_explicit_negative_treatment_sets_negative_and_clears_good_law_date():
     assert check.later_citing_opinions[0].treatment_eligible is True
     assert treatment.excerpt in provider.texts[201]
     assert treatment.citing_case == "Jones v. McDonough"
+    assert check.binding_negative_treatments == [treatment]
+    assert check.persuasive_negative_treatments == []
+    assert check.later_reaffirmance is False
 
 
 def test_dissent_negative_is_gated_and_does_not_set_negative():
@@ -907,6 +1062,119 @@ def test_binding_comparison_can_be_false_or_unknown():
     check = check_case(case, provider)
 
     assert [t.binding for t in check.negative_treatments] == [False, None]
+    assert check.binding_negative_treatments == []
+    assert [t.binding for t in check.persuasive_negative_treatments] == [False]
+    assert [entry.binding_class for entry in check.treatment_timeline] == [
+        "persuasive",
+        "unknown",
+    ]
+
+
+def test_timeline_splits_binding_and_persuasive_and_flags_later_reaffirmance():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202, 203])
+    provider.metadata[201] = _meta(
+        case="Alpha v. McDonough", date="2020-01-01", court=COURT_CAVC
+    )
+    provider.texts[201] = "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    provider.metadata[202] = _meta(
+        case="Beta v. McDonough", date="2021-01-01", court=COURT_CAVC
+    )
+    provider.texts[202] = "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+    provider.metadata[203] = _meta(
+        case="Gamma v. McDonough", date="2019-01-01", court=COURT_BVA
+    )
+    provider.texts[203] = "The Board overruled Smith v. Wilkie, 30 Vet.App. 123."
+
+    check = check_case(_case(), provider)
+
+    assert check.status == "negative"
+    assert check.coverage.complete is True
+    assert len(check.negative_treatments) == 2
+    assert [t.citing_case for t in check.binding_negative_treatments] == [
+        "Alpha v. McDonough"
+    ]
+    assert [t.citing_case for t in check.persuasive_negative_treatments] == [
+        "Gamma v. McDonough"
+    ]
+    assert [entry.signal for entry in check.treatment_timeline] == [
+        "negative",
+        "negative",
+        "reaffirmed",
+    ]
+    assert [entry.citing_date for entry in check.treatment_timeline] == [
+        "2019-01-01",
+        "2020-01-01",
+        "2021-01-01",
+    ]
+    assert [entry.binding_class for entry in check.treatment_timeline] == [
+        "persuasive",
+        "binding",
+        "binding",
+    ]
+    assert check.treatment_timeline[-1].later_than_negative is True
+    assert check.later_reaffirmance is True
+
+
+def test_gated_reaffirmance_is_in_the_timeline_but_is_not_later_reaffirmance():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202])
+    provider.metadata[201] = _meta(date="2020-01-01")
+    provider.texts[201] = "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    provider.metadata[202] = _meta(
+        case="Dissent v. McDonough",
+        date="2021-01-01",
+        opinion_type="040dissent",
+    )
+    provider.texts[202] = (
+        "The dissent reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+    )
+
+    check = check_case(_case(), provider)
+
+    assert check.status == "negative"
+    assert len(check.treatment_timeline) == 2
+    assert check.treatment_timeline[-1].signal == "reaffirmed"
+    assert check.treatment_timeline[-1].authoritative is False
+    assert check.treatment_timeline[-1].later_than_negative is True
+    assert check.later_reaffirmance is False
+
+
+def test_reaffirmance_before_the_latest_negative_is_not_later():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202])
+    provider.metadata[201] = _meta(date="2020-01-01")
+    provider.texts[201] = "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    provider.metadata[202] = _meta(
+        case="Beta v. McDonough", date="2019-01-01"
+    )
+    provider.texts[202] = "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+
+    check = check_case(_case(), provider)
+
+    assert check.status == "negative"
+    assert [entry.signal for entry in check.treatment_timeline] == [
+        "reaffirmed",
+        "negative",
+    ]
+    assert check.treatment_timeline[0].later_than_negative is False
+    assert check.later_reaffirmance is False
+
+
+def test_reaffirmance_without_negative_preserves_good_law():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201])
+    provider.metadata[201] = _meta(date="2020-01-01")
+    provider.texts[201] = "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+
+    check = check_case(_case(), provider)
+
+    assert check.status == "good_law"
+    assert check.good_law_as_of == "2020-01-01"
+    assert check.negative_treatments == []
+    assert [entry.signal for entry in check.treatment_timeline] == ["reaffirmed"]
+    assert check.treatment_timeline[0].later_than_negative is False
+    assert check.later_reaffirmance is False
 
 
 def test_cursor_pagination_collects_all_pages():
@@ -966,6 +1234,175 @@ def test_citing_opinion_cap_truncates_after_reviewed_subset():
     assert check.coverage.complete is False
     assert _gap_codes(check) == ["citing_opinion_cap"]
     assert check.coverage.temporal_confidence == "medium"
+    assert check.status == "unknown"
+
+
+def test_priority_pool_scales_with_the_citing_review_and_page_caps():
+    assert _citing_priority_page_size(1) == 20
+    assert _citing_priority_page_size(5) == 20
+    assert _citing_priority_page_size(10) == 40
+    assert _citing_priority_page_size(50) == 100
+    assert _citing_priority_pool_size(1, 1) == 20
+    assert _citing_priority_pool_size(5, 2) == 40
+    assert _citing_priority_pool_size(50, 10) == 100
+
+
+def test_citing_cap_prioritizes_later_citing_opinions():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202, 203, 204], count=4)
+    _wire_good_citing_opinions(provider, 201, 202, 203, 204)
+    provider.metadata[201] = _meta(
+        case="Older BVA", date="2022-01-01", court=COURT_BVA
+    )
+    provider.metadata[202] = _meta(
+        case="Older CAVC", date="2020-01-01", court=COURT_CAVC
+    )
+    provider.metadata[203] = _meta(
+        case="Newer CAVC", date="2023-01-01", court=COURT_CAVC
+    )
+    provider.metadata[204] = _meta(
+        case="Older Supreme", date="2021-01-01", court=COURT_SUPREME
+    )
+
+    check = check_case(_case(), provider, max_citing_opinions=2)
+
+    assert check.coverage.citing_opinions_reviewed == 2
+    assert provider.text_calls == [203, 201]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == [
+        "201",
+        "203",
+    ]
+    assert check.coverage.complete is False
+    assert check.status == "unknown"
+    assert _gap_codes(check) == ["citing_opinion_cap"]
+    assert "prioritized by decision date" in check.coverage.gaps[0].detail
+
+
+def test_citing_cap_uses_court_authority_to_break_date_ties():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202, 203], count=3)
+    _wire_good_citing_opinions(provider, 201, 202, 203)
+    provider.metadata[201] = _meta(date="2020-01-01", court=COURT_BVA)
+    provider.metadata[202] = _meta(date="2020-01-01", court=COURT_CAVC)
+    provider.metadata[203] = _meta(date="2020-01-01", court=COURT_SUPREME)
+
+    check = check_case(_case(), provider, max_citing_opinions=2)
+
+    assert provider.text_calls == [203, 202]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == [
+        "202",
+        "203",
+    ]
+    assert check.status == "unknown"
+
+
+def test_adaptive_pagination_reaches_a_later_opinion_on_the_next_page():
+    provider = FakeProvider()
+    provider.pages[None] = _page(
+        [201, 202], count=3, next_url="?cursor=next-page"
+    )
+    provider.pages["next-page"] = _page([203], count=3)
+    _wire_good_citing_opinions(provider, 201, 202, 203)
+    provider.metadata[201] = _meta(date="2019-01-01")
+    provider.metadata[202] = _meta(date="2020-01-01")
+    provider.metadata[203] = _meta(date="2021-01-01")
+
+    check = check_case(_case(), provider, max_citing_opinions=1, max_pages=2)
+
+    assert check.coverage.pages_fetched == 2
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert provider.text_calls == [203]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == ["203"]
+    assert _gap_codes(check) == ["citing_opinion_cap"]
+    assert provider.edge_calls == [
+        (111, 20, None),
+        (111, 20, "next-page"),
+    ]
+    assert check.status == "unknown"
+
+
+def test_adaptive_pagination_does_not_stop_after_a_full_first_page():
+    provider = FakeProvider()
+    older_ids = list(range(201, 221))
+    provider.pages[None] = _page(
+        older_ids, count=21, next_url="?cursor=next-page"
+    )
+    provider.pages["next-page"] = _page([221], count=21)
+    _wire_good_citing_opinions(provider, *older_ids, 221)
+    for opinion_id in older_ids:
+        provider.metadata[opinion_id] = _meta(date="2020-01-01")
+    provider.metadata[221] = _meta(date="2024-01-01")
+
+    check = check_case(_case(), provider, max_citing_opinions=1, max_pages=2)
+
+    assert check.coverage.pages_fetched == 2
+    assert provider.text_calls == [221]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == ["221"]
+    assert check.status == "unknown"
+
+
+def test_adaptive_pagination_stops_when_the_priority_pool_is_full():
+    provider = FakeProvider()
+    citing_ids = list(range(201, 241))
+    provider.pages[None] = _page(
+        citing_ids, count=41, next_url="?cursor=next-page"
+    )
+    _wire_good_citing_opinions(provider, *citing_ids)
+
+    check = check_case(_case(), provider, max_citing_opinions=1, max_pages=2)
+
+    assert provider.edge_calls == [(111, 20, None)]
+    assert check.coverage.pages_fetched == 1
+    assert check.coverage.forward_citations_found == 41
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.truncated is True
+    assert check.coverage.complete is False
+    assert "page_cap" in _gap_codes(check)
+    assert "count_mismatch" in _gap_codes(check)
+    assert "priority pool" in check.coverage.gaps[0].detail
+    assert check.status == "unknown"
+
+
+def test_metadata_failure_does_not_consume_the_review_cap():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202], count=2)
+    _wire_good_citing_opinions(provider, 201, 202)
+    provider.metadata[201] = _meta(date="2022-01-01")
+    provider.metadata_errors[201] = SearchError("metadata down")
+    provider.metadata[202] = _meta(date="2021-01-01")
+
+    check = check_case(_case(), provider, max_citing_opinions=1)
+
+    assert [call for call in provider.metadata_calls if call != 111] == [201, 202]
+    assert provider.text_calls == [202]
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.complete is False
+    assert _gap_codes(check) == [
+        "citing_metadata_fetch_failed",
+        "citing_opinion_cap",
+    ]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == ["202"]
+    assert check.status == "unknown"
+
+
+def test_text_failure_does_not_consume_the_review_cap():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201, 202], count=2)
+    _wire_good_citing_opinions(provider, 201, 202)
+    provider.metadata[201] = _meta(date="2022-01-01")
+    provider.text_errors[201] = SearchError("text down")
+    provider.metadata[202] = _meta(date="2021-01-01")
+
+    check = check_case(_case(), provider, max_citing_opinions=1)
+
+    assert provider.text_calls == [201, 202]
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.complete is False
+    assert _gap_codes(check) == [
+        "citing_text_fetch_failed",
+        "citing_opinion_cap",
+    ]
+    assert [cited.opinion_id for cited in check.later_citing_opinions] == ["202"]
     assert check.status == "unknown"
 
 

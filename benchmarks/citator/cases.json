@@ -30,6 +30,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -109,6 +110,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -190,6 +192,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -271,6 +274,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -352,6 +356,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -433,6 +438,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -504,6 +510,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -575,6 +582,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -646,6 +654,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -725,6 +734,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -823,6 +833,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -899,6 +910,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -1205,6 +1217,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -1286,6 +1299,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -1357,6 +1371,7 @@
             "2020 WL 123456"
           ],
           "cluster_id": "777",
+          "cluster_resolved": true,
           "opinion_ids": [
             111,
             112
@@ -1404,6 +1419,131 @@
         "authoritative": [],
         "gated": [],
         "flags_contain": [],
+        "same_docket_count": 0
+      }
+    },
+    {
+      "id": "cap-prioritizes-later-authority",
+      "category": "cap prioritization",
+      "adversarial_note": "API order puts two older citing opinions first; the two-opinion cap must review the later decisions instead.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Older Board Decision",
+          "citation": "BVA 20-001",
+          "court": "Board of Veterans' Appeals",
+          "decision_date": "2020-01-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Middle CAVC Decision",
+          "citation": "33 Vet.App. 20",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-01-01",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "203": {
+          "title": "Newer CAVC Decision",
+          "citation": "35 Vet.App. 30",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2023-01-01",
+          "url": "https://www.courtlistener.com/opinion/203/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "204": {
+          "title": "Newest Board Decision",
+          "citation": "BVA 24-004",
+          "court": "Board of Veterans' Appeals",
+          "decision_date": "2024-01-01",
+          "url": "https://www.courtlistener.com/opinion/204/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court overruled Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The court overruled Smith v. Wilkie, 30 Vet.App. 123.",
+        "203": "The court overruled Smith v. Wilkie, 30 Vet.App. 123.",
+        "204": "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 4,
+          "citing_ids": [
+            201,
+            202,
+            203,
+            204
+          ],
+          "next": null
+        }
+      ],
+      "limits": {
+        "max_citing_opinions": 2
+      },
+      "expected": {
+        "status": "negative",
+        "coverage_complete": false,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/203/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          },
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/204/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [
+          "2-opinion cap"
+        ],
         "same_docket_count": 0
       }
     }
