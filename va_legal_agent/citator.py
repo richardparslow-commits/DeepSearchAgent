@@ -26,7 +26,9 @@ When the citing-opinion cap binds, a bounded candidate pool is ranked by
 decision date and court authority before review; API edge order is only a
 stable tie-break. Pagination is sized around that pool so later, higher-
 authority candidates are not skipped merely because they appeared later in the
-API response. Every unread candidate or page remains an explicit coverage gap.
+API response. The pool is target-wide and is split across a cluster's
+sub-opinions, so adding a concurrence or dissent does not multiply metadata
+reads. Every unread candidate or page remains an explicit coverage gap.
 """
 
 from __future__ import annotations
@@ -64,7 +66,10 @@ from .topics import AUTHORITY_WEIGHTS
 # Ranking requires one metadata read per candidate, so the candidate pool is
 # deliberately bounded. Four times the review cap (at least 20, at most one
 # API page) leaves room for metadata/text failures and for lower-ranked
-# candidates without turning a capped review into a full citation dump.
+# candidates without turning a capped review into a full citation dump. The
+# bound applies to the whole target, not each opinion in a cluster, and is also
+# the upper bound on candidate metadata rows: edge fetches stop at their share,
+# and both batch and fallback metadata lookup only see the resulting ids.
 _CITING_PRIORITY_POOL_MIN = 20
 _CITING_PRIORITY_POOL_FACTOR = 4
 _CITING_PRIORITY_POOL_MAX = 100
@@ -279,7 +284,7 @@ def _citing_priority_page_size(max_citing: int) -> int:
 
 
 def _citing_priority_pool_size(max_citing: int, max_pages: int) -> int:
-    """Return the bounded metadata pool available to the review cap."""
+    """Return the bounded, target-wide metadata pool for the review cap."""
     return min(
         _CITING_PRIORITY_POOL_MAX,
         _citing_priority_page_size(max_citing) * max(max_pages, 1),
@@ -529,10 +534,12 @@ def _fetch_forward_edges(
     no page cap, count mismatch, cursor problem, or request error intervened.
 
     ``page_size`` and ``max_ids`` adapt pagination to the citator's bounded
-    review pool: the page request never fetches far beyond the candidates the
-    caller can rank, and paging stops once that pool is full. Any remaining
+    review pool: the page request is clamped to the caller's share so it never
+    fetches far beyond the candidates that can be ranked, and paging stops once
+    that share is full. Rows beyond ``max_ids`` are ignored. Any remaining
     cursor is still reported as an explicit ``page_cap`` gap.
     """
+    page_size = min(page_size, max_ids)
     ids: list[int] = []
     seen: set[int] = set()
     seen_cursors: set[str] = set()
@@ -565,6 +572,8 @@ def _fetch_forward_edges(
         rows = data.get("results")
         if isinstance(rows, list):
             for row in rows:
+                if len(ids) >= max_ids:
+                    break
                 if not isinstance(row, dict):
                     continue
                 citing_id = _positive_id(row.get("citing_opinion"))
@@ -602,7 +611,9 @@ def _fetch_forward_edges(
         if pages >= max_pages:
             boundary = f"the {max_pages}-page cap"
         else:
-            boundary = f"the {max_ids}-candidate priority pool"
+            boundary = (
+                f"the {max_ids}-candidate allocation from the priority pool"
+            )
         detail = (
             f"Citator forward-citation coverage for opinion {opinion_id} "
             f"stopped at {boundary}; more pages remain."
@@ -634,10 +645,12 @@ def _fetch_cluster_forward_edges(
 
     A citing opinion is linked to one specific target opinion, so checking only
     the first sub-opinion misses citations attached to the lead, concurrence,
-    or dissent. The returned ids are de-duplicated across the cluster. A
-    one-opinion target keeps the API's reported count; a multi-opinion target
-    reports the unique count, since the same citing opinion may be linked to
-    more than one sub-opinion.
+    or dissent. ``max_ids`` is one target-wide budget, split evenly across the
+    cluster so every sub-opinion gets a chance without multiplying the pool.
+    The returned ids are de-duplicated across the cluster. A one-opinion target
+    keeps the API's reported count; a multi-opinion target reports the unique
+    count, since the same citing opinion may be linked to more than one
+    sub-opinion.
     """
     ids: list[int] = []
     seen: set[int] = set()
@@ -648,7 +661,22 @@ def _fetch_cluster_forward_edges(
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
     opinion_ids = target.opinion_ids
-    for opinion_id in opinion_ids:
+    # Split the target-wide pool evenly, giving the remainder to the earliest
+    # sub-opinions so one lead opinion cannot consume every candidate.
+    share, remainder = divmod(max_ids, len(opinion_ids))
+    for index, opinion_id in enumerate(opinion_ids):
+        allocation = share + (1 if index < remainder else 0)
+        if allocation <= 0:
+            detail = (
+                f"Citator candidate pool for '{target.case_name}' had no "
+                f"allocation left for opinion {opinion_id}; coverage is "
+                "bounded by the target-wide pool."
+            )
+            flags.append(detail)
+            gaps.append(_coverage_gap("page_cap", detail))
+            complete = False
+            truncated = True
+            continue
         (
             found_ids,
             found_count,
@@ -662,7 +690,7 @@ def _fetch_cluster_forward_edges(
             opinion_id,
             max_pages,
             page_size=page_size,
-            max_ids=max_ids,
+            max_ids=allocation,
         )
         pages += found_pages
         count += found_count
@@ -1123,6 +1151,32 @@ def _timeline_entry(
     )
 
 
+def _batch_citing_metadata(
+    provider: CourtListenerProvider, citing_ids: list[int]
+) -> dict[int, dict[str, object]]:
+    """Return batch metadata, treating any batch failure as unavailable.
+
+    The caller retries every candidate missing from this mapping through the
+    single-opinion path. That keeps the existing per-candidate metadata gaps
+    when batch lookup is unsupported, rejected, or incomplete.
+    """
+    batch = getattr(provider, "opinion_metadata_batch", None)
+    if not callable(batch):
+        return {}
+    try:
+        response = batch(citing_ids)
+    except Exception:  # noqa: BLE001 - batch is an optimization, never a blocker
+        return {}
+    if not isinstance(response, dict):
+        return {}
+    metadata: dict[int, dict[str, object]] = {}
+    for key, value in response.items():
+        parsed = _positive_id(key)
+        if parsed is not None and isinstance(value, dict):
+            metadata[parsed] = value
+    return metadata
+
+
 def _load_citing_candidates(
     provider: CourtListenerProvider, citing_ids: list[int]
 ) -> tuple[list[_CitingCandidate], list[str], list[CitatorCoverageGap]]:
@@ -1130,23 +1184,30 @@ def _load_citing_candidates(
 
     Later decisions come first because they are the most probative of current
     treatment. Court authority breaks date ties. API order is used only as the
-    final stable tie-break. Metadata failures are retained as coverage gaps,
-    since a failed candidate could have outranked the selected set.
+    final stable tie-break. Metadata is requested in batch first; candidates
+    missing from the batch fall back to the single-opinion chain. Failures in
+    either path are retained as the same coverage gaps, since a failed
+    candidate could have outranked the selected set.
     """
     candidates: list[_CitingCandidate] = []
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
+    batch_metadata = _batch_citing_metadata(provider, citing_ids)
     for source_index, opinion_id in enumerate(citing_ids):
-        try:
-            metadata = provider.opinion_metadata(opinion_id)
-        except SearchError as exc:
-            detail = (
-                f"Citator metadata fetch failed for citing opinion "
-                f"{opinion_id}: {exc}"
-            )
-            flags.append(detail)
-            gaps.append(_coverage_gap("citing_metadata_fetch_failed", detail))
-            continue
+        metadata = batch_metadata.get(opinion_id)
+        if not metadata:
+            try:
+                metadata = provider.opinion_metadata(opinion_id)
+            except SearchError as exc:
+                detail = (
+                    f"Citator metadata fetch failed for citing opinion "
+                    f"{opinion_id}: {exc}"
+                )
+                flags.append(detail)
+                gaps.append(
+                    _coverage_gap("citing_metadata_fetch_failed", detail)
+                )
+                continue
         if not metadata:
             detail = (
                 f"Citator metadata was unavailable for citing opinion "

@@ -84,6 +84,7 @@ def _courtlistener_query(query: str) -> str:
 # match both so traversal works end to end.
 _OPINION_ID_PATTERN = re.compile(r"/opinions?/(\d+)")
 _CLUSTER_ID_PATTERN = re.compile(r"/clusters?/(\d+)")
+_DOCKET_ID_PATTERN = re.compile(r"/dockets?/(\d+)")
 
 
 def _positive_id(value: object) -> int | None:
@@ -146,6 +147,54 @@ def _cluster_identifier(cluster: dict, cluster_url: str = "") -> str:
         if match:
             return match.group(1)
     return ""
+
+
+def _id_from_url(value: object, pattern: re.Pattern[str]) -> int | None:
+    """Return the positive numeric id in a CourtListener API URL."""
+    match = pattern.search(str(value or ""))
+    if not match:
+        return None
+    parsed = int(match.group(1))
+    return parsed if parsed > 0 else None
+
+
+def _opinion_result(
+    opinion: dict,
+    cluster: dict,
+    docket: dict,
+    opinion_id: int,
+    cluster_url: str = "",
+) -> dict[str, object] | None:
+    """Build the citator's normalized metadata from opinion/cluster/docket."""
+    absolute_url = opinion.get("absolute_url") or ""
+    url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
+    if not url:
+        return None
+    citations = _cluster_citation_values(cluster.get("citations"))
+    citation = citations[0] if citations else ""
+    opinion_ids = _cluster_opinion_ids(cluster) or [opinion_id]
+    return {
+        "title": cluster.get("case_name") or "Untitled case",
+        "url": url,
+        "snippet": "",
+        "court": _CL_COURT_NAMES.get(docket.get("court_id"), COURT_UNKNOWN),
+        "citation": citation,
+        "citations": citations,
+        "cluster_id": _cluster_identifier(cluster, str(cluster_url or "")),
+        "cluster_resolved": bool(cluster),
+        "opinion_ids": opinion_ids,
+        "decision_date": cluster.get("date_filed") or "",
+        "docket": docket.get("docket_number") or "",
+        "judge": cluster.get("judges") or "",
+        # The citator needs the individual opinion's role (lead, dissent,
+        # etc.) and the cluster's precedential designation before it can
+        # decide whether a treatment finding is authoritative.
+        "opinion_type": str(opinion.get("type") or ""),
+        "precedential_status": str(cluster.get("precedential_status") or ""),
+        # Carry the opinion id so enrichment/deep-read can pull full text
+        # from the detail endpoint instead of the WAF-challenged frontend.
+        "courtlistener_opinion_id": str(opinion_id),
+    }
 
 
 def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
@@ -385,7 +434,9 @@ class CourtListenerProvider:
     Beyond search, the provider traverses the citation graph: the
     ``opinions-cited`` endpoint yields the opinions a decision cites (its
     authorities) and the later opinions that cite it (forward citations),
-    which the research loop follows for multi-hop recall.
+    which the research loop follows for multi-hop recall. Citator ranking
+    metadata can also be fetched in batches through the list endpoints, with
+    per-opinion fallback when a collection response is unavailable.
 
     CourtListener's v4 API now requires a token: anonymous requests get a 401.
     Set ``COURTLISTENER_API_KEY`` (a free account token) or this provider will
@@ -398,6 +449,9 @@ class CourtListenerProvider:
     # metadata inline (camelCase keys), so no follow-up fetches are needed.
     SEARCH_URL = "https://www.courtlistener.com/api/rest/v4/search/"
     API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
+    CLUSTERS_URL = "https://www.courtlistener.com/api/rest/v4/clusters/"
+    DOCKETS_URL = "https://www.courtlistener.com/api/rest/v4/dockets/"
+    BATCH_SIZE = 100
     CITATIONS_URL = "https://www.courtlistener.com/api/rest/v4/opinions-cited/"
     CITATION_LOOKUP_URL = "https://www.courtlistener.com/api/rest/v4/citation-lookup/"
     # The endpoint accepts blocks up to roughly fifty pages (64,000 chars).
@@ -679,37 +733,9 @@ class CourtListenerProvider:
                 f"CourtListener opinion {opinion_id} fetch failed: {exc}"
             ) from exc
 
-        absolute_url = opinion.get("absolute_url") or ""
-        url = "https://www.courtlistener.com" + absolute_url if absolute_url else ""
-        if not url:
-            return None
-        citations = _cluster_citation_values(cluster.get("citations"))
-        citation = citations[0] if citations else ""
-        opinion_ids = _cluster_opinion_ids(cluster) or [opinion_id]
-        return {
-            "title": cluster.get("case_name") or "Untitled case",
-            "url": url,
-            "snippet": "",
-            "court": _CL_COURT_NAMES.get(docket.get("court_id"), COURT_UNKNOWN),
-            "citation": citation,
-            "citations": citations,
-            "cluster_id": _cluster_identifier(cluster, str(cluster_url or "")),
-            "cluster_resolved": bool(cluster),
-            "opinion_ids": opinion_ids,
-            "decision_date": cluster.get("date_filed") or "",
-            "docket": docket.get("docket_number") or "",
-            "judge": cluster.get("judges") or "",
-            # The citator needs the individual opinion's role (lead, dissent,
-            # etc.) and the cluster's precedential designation before it can
-            # decide whether a treatment finding is authoritative.
-            "opinion_type": str(opinion.get("type") or ""),
-            "precedential_status": str(
-                cluster.get("precedential_status") or ""
-            ),
-            # Carry the opinion id so enrichment/deep-read can pull full text
-            # from the detail endpoint instead of the WAF-challenged frontend.
-            "courtlistener_opinion_id": str(opinion_id),
-        }
+        return _opinion_result(
+            opinion, cluster, docket, opinion_id, str(cluster_url or "")
+        )
 
     def fetch_opinion_text(self, opinion_id: int) -> str:
         """Return the full opinion body for *opinion_id* from the detail endpoint.
@@ -874,6 +900,147 @@ class CourtListenerProvider:
     def opinion_metadata(self, opinion_id: int) -> dict[str, object] | None:
         """Return the citator's opinion/cluster/docket metadata for one opinion."""
         return self._get_opinion(opinion_id)
+
+    def opinion_metadata_batch(
+        self, opinion_ids: list[int]
+    ) -> dict[int, dict[str, object]]:
+        """Return citator metadata for many opinions without a chain per id.
+
+        Each chunk uses at most three collection requests (opinions, clusters,
+        dockets) filtered by ``id__in`` instead of one opinion -> cluster ->
+        docket chain for every candidate. Returned rows are accepted only when
+        their own id matches a requested id; missing or malformed rows are
+        omitted so the caller can retry them individually. A failed collection
+        request raises :class:`SearchError`, which the caller must treat as
+        unavailable batch metadata, not as a definitive absence.
+        """
+        requested: list[int] = []
+        for value in opinion_ids:
+            parsed = _positive_id(value)
+            if parsed is not None and parsed not in requested:
+                requested.append(parsed)
+        results: dict[int, dict[str, object]] = {}
+        for start in range(0, len(requested), self.BATCH_SIZE):
+            chunk = requested[start : start + self.BATCH_SIZE]
+            results.update(self._opinion_metadata_batch_chunk(chunk))
+        return results
+
+    def _opinion_metadata_batch_chunk(
+        self, opinion_ids: list[int]
+    ) -> dict[int, dict[str, object]]:
+        """Resolve one batch chunk through collection requests."""
+        requested = set(opinion_ids)
+        opinions: dict[int, dict] = {}
+        for row in self._batch_rows(self.API_URL, opinion_ids, "opinion"):
+            opinion_id = _positive_id(
+                row.get("id") or row.get("resource_uri") or row.get("url")
+            )
+            if opinion_id in requested:
+                opinions[opinion_id] = row
+
+        cluster_links: dict[int, tuple[str, int | None]] = {}
+        cluster_ids: list[int] = []
+        for opinion_id, opinion in opinions.items():
+            cluster_url = str(opinion.get("cluster") or "")
+            cluster_id = _id_from_url(cluster_url, _CLUSTER_ID_PATTERN)
+            if cluster_url and cluster_id is None:
+                continue
+            cluster_links[opinion_id] = (cluster_url, cluster_id)
+            if cluster_id is not None and cluster_id not in cluster_ids:
+                cluster_ids.append(cluster_id)
+
+        requested_clusters = set(cluster_ids)
+        clusters: dict[int, dict] = {}
+        for row in self._batch_rows(self.CLUSTERS_URL, cluster_ids, "cluster"):
+            cluster_id = _cluster_identifier(row)
+            if not cluster_id.isdigit():
+                continue
+            parsed = int(cluster_id)
+            if parsed in requested_clusters:
+                clusters[parsed] = row
+
+        docket_links: dict[int, tuple[str, int | None, str, int | None]] = {}
+        docket_ids: list[int] = []
+        for opinion_id, (cluster_url, cluster_id) in cluster_links.items():
+            if cluster_id is not None and cluster_id not in clusters:
+                continue
+            cluster = clusters.get(cluster_id, {}) if cluster_id is not None else {}
+            docket_url = str(cluster.get("docket") or "")
+            docket_id = _id_from_url(docket_url, _DOCKET_ID_PATTERN)
+            if docket_url and docket_id is None:
+                continue
+            docket_links[opinion_id] = (
+                cluster_url,
+                cluster_id,
+                docket_url,
+                docket_id,
+            )
+            if docket_id is not None and docket_id not in docket_ids:
+                docket_ids.append(docket_id)
+
+        requested_dockets = set(docket_ids)
+        dockets: dict[int, dict] = {}
+        for row in self._batch_rows(self.DOCKETS_URL, docket_ids, "docket"):
+            docket_id = _id_from_url(
+                row.get("resource_uri") or row.get("url"), _DOCKET_ID_PATTERN
+            )
+            if docket_id is None:
+                raw_id = row.get("id")
+                if raw_id is not None and str(raw_id).strip().isdigit():
+                    docket_id = int(str(raw_id).strip())
+            if docket_id in requested_dockets:
+                dockets[docket_id] = row
+
+        results: dict[int, dict[str, object]] = {}
+        for opinion_id, opinion in opinions.items():
+            links = docket_links.get(opinion_id)
+            if links is None:
+                continue
+            cluster_url, cluster_id, _docket_url, docket_id = links
+            if docket_id is not None and docket_id not in dockets:
+                continue
+            metadata = _opinion_result(
+                opinion,
+                clusters.get(cluster_id, {}) if cluster_id is not None else {},
+                dockets.get(docket_id, {}) if docket_id is not None else {},
+                opinion_id,
+                cluster_url,
+            )
+            if metadata is not None:
+                results[opinion_id] = metadata
+        return results
+
+    def _batch_rows(
+        self, url: str, ids: list[int], label: str
+    ) -> list[dict]:
+        """Fetch collection rows for *ids*, following cursor pages safely."""
+        if not ids:
+            return []
+        params: dict[str, object] | None = {
+            "id__in": ",".join(str(value) for value in ids),
+            "page_size": self.BATCH_SIZE,
+            "format": "json",
+        }
+        rows: list[dict] = []
+        while True:
+            try:
+                data = self._get_json(url, params)
+            except SearchError as exc:
+                raise SearchError(
+                    f"CourtListener batch {label} fetch failed: {exc}"
+                ) from exc
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                raise SearchError(
+                    f"CourtListener batch {label} response was not a collection."
+                )
+            rows.extend(row for row in results if isinstance(row, dict))
+            next_url = data.get("next")
+            if not next_url or len(rows) >= len(ids):
+                break
+            url = str(next_url)
+            params = None
+        return rows
 
 
 USAGE_URL = "https://www.courtlistener.com/api/rest/v4/api-usage/"

@@ -145,6 +145,28 @@ class FakeProvider:
         return self.texts.get(opinion_id, "")
 
 
+class BatchFakeProvider(FakeProvider):
+    """Fake provider that also exposes the batched metadata lookup."""
+
+    def __init__(self):
+        super().__init__()
+        self.batch_calls: list[list[int]] = []
+        self.batch_result: object = None
+        self.batch_error: Exception | None = None
+
+    def opinion_metadata_batch(self, opinion_ids: list[int]):
+        self.batch_calls.append(list(opinion_ids))
+        if self.batch_error is not None:
+            raise self.batch_error
+        if self.batch_result is not None:
+            return self.batch_result
+        return {
+            opinion_id: self.metadata[opinion_id]
+            for opinion_id in opinion_ids
+            if self.metadata.get(opinion_id)
+        }
+
+
 def _wire_good_citing_opinions(provider: FakeProvider, *ids: int) -> None:
     for opinion_id in ids:
         provider.metadata[opinion_id] = _meta()
@@ -1321,6 +1343,57 @@ def test_priority_pool_scales_with_the_citing_review_and_page_caps():
     assert _citing_priority_pool_size(50, 10) == 100
 
 
+def test_multi_opinion_cluster_beyond_the_pool_reports_unattempted_opinion():
+    provider = FakeProvider()
+    opinion_ids = [111, *range(401, 421)]
+    provider.metadata[111] = {
+        **_target_meta(111),
+        "opinion_ids": opinion_ids,
+    }
+    for opinion_id in opinion_ids:
+        provider.opinion_pages[(opinion_id, None)] = _page([201])
+    _wire_good_citing_opinions(provider, 201)
+
+    check = check_case(_case(), provider, max_citing_opinions=1)
+
+    assert [call[0] for call in provider.edge_calls] == opinion_ids[:20]
+    assert check.coverage.forward_citations_found == 1
+    assert check.coverage.truncated is True
+    assert check.coverage.complete is False
+    assert "page_cap" in _gap_codes(check)
+    assert any(
+        "no allocation" in gap.detail for gap in check.coverage.gaps
+    )
+
+
+def test_multi_opinion_cluster_shares_one_candidate_pool():
+    provider = FakeProvider()
+    provider.metadata[111] = {
+        **_target_meta(111),
+        "opinion_ids": [111, 112],
+    }
+    first_ids = list(range(201, 221))
+    second_ids = list(range(301, 321))
+    provider.opinion_pages[(111, None)] = _page(first_ids)
+    provider.opinion_pages[(112, None)] = _page(second_ids)
+    _wire_good_citing_opinions(provider, *first_ids, *second_ids)
+
+    check = check_case(_case(), provider, max_citing_opinions=1)
+
+    assert provider.edge_calls == [(111, 10, None), (112, 10, None)]
+    assert [
+        call for call in provider.metadata_calls if call not in (111, 112)
+    ] == [*first_ids[:10], *second_ids[:10]]
+    assert check.coverage.forward_citations_found == 20
+    assert check.coverage.pages_fetched == 2
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.truncated is True
+    assert check.coverage.complete is False
+    assert "count_mismatch" in _gap_codes(check)
+    assert "citing_opinion_cap" in _gap_codes(check)
+    assert check.status == "unknown"
+
+
 def test_citing_cap_prioritizes_later_citing_opinions():
     provider = FakeProvider()
     provider.pages[None] = _page([201, 202, 203, 204], count=4)
@@ -1435,6 +1508,82 @@ def test_adaptive_pagination_stops_when_the_priority_pool_is_full():
     assert "count_mismatch" in _gap_codes(check)
     assert "priority pool" in check.coverage.gaps[0].detail
     assert check.status == "unknown"
+
+
+def test_batch_metadata_avoids_per_candidate_lookups():
+    provider = BatchFakeProvider()
+    provider.pages[None] = _page([201, 202], count=2)
+    _wire_good_citing_opinions(provider, 201, 202)
+    provider.metadata[201] = _meta(date="2022-01-01")
+    provider.metadata[202] = _meta(date="2021-01-01")
+
+    check = check_case(_case(), provider, max_citing_opinions=1)
+
+    assert provider.batch_calls == [[201, 202]]
+    assert [call for call in provider.metadata_calls if call != 111] == []
+    assert provider.text_calls == [201]
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert not any(
+        code.startswith("citing_metadata") for code in _gap_codes(check)
+    )
+
+
+def test_batch_metadata_failure_falls_back_and_preserves_metadata_gaps():
+    provider = BatchFakeProvider()
+    provider.pages[None] = _page([201, 202, 203], count=3)
+    _wire_good_citing_opinions(provider, 201, 202, 203)
+    provider.batch_error = SearchError("batch down")
+    provider.metadata[201] = None
+    provider.metadata_errors[202] = SearchError("metadata down")
+
+    check = check_case(_case(), provider)
+
+    assert provider.batch_calls == [[201, 202, 203]]
+    assert [call for call in provider.metadata_calls if call != 111] == [
+        201,
+        202,
+        203,
+    ]
+    assert _gap_codes(check) == [
+        "citing_metadata_unavailable",
+        "citing_metadata_fetch_failed",
+    ]
+    assert check.coverage.complete is False
+    assert check.status == "unknown"
+
+
+def test_batch_metadata_partial_result_falls_back_for_missing_candidates():
+    provider = BatchFakeProvider()
+    provider.pages[None] = _page([201, 202], count=2)
+    _wire_good_citing_opinions(provider, 201, 202)
+    provider.batch_result = {"201": {}, "bad": "ignored", 202: "also ignored"}
+
+    check = check_case(_case(), provider)
+
+    assert provider.batch_calls == [[201, 202]]
+    assert [call for call in provider.metadata_calls if call != 111] == [
+        201,
+        202,
+    ]
+    assert not any(
+        code.startswith("citing_metadata") for code in _gap_codes(check)
+    )
+    assert check.coverage.citing_opinions_reviewed == 2
+
+
+def test_batch_metadata_non_mapping_result_falls_back():
+    provider = BatchFakeProvider()
+    provider.pages[None] = _page([201], count=1)
+    _wire_good_citing_opinions(provider, 201)
+    provider.batch_result = []
+
+    check = check_case(_case(), provider)
+
+    assert provider.batch_calls == [[201]]
+    assert [call for call in provider.metadata_calls if call != 111] == [201]
+    assert _gap_codes(check) == []
+    assert check.coverage.complete is True
+    assert check.status == "good_law"
 
 
 def test_metadata_failure_does_not_consume_the_review_cap():

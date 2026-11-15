@@ -121,6 +121,16 @@ class FakeProvider:
         self.calls.append("metadata")
         return {"id": opinion_id, "url": f"https://example.test/opinion/{opinion_id}/"}
 
+    def opinion_metadata_batch(self, opinion_ids):
+        self.calls.append("metadata_batch")
+        return {
+            opinion_id: {
+                "id": opinion_id,
+                "url": f"https://example.test/opinion/{opinion_id}/",
+            }
+            for opinion_id in opinion_ids
+        }
+
     def fetch_opinion_text(self, opinion_id):
         self.calls.append("text")
         return f"text {opinion_id}"
@@ -134,6 +144,7 @@ def test_snapshotting_provider_captures_every_public_response(tmp_path):
     assert wrapper.citing_edges(7, page_size=25, cursor="abc")["cursor"] == "abc"
     assert wrapper.same_docket_decisions(7, max_results=2)["max_results"] == 2
     assert wrapper.opinion_metadata(7)["url"].endswith("/7/")
+    assert wrapper.opinion_metadata_batch([7, 8])[8]["url"].endswith("/8/")
     assert wrapper.fetch_opinion_text(7) == "text 7"
 
     kinds = [row["kind"] for row in _manifest(store)]
@@ -141,6 +152,7 @@ def test_snapshotting_provider_captures_every_public_response(tmp_path):
     assert kinds.count("courtlistener.citing_edges") == 1
     assert kinds.count("courtlistener.same_docket") == 1
     assert kinds.count("courtlistener.opinion_metadata") == 1
+    assert kinds.count("courtlistener.opinion_metadata_batch") == 1
     assert kinds.count("courtlistener.opinion_text") == 1
     metadata_row = next(
         row for row in _manifest(store) if row["kind"] == "courtlistener.opinion_metadata"
@@ -155,6 +167,7 @@ def test_snapshotting_provider_captures_every_public_response(tmp_path):
         ("citing_edges", (7,)),
         ("same_docket_decisions", (7,)),
         ("opinion_metadata", (7,)),
+        ("opinion_metadata_batch", ([7],)),
         ("fetch_opinion_text", (7,)),
     ],
 )
@@ -176,6 +189,9 @@ def test_snapshotting_provider_persists_and_reraises_errors(
         def opinion_metadata(self, opinion_id):
             raise RuntimeError("metadata failed")
 
+        def opinion_metadata_batch(self, opinion_ids):
+            raise RuntimeError("batch metadata failed")
+
         def fetch_opinion_text(self, opinion_id):
             raise RuntimeError("text failed")
 
@@ -188,6 +204,23 @@ def test_snapshotting_provider_persists_and_reraises_errors(
     assert len(rows) == 1
     payload = json.loads((store.root / rows[0]["path"]).read_text(encoding="utf-8"))
     assert payload["payload"]["response"]["error"]
+
+
+def test_snapshotting_provider_falls_back_when_native_batch_is_absent(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    class LegacyProvider(FakeProvider):
+        opinion_metadata_batch = None
+
+    wrapper = SnapshottingCourtListenerProvider(LegacyProvider(), store)
+
+    response = wrapper.opinion_metadata_batch([7, 8])
+
+    assert set(response) == {7, 8}
+    assert response[7]["url"].endswith("/7/")
+    kinds = [row["kind"] for row in _manifest(store)]
+    assert kinds.count("courtlistener.opinion_metadata_batch") == 1
+    assert kinds.count("courtlistener.opinion_metadata") == 2
 
 
 def test_snapshotting_provider_survives_store_failure(tmp_path, caplog):

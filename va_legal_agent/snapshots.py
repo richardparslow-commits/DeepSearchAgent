@@ -279,6 +279,29 @@ class SnapshottingCourtListenerProvider:
         )
         return response
 
+    def opinion_metadata_batch(self, opinion_ids: list[int]) -> Any:
+        request = {"opinion_ids": list(opinion_ids)}
+        batch = getattr(self.provider, "opinion_metadata_batch", None)
+        try:
+            if batch is None:
+                response = {
+                    opinion_id: self.opinion_metadata(opinion_id)
+                    for opinion_id in opinion_ids
+                }
+            else:
+                response = batch(opinion_ids)
+        except Exception as exc:  # noqa: BLE001 - preserve provider error
+            self._capture(
+                "courtlistener.opinion_metadata_batch",
+                request,
+                {"error": str(exc)},
+            )
+            raise
+        self._capture(
+            "courtlistener.opinion_metadata_batch", request, response
+        )
+        return response
+
     def fetch_opinion_text(self, opinion_id: int) -> Any:
         request = {"opinion_id": opinion_id}
         try:
