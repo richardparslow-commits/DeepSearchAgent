@@ -510,7 +510,10 @@ class CitatorCheck(BaseModel):
     trust to place in the review without altering the conservative status rule.
     When opt-in source-validity enforcement runs, it may downgrade an
     unsupported ``negative``/``good_law`` status to ``unknown`` and record its
-    actions; it never deletes findings and never upgrades status.
+    actions; it never deletes findings and never upgrades status. Raw treatment
+    lists remain available for audit. Blocked sources are omitted from the
+    derived binding/persuasive/timeline views but retained as low-priority,
+    withheld items in the adjudication queue.
     """
 
     target_case: str
@@ -570,7 +573,8 @@ class CitatorCheck(BaseModel):
     # Opt-in source-validity signals (``CITATOR_SOURCE_VALIDITY``). Empty when
     # the feature is off. Extract/advisory entries are evidence only. In
     # ``enforce`` mode, withheld or invalid/qualified sources stop supporting
-    # status and queue demotion, but the entries and findings remain visible.
+    # status and queue demotion, but the entries and findings remain visible;
+    # the adjudication queue marks blocked findings as withheld for audit.
     source_validity: list[SourceValiditySignal] = Field(default_factory=list)
     # True when the opt-in enforcement pass ran. Advisory and extract modes
     # leave this false. Enforcement may change status and queue annotations but
@@ -608,8 +612,9 @@ class CitatorCheck(BaseModel):
     # ``good_law``.
     gated_treatment_findings: list[NegativeTreatment] = Field(default_factory=list)
     # Authoritative negatives split by the citing court's relationship to the
-    # target. ``negative_treatments`` remains the union and the only status
-    # input; unknown binding is intentionally left out of both splits.
+    # target. ``negative_treatments`` remains the raw union for audit; these
+    # derived splits omit sources blocked by enforcement. Unknown binding is
+    # intentionally left out of both splits.
     binding_negative_treatments: list[NegativeTreatment] = Field(
         default_factory=list
     )
@@ -617,10 +622,16 @@ class CitatorCheck(BaseModel):
         default_factory=list
     )
     # Chronological negative and reaffirmance signals. Reaffirmance is
-    # advisory and never clears or downgrades a negative finding.
+    # advisory and never clears or downgrades a negative finding. Enforcement
+    # removes blocked sources and recomputes relative-reaffirmance flags.
     treatment_timeline: list[TreatmentTimelineEntry] = Field(default_factory=list)
     later_reaffirmance: bool = False
     flags: list[str] = Field(default_factory=list)
+
+    @staticmethod
+    def _source_validity_signal_blocked(signal: SourceValiditySignal) -> bool:
+        """Return whether enforcement must not use this source signal."""
+        return signal.withheld or signal.status in {"invalid", "qualified"}
 
     def source_validity_blocked_source_ids(self) -> set[str]:
         """Return source IDs enforcement must not use.
@@ -634,11 +645,24 @@ class CitatorCheck(BaseModel):
             signal.source_opinion_id
             for signal in self.source_validity
             if signal.source_opinion_id
-            and (
-                signal.withheld
-                or signal.status in {"invalid", "qualified"}
-            )
+            and self._source_validity_signal_blocked(signal)
         }
+
+    def source_validity_blocking_signal(
+        self, source_opinion_id: str
+    ) -> SourceValiditySignal | None:
+        """Return the blocking signal for a source, or ``None``."""
+        if not self.source_validity_enforced or not source_opinion_id:
+            return None
+        return next(
+            (
+                signal
+                for signal in self.source_validity
+                if signal.source_opinion_id == source_opinion_id
+                and self._source_validity_signal_blocked(signal)
+            ),
+            None,
+        )
 
 
 class AdjudicationEvidence(BaseModel):
@@ -657,13 +681,21 @@ class AdjudicationEvidence(BaseModel):
     opinion_type: str = ""
     opinion_role: str = "unknown"
     precedential_status: str = ""
+    # True when source-validity enforcement blocked this finding from
+    # authoritative use. The item stays in the queue for audit at low priority.
+    source_validity_blocked: bool = False
     # Verbatim source sentence. It is intentionally not normalized or
     # paraphrased; the reviewer must be able to check it against the link.
     excerpt: str = ""
 
 
 class AdjudicationProposal(BaseModel):
-    """Automated disposition shown only after the evidence."""
+    """Automated disposition shown only after the evidence.
+
+    ``disposition`` is ``negative`` for an authoritative finding, ``gated`` for
+    a non-authoritative finding, or ``withheld`` when source-validity
+    enforcement blocked the source.
+    """
 
     disposition: str = "gated"
     status: str = "unknown"
@@ -686,6 +718,8 @@ class AdjudicationItem(BaseModel):
 
     id: str
     kind: str = "treatment_finding"
+    # high for authoritative findings, normal for gated findings, and low for
+    # enforcement-withheld findings retained for audit.
     priority: str = "normal"
     # Keep evidence before proposal in the model and serialized JSON so the
     # review artifact is evidence-first rather than conclusion-first.

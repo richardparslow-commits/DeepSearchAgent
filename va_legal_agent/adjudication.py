@@ -4,6 +4,8 @@ The citator is advisory. This module turns each verbatim treatment finding into
 a review item whose evidence is serialized and rendered *before* the automated
 proposal. A human decision is stored separately from that evidence, requires a
 reviewer and rationale, and never changes ``CitatorCheck.status`` or ranking.
+Findings whose sources were blocked by enforcement stay on the citator check
+and in this queue as low-priority, withheld items for audit.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from .models import (
     AdjudicationReview,
     CitatorCheck,
     NegativeTreatment,
+    SourceValiditySignal,
 )
 
 DECISIONS = frozenset({"confirmed", "rejected", "deferred"})
@@ -48,20 +51,38 @@ def _item_id(
     return "adj-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
 
 
+def _blocked_source_reason(signal: SourceValiditySignal) -> str:
+    """Describe why enforcement blocked a source without hiding the finding."""
+    detail = signal.reason.strip() or f"status {signal.status}"
+    if signal.withheld:
+        detail += " (source withheld from enforcement)"
+    return detail
+
+
 def _queue_item(
     check: CitatorCheck,
     finding: NegativeTreatment,
     *,
     authoritative: bool,
+    blocking_signal: SourceValiditySignal | None = None,
 ) -> AdjudicationItem:
-    disposition = "negative" if authoritative else "gated"
-    if authoritative:
+    if blocking_signal is not None:
+        disposition = "withheld"
+        priority = "low"
+        reason = (
+            "Automated source-validity enforcement blocked this finding from "
+            f"authoritative use ({_blocked_source_reason(blocking_signal)}); "
+            "it is retained for audit and requires source review."
+        )
+    elif authoritative:
+        disposition = "negative"
         priority = "high"
         reason = (
             "Automated citator proposed authoritative negative treatment; "
             "verify the excerpt and the opinion's authority before relying on it."
         )
     else:
+        disposition = "gated"
         gate = finding.gate_reason or "opinion role or precedential status"
         priority = "normal"
         reason = f"Automated citator gated this finding: {gate}."
@@ -89,6 +110,7 @@ def _queue_item(
             opinion_type=finding.opinion_type,
             opinion_role=finding.opinion_role,
             precedential_status=finding.precedential_status,
+            source_validity_blocked=blocking_signal is not None,
             excerpt=finding.excerpt,
         ),
         proposal=AdjudicationProposal(
@@ -109,24 +131,42 @@ def build_adjudication_queue(
     Both authoritative and gated treatment findings are queued. Coverage gaps
     without a verbatim finding are left in the citator flags rather than
     presented as evidence they do not contain. Queueing never changes any
-    citator status or ranking value.
+    citator status or ranking value. When source-validity enforcement blocks a
+    finding's source, the finding stays in this review queue as a low-priority
+    item marked ``source_validity_blocked`` and ``withheld`` so it remains
+    auditable without being mistaken for authoritative support.
     """
     items: list[AdjudicationItem] = []
     seen: set[str] = set()
     for check in checks:
         for finding in check.negative_treatments:
-            item = _queue_item(check, finding, authoritative=True)
+            item = _queue_item(
+                check,
+                finding,
+                authoritative=True,
+                blocking_signal=check.source_validity_blocking_signal(
+                    finding.source_opinion_id
+                ),
+            )
             if item.id not in seen:
                 seen.add(item.id)
                 items.append(item)
         for finding in check.gated_treatment_findings:
-            item = _queue_item(check, finding, authoritative=False)
+            item = _queue_item(
+                check,
+                finding,
+                authoritative=False,
+                blocking_signal=check.source_validity_blocking_signal(
+                    finding.source_opinion_id
+                ),
+            )
             if item.id not in seen:
                 seen.add(item.id)
                 items.append(item)
     items.sort(
         key=lambda item: (
             item.priority != "high",
+            item.priority == "low",
             item.evidence.target_case.casefold(),
             item.evidence.citing_case.casefold(),
             item.id,
@@ -212,9 +252,10 @@ def _item_summary(item: AdjudicationItem) -> str:
     citation = evidence.citing_citation or "no citation"
     date = evidence.citing_date or "date unknown"
     source = evidence.citing_url or "source unavailable"
+    withheld = " [source withheld]" if evidence.source_validity_blocked else ""
     return "\n".join(
         (
-            f"[{item.priority}] {item.id} ({item.review.status})",
+            f"[{item.priority}] {item.id} ({item.review.status}){withheld}",
             f'  EVIDENCE: "{evidence.excerpt}"',
             f"  Citing: {evidence.citing_case} ({citation}; {date})",
             f"  Source: {source}",
@@ -226,6 +267,15 @@ def _item_detail(item: AdjudicationItem) -> str:
     evidence = item.evidence
     proposal = item.proposal
     review = item.review
+    withheld = (
+        [
+            "",
+            "SOURCE-VALIDITY ENFORCEMENT",
+            "  Withheld from authoritative use; retained for audit.",
+        ]
+        if evidence.source_validity_blocked
+        else []
+    )
     lines = [
         f"ITEM {item.id} [{review.status}] priority={item.priority}",
         "",
@@ -251,6 +301,7 @@ def _item_detail(item: AdjudicationItem) -> str:
         "",
         "WHY QUEUED",
         f"  {item.queue_reason}",
+        *withheld,
         "",
         "AUTOMATED PROPOSAL (not a final label)",
         f"  Disposition: {proposal.disposition}",

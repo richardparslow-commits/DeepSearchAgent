@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from va_legal_agent.adjudication import build_adjudication_queue
 from va_legal_agent.authority_queue import apply_citator_findings
 from va_legal_agent.citator import (
     _SourceValidationCache,
@@ -12,8 +13,10 @@ from va_legal_agent.citator import (
 from va_legal_agent.models import (
     CaseRecord,
     CitatorCheck,
+    LegalAnalysis,
     NegativeTreatment,
     SourceValiditySignal,
+    TreatmentTimelineEntry,
 )
 from va_legal_agent.search import SearchError
 from va_legal_agent.topics import COURT_BVA, COURT_CAVC, COURT_UNKNOWN
@@ -757,6 +760,162 @@ def test_enforcement_mixed_sources_keep_negative_and_block_invalid_source():
     assert check.source_validity_actions
     assert check.review_required is True
     assert any("202" in reason for reason in check.review_reasons)
+
+
+def test_enforcement_filters_derived_treatment_views():
+    blocked_binding = NegativeTreatment(
+        citing_case="Blocked v. McDonough",
+        source_opinion_id="201",
+        treatment="overruled",
+        binding=True,
+        excerpt="Blocked overruled Smith v. Wilkie.",
+    )
+    valid_binding = NegativeTreatment(
+        citing_case="Valid v. McDonough",
+        source_opinion_id="202",
+        treatment="overruled",
+        binding=True,
+        excerpt="Valid overruled Smith v. Wilkie.",
+    )
+    blocked_persuasive = NegativeTreatment(
+        citing_case="Lower v. McDonough",
+        source_opinion_id="203",
+        treatment="criticized",
+        binding=False,
+        excerpt="Lower criticized Smith v. Wilkie.",
+    )
+    check = _check().model_copy(
+        update={
+            "negative_treatments": [
+                blocked_binding,
+                valid_binding,
+                blocked_persuasive,
+            ],
+            "binding_negative_treatments": [
+                blocked_binding,
+                valid_binding,
+            ],
+            "persuasive_negative_treatments": [blocked_persuasive],
+            "treatment_timeline": [
+                TreatmentTimelineEntry(
+                    signal="negative",
+                    treatment="overruled",
+                    citing_case="Blocked v. McDonough",
+                    citing_date="2025-01-01",
+                    source_opinion_id="201",
+                    excerpt="Blocked overruled Smith v. Wilkie.",
+                    authoritative=True,
+                ),
+                TreatmentTimelineEntry(
+                    signal="negative",
+                    treatment="overruled",
+                    citing_case="Valid v. McDonough",
+                    citing_date="2023-01-01",
+                    source_opinion_id="202",
+                    excerpt="Valid overruled Smith v. Wilkie.",
+                    authoritative=True,
+                ),
+                TreatmentTimelineEntry(
+                    signal="negative",
+                    treatment="criticized",
+                    citing_case="Lower v. McDonough",
+                    citing_date="2025-02-01",
+                    source_opinion_id="203",
+                    excerpt="Lower criticized Smith v. Wilkie.",
+                    authoritative=True,
+                ),
+                TreatmentTimelineEntry(
+                    signal="reaffirmed",
+                    treatment="reaffirmed",
+                    citing_case="Valid v. McDonough",
+                    citing_date="2024-01-01",
+                    source_opinion_id="202",
+                    excerpt="Valid reaffirmed Smith v. Wilkie.",
+                    authoritative=True,
+                ),
+            ],
+            "later_reaffirmance": False,
+            "source_validity": [
+                _invalid_enforcement_signal("201"),
+                _valid_enforcement_signal("202"),
+                SourceValiditySignal(
+                    source_opinion_id="203",
+                    status="precedence_defect",
+                    precedence="persuasive",
+                    withheld=True,
+                ),
+            ],
+        }
+    )
+
+    _apply_source_validity_enforcement(check)
+
+    # Raw findings remain available for audit.
+    assert check.negative_treatments == [
+        blocked_binding,
+        valid_binding,
+        blocked_persuasive,
+    ]
+    assert check.binding_negative_treatments == [valid_binding]
+    assert check.persuasive_negative_treatments == []
+    assert [entry.source_opinion_id for entry in check.treatment_timeline] == [
+        "202",
+        "202",
+    ]
+    assert [entry.signal for entry in check.treatment_timeline] == [
+        "negative",
+        "reaffirmed",
+    ]
+    assert check.treatment_timeline[-1].later_than_negative is True
+    assert check.later_reaffirmance is True
+
+
+def test_enforcement_output_round_trips_through_serialized_analysis():
+    base = _check()
+    finding = base.negative_treatments[0]
+    check = base.model_copy(
+        update={
+            "binding_negative_treatments": [finding],
+            "treatment_timeline": [
+                TreatmentTimelineEntry(
+                    signal="negative",
+                    treatment="overruled",
+                    citing_case="Jones v. McDonough",
+                    citing_date="2020-02-02",
+                    source_opinion_id=str(SOURCE_ID),
+                    excerpt="The court overruled Smith v. Wilkie.",
+                    authoritative=True,
+                )
+            ],
+            "source_validity": [_invalid_enforcement_signal()],
+        }
+    )
+    _apply_source_validity_enforcement(check)
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="Test analysis.",
+        how_it_affects_va_claims="Test impact.",
+        citator_checks=[check],
+    )
+
+    loaded = LegalAnalysis.model_validate_json(analysis.model_dump_json())
+    loaded_check = loaded.citator_checks[0]
+
+    assert loaded_check.source_validity_enforced is True
+    assert loaded_check.source_validity_actions == check.source_validity_actions
+    assert loaded_check.status == "unknown"
+    assert [
+        item.source_opinion_id for item in loaded_check.negative_treatments
+    ] == [str(SOURCE_ID)]
+    assert loaded_check.binding_negative_treatments == []
+    assert loaded_check.treatment_timeline == []
+    queue = build_adjudication_queue(loaded.citator_checks)
+    assert len(queue.items) == 1
+    item = queue.items[0]
+    assert item.priority == "low"
+    assert item.evidence.source_validity_blocked is True
+    assert item.proposal.disposition == "withheld"
+    assert "source-validity enforcement blocked" in item.queue_reason
 
 
 def test_enforcement_lower_court_source_is_withheld_and_downgrades_sole_support():

@@ -1550,6 +1550,33 @@ def _timeline_entry(
     )
 
 
+def _recompute_later_reaffirmance(
+    timeline: list[TreatmentTimelineEntry],
+) -> bool:
+    """Recompute timeline-relative reaffirmance after enforcement filtering."""
+    negative_dates = sorted(
+        entry.citing_date
+        for entry in timeline
+        if entry.signal == "negative"
+        and entry.authoritative
+        and entry.citing_date
+    )
+    latest_negative = negative_dates[-1] if negative_dates else ""
+    for entry in timeline:
+        entry.later_than_negative = bool(
+            entry.signal == "reaffirmed"
+            and latest_negative
+            and entry.citing_date
+            and entry.citing_date > latest_negative
+        )
+    return any(
+        entry.signal == "reaffirmed"
+        and entry.authoritative
+        and entry.later_than_negative
+        for entry in timeline
+    )
+
+
 def _source_validity_signals(
     findings: list[NegativeTreatment],
 ) -> list[SourceValiditySignal]:
@@ -1844,21 +1871,7 @@ def _review_candidates(
         )
         flags.append(detail)
         gaps.append(_coverage_gap("citing_opinion_cap", detail))
-    negative_dates = sorted(
-        entry.citing_date
-        for entry in timeline
-        if entry.signal == "negative"
-        and entry.authoritative
-        and entry.citing_date
-    )
-    latest_negative = negative_dates[-1] if negative_dates else ""
-    for entry in timeline:
-        entry.later_than_negative = bool(
-            entry.signal == "reaffirmed"
-            and latest_negative
-            and entry.citing_date
-            and entry.citing_date > latest_negative
-        )
+    later_reaffirmance = _recompute_later_reaffirmance(timeline)
     timeline.sort(
         key=lambda entry: (
             not bool(entry.citing_date),
@@ -1866,12 +1879,6 @@ def _review_candidates(
             entry.signal != "negative",
             entry.citing_case.casefold(),
         )
-    )
-    later_reaffirmance = any(
-        entry.signal == "reaffirmed"
-        and entry.authoritative
-        and entry.later_than_negative
-        for entry in timeline
     )
     # Review order is priority order, but the report keeps the API's citation
     # order so a capped run remains comparable with an uncapped one.
@@ -2278,6 +2285,31 @@ def _apply_source_validity_enforcement(check: CitatorCheck) -> None:
     blocked_ids = check.source_validity_blocked_source_ids()
     if not blocked_ids:
         return
+
+    def blocked(source_opinion_id: str) -> bool:
+        return bool(source_opinion_id) and source_opinion_id in blocked_ids
+
+    # Keep the raw findings for audit, but remove blocked sources from the
+    # status-facing derived lists. The timeline and its relative-reaffirmance
+    # flags are recomputed from the remaining evidence.
+    check.binding_negative_treatments = [
+        finding
+        for finding in check.binding_negative_treatments
+        if not blocked(finding.source_opinion_id)
+    ]
+    check.persuasive_negative_treatments = [
+        finding
+        for finding in check.persuasive_negative_treatments
+        if not blocked(finding.source_opinion_id)
+    ]
+    check.treatment_timeline = [
+        entry
+        for entry in check.treatment_timeline
+        if not blocked(entry.source_opinion_id)
+    ]
+    check.later_reaffirmance = _recompute_later_reaffirmance(
+        check.treatment_timeline
+    )
     reasons: list[str] = []
     for signal in check.source_validity:
         if signal.source_opinion_id not in blocked_ids:
@@ -2296,10 +2328,7 @@ def _apply_source_validity_enforcement(check: CitatorCheck) -> None:
     remaining = [
         finding
         for finding in check.negative_treatments
-        if not (
-            finding.source_opinion_id
-            and finding.source_opinion_id in blocked_ids
-        )
+        if not blocked(finding.source_opinion_id)
     ]
     if check.status in {"negative", "good_law"} and not remaining:
         check.status = "unknown"

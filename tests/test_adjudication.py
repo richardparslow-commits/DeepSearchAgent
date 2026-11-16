@@ -18,6 +18,7 @@ from va_legal_agent.models import (
     CitatorCheck,
     CitatorCoverage,
     NegativeTreatment,
+    SourceValiditySignal,
 )
 
 
@@ -63,6 +64,8 @@ def _check(
     status: str = "negative",
     target_case: str = "Smith v. Wilkie",
     target_citation: str = "30 Vet.App. 123",
+    source_validity: list[SourceValiditySignal] | None = None,
+    source_validity_enforced: bool = False,
 ) -> CitatorCheck:
     return CitatorCheck(
         target_case=target_case,
@@ -72,6 +75,8 @@ def _check(
         coverage=CitatorCoverage(complete=True),
         negative_treatments=authoritative or [],
         gated_treatment_findings=gated or [],
+        source_validity=source_validity or [],
+        source_validity_enforced=source_validity_enforced,
     )
 
 
@@ -91,6 +96,94 @@ def test_queue_evidence_carries_source_opinion_identifiers():
     evidence = queue.items[0].evidence
     assert evidence.source_opinion_id == "201"
     assert evidence.source_cluster_id == "888"
+
+
+def _enforced_check() -> CitatorCheck:
+    return _check(
+        authoritative=[
+            _treatment(source_opinion_id="201"),
+            _treatment(source_opinion_id="203"),
+        ],
+        gated=[
+            _treatment(
+                source_opinion_id="202",
+                url="https://www.courtlistener.com/opinion/202/",
+                authoritative=False,
+                role="separate",
+                gate_reason="opinion role is separate",
+            )
+        ],
+        source_validity=[
+            SourceValiditySignal(
+                source_opinion_id="201",
+                status="invalid",
+                precedence="authoritative",
+                withheld=False,
+            ),
+            SourceValiditySignal(
+                source_opinion_id="202",
+                status="precedence_defect",
+                precedence="persuasive",
+                withheld=True,
+            ),
+            SourceValiditySignal(
+                source_opinion_id="203",
+                status="valid",
+                precedence="authoritative",
+                withheld=False,
+            ),
+        ],
+        source_validity_enforced=True,
+    )
+
+
+def test_enforcement_marks_blocked_sources_withheld_in_adjudication_queue():
+    check = _enforced_check()
+
+    queue = build_adjudication_queue([check])
+    by_source = {
+        item.evidence.source_opinion_id: item for item in queue.items
+    }
+
+    assert set(by_source) == {"201", "202", "203"}
+    assert queue.items[0].evidence.source_opinion_id == "203"
+    for source_id in ("201", "202"):
+        item = by_source[source_id]
+        assert item.priority == "low"
+        assert item.evidence.source_validity_blocked is True
+        assert item.proposal.disposition == "withheld"
+        assert "source-validity enforcement blocked" in item.queue_reason
+    assert by_source["203"].priority == "high"
+    assert by_source["203"].evidence.source_validity_blocked is False
+    assert by_source["203"].proposal.disposition == "negative"
+    assert [
+        finding.source_opinion_id for finding in check.negative_treatments
+    ] == ["201", "203"]
+    assert [
+        finding.source_opinion_id
+        for finding in check.gated_treatment_findings
+    ] == ["202"]
+
+
+def test_advisory_source_validity_does_not_mark_queue_items_withheld():
+    blocked = _treatment(source_opinion_id="201")
+    check = _check(
+        authoritative=[blocked],
+        source_validity=[
+            SourceValiditySignal(
+                source_opinion_id="201",
+                status="invalid",
+                precedence="authoritative",
+                withheld=False,
+            )
+        ],
+    )
+
+    queue = build_adjudication_queue([check])
+
+    assert [item.evidence.source_opinion_id for item in queue.items] == ["201"]
+    assert queue.items[0].evidence.source_validity_blocked is False
+    assert queue.items[0].proposal.disposition == "negative"
 
 
 def test_build_queue_is_evidence_first_and_prioritizes_authoritative_findings():
@@ -146,6 +239,33 @@ def test_build_queue_deduplicates_identical_findings_and_handles_no_findings():
 
     assert len(queue.items) == 2
     assert build_adjudication_queue([]).items == []
+
+
+def test_withheld_source_validity_marker_round_trips(tmp_path: Path):
+    path = tmp_path / "review.json"
+    save_queue(build_adjudication_queue([_enforced_check()]), path)
+
+    queue = load_queue(path)
+    withheld = [
+        item for item in queue.items if item.evidence.source_validity_blocked
+    ]
+
+    assert {item.evidence.source_opinion_id for item in withheld} == {
+        "201",
+        "202",
+    }
+    assert all(item.proposal.disposition == "withheld" for item in withheld)
+    assert all(item.priority == "low" for item in withheld)
+    detail = render_queue_text(
+        queue,
+        item_id=next(
+            item.id
+            for item in withheld
+            if item.evidence.source_opinion_id == "201"
+        ),
+    )
+    assert "SOURCE-VALIDITY ENFORCEMENT" in detail
+    assert "Withheld from authoritative use" in detail
 
 
 def test_save_queue_cleans_up_a_failed_atomic_write(tmp_path: Path, monkeypatch):
