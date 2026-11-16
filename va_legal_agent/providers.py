@@ -22,12 +22,14 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Protocol
+from urllib.parse import parse_qsl, urlsplit
 
 import requests
 from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
+from .courtlistener_cache import CourtListenerCache
 from .fetch import extract_holding_sentences
 from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
 from .search import (
@@ -36,6 +38,7 @@ from .search import (
     _is_transient_error,
     _retry_delay,
     _throttle,
+    classify_search_error,
     http_proxy_kwargs,
 )
 from .topics import (
@@ -457,6 +460,83 @@ class CourtListenerProvider:
     # The endpoint accepts blocks up to roughly fifty pages (64,000 chars).
     CITATION_LOOKUP_MAX_CHARS = 64_000
 
+    def __init__(self, cache: CourtListenerCache | None = None):
+        self._cache = cache
+        if cache is not None:
+            return
+        settings = get_settings()
+        directory = (settings.courtlistener_cache_dir or "").strip()
+        if not directory or settings.courtlistener_cache_ttl_seconds <= 0:
+            return
+        try:
+            self._cache = CourtListenerCache(
+                directory, settings.courtlistener_cache_ttl_seconds
+            )
+        except OSError as exc:
+            logger.warning(
+                "CourtListener cache unavailable at %s: %s", directory, exc
+            )
+
+    def _cache_target(
+        self, url: str, params: dict[str, object] | None
+    ) -> tuple[str, str, dict[str, object]] | None:
+        """Classify a GET as one of the four cached response families.
+
+        Detail paths are keyed by numeric entity id, while citation-edge pages
+        are keyed by direction and opinion id plus their full query (page size
+        and cursor). Collection endpoints are intentionally not cached here;
+        they are batch operations rather than shared entity reads.
+        """
+        if self._cache is None:
+            return None
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return None
+        path = parts.path.rstrip("/") + "/"
+        effective: dict[str, object] = dict(
+            parse_qsl(parts.query, keep_blank_values=True)
+        )
+        if params:
+            effective.update(params)
+
+        for base, kind in (
+            (self.API_URL, "opinion"),
+            (self.CLUSTERS_URL, "cluster"),
+            (self.DOCKETS_URL, "docket"),
+        ):
+            prefix = urlsplit(base).path.rstrip("/") + "/"
+            if not path.startswith(prefix):
+                continue
+            identifier = path[len(prefix) :].strip("/")
+            if identifier.isdigit():
+                return kind, identifier, effective
+
+        citation_path = urlsplit(self.CITATIONS_URL).path.rstrip("/") + "/"
+        if path == citation_path:
+            identifier = "collection"
+            for key in ("cited_opinion", "citing_opinion"):
+                parsed = _positive_id(effective.get(key))
+                if parsed is not None:
+                    identifier = f"{key}:{parsed}"
+                    break
+            return "citation_edges", identifier, effective
+        return None
+
+    def invalidate_cache(
+        self, *, kind: str | None = None, identifier: str | None = None
+    ) -> int:
+        """Invalidate matching cache entries and return how many were removed.
+
+        No filters clears the whole cache. Otherwise ``kind`` and/or
+        ``identifier`` narrow the deletion, using the same names stored in the
+        cache records (``opinion``, ``cluster``, ``docket``, or
+        ``citation_edges``).
+        """
+        if self._cache is None:
+            return 0
+        return self._cache.invalidate(kind=kind, identifier=identifier)
+
     def _headers(self) -> dict[str, str]:
         settings = get_settings()
         headers = {"User-Agent": settings.user_agent}
@@ -476,6 +556,11 @@ class CourtListenerProvider:
         set ``COURTLISTENER_API_KEY``; any other non-transient error raises
         immediately.
         """
+        cache_target = self._cache_target(url, params)
+        if cache_target is not None and self._cache is not None:
+            cached = self._cache.get(*cache_target)
+            if cached is not None:
+                return cached
         settings = get_settings()
         retries = settings.search_retry_attempts
         last_error: requests.RequestException | None = None
@@ -506,16 +591,52 @@ class CourtListenerProvider:
                     ):
                         raise SearchError(
                             "CourtListener requires an API token (401 Unauthorized); "
-                            "set COURTLISTENER_API_KEY."
+                            "set COURTLISTENER_API_KEY.",
+                            kind="authentication",
+                            retryable=False,
                         ) from exc
+                    kind, retryable = classify_search_error(exc)
                     raise SearchError(
-                        f"CourtListener request failed: {url}: {exc}"
+                        f"CourtListener request failed: {url}: {exc}",
+                        kind=kind,
+                        retryable=retryable,
                     ) from exc
                 last_error = exc
                 continue
-            return response.json()
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise SearchError(
+                    f"CourtListener returned invalid JSON for {url}: {exc}",
+                    kind="malformed_response",
+                    retryable=False,
+                ) from exc
+            if cache_target is not None and self._cache is not None:
+                try:
+                    kind, identifier, cache_params = cache_target
+                    self._cache.set(
+                        kind,
+                        identifier,
+                        data,
+                        source_url=url,
+                        params=cache_params,
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Could not write CourtListener cache entry for %s: %s",
+                        url,
+                        exc,
+                    )
+            return data
+        kind, retryable = (
+            classify_search_error(last_error)
+            if last_error is not None
+            else ("other", False)
+        )
         raise SearchError(
-            f"CourtListener was repeatedly unavailable for {url}: {last_error}"
+            f"CourtListener was repeatedly unavailable for {url}: {last_error}",
+            kind=kind,
+            retryable=retryable,
         ) from last_error
 
     def _post_json(self, url: str, data: dict[str, object]) -> object:
@@ -556,10 +677,15 @@ class CourtListenerProvider:
                     ):
                         raise SearchError(
                             "CourtListener requires an API token (401 Unauthorized); "
-                            "set COURTLISTENER_API_KEY."
+                            "set COURTLISTENER_API_KEY.",
+                            kind="authentication",
+                            retryable=False,
                         ) from exc
+                    kind, retryable = classify_search_error(exc)
                     raise SearchError(
-                        f"CourtListener request failed: {url}: {exc}"
+                        f"CourtListener request failed: {url}: {exc}",
+                        kind=kind,
+                        retryable=retryable,
                     ) from exc
                 last_error = exc
                 continue
@@ -567,10 +693,19 @@ class CourtListenerProvider:
                 return response.json()
             except ValueError as exc:
                 raise SearchError(
-                    f"CourtListener returned invalid JSON for {url}: {exc}"
+                    f"CourtListener returned invalid JSON for {url}: {exc}",
+                    kind="malformed_response",
+                    retryable=False,
                 ) from exc
+        kind, retryable = (
+            classify_search_error(last_error)
+            if last_error is not None
+            else ("other", False)
+        )
         raise SearchError(
-            f"CourtListener was repeatedly unavailable for {url}: {last_error}"
+            f"CourtListener was repeatedly unavailable for {url}: {last_error}",
+            kind=kind,
+            retryable=retryable,
         ) from last_error
 
     def lookup_citations(self, text: str) -> list[dict[str, object]]:
@@ -828,11 +963,21 @@ class CourtListenerProvider:
         if cursor:
             params["cursor"] = cursor
         try:
-            return self._get_json(self.CITATIONS_URL, params)
+            data = self._get_json(self.CITATIONS_URL, params)
         except SearchError as exc:
             raise SearchError(
-                f"CourtListener citing opinions failed for opinion {opinion_id}: {exc}"
+                f"CourtListener citing opinions failed for opinion {opinion_id}: {exc}",
+                kind=exc.kind,
+                retryable=exc.retryable,
             ) from exc
+        if not isinstance(data, dict):
+            raise SearchError(
+                "CourtListener citing opinions returned an unexpected response "
+                f"for opinion {opinion_id} ({type(data).__name__}); expected an object.",
+                kind="malformed_response",
+                retryable=False,
+            )
+        return data
 
     def same_docket_decisions(
         self, opinion_id: int, max_results: int = 5

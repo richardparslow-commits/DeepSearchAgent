@@ -876,6 +876,45 @@ def test_direct_opinion_expands_to_its_whole_cluster_and_parallel_citations():
     assert check.status == "good_law"
 
 
+def test_target_cluster_audit_is_opt_in_and_reuses_fetched_rows():
+    def build_provider() -> FakeProvider:
+        provider = FakeProvider()
+        provider.metadata[111] = {
+            **_target_meta(111),
+            "cluster_id": "888",
+            "opinion_ids": [111, 112],
+        }
+        provider.opinion_pages[(111, None)] = _page([201])
+        provider.opinion_pages[(112, None)] = _page([202])
+        _wire_good_citing_opinions(provider, 201, 202)
+        return provider
+
+    plain_provider = build_provider()
+    audited_provider = build_provider()
+    without = check_case(_case(), plain_provider)
+    with_audit = check_case(
+        _case(), audited_provider, target_cluster_audit=True
+    )
+
+    assert without.target_cluster_audit == []
+    assert [row.opinion_id for row in with_audit.target_cluster_audit] == [
+        "111",
+        "112",
+    ]
+    assert [row.opinion_index for row in with_audit.target_cluster_audit] == [0, 1]
+    assert all(row.fetch_attempted for row in with_audit.target_cluster_audit)
+    assert all(row.complete for row in with_audit.target_cluster_audit)
+    assert plain_provider.edge_calls == audited_provider.edge_calls
+    assert plain_provider.metadata_calls == audited_provider.metadata_calls
+    assert plain_provider.text_calls == audited_provider.text_calls
+    assert with_audit.status == without.status
+    assert with_audit.good_law_as_of == without.good_law_as_of
+    assert with_audit.coverage == without.coverage
+    assert with_audit.confidence == without.confidence
+    assert with_audit.confidence_score == without.confidence_score
+    assert with_audit.flags == without.flags
+
+
 def test_cluster_forward_edges_deduplicate_a_shared_citing_opinion():
     provider = FakeProvider()
     provider.metadata[111] = {

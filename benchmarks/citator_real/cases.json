@@ -175,6 +175,57 @@
           "kind": "holding"
         }
       ]
+    },
+    {
+      "id": "briskin-ama",
+      "category": "en banc short-form target name in holding",
+      "fixture": "fixtures/briskin-ama.json",
+      "expected_status": "negative",
+      "review_notes": "The Briskin en banc opinion overrules AMA Multimedia by its short name only. The earlier citation to AMA is discussion; the holding sentence has no full target title or reporter citation.",
+      "gold": [
+        {
+          "id": "briskin-ama-holding",
+          "citing_id": "10381924",
+          "excerpt": "We now take this opportunity to overrule AMA and any other cases that require some sort of differential treatment of the forum state for a finding of \"express aiming\" of the defendant's allegedly tortious conduct.",
+          "treatment": "overruled",
+          "attribution": "authoritative",
+          "kind": "holding"
+        }
+      ]
+    },
+    {
+      "id": "aldf-veneman",
+      "category": "vacated panel opinion in en banc order",
+      "fixture": "fixtures/aldf-veneman.json",
+      "expected_status": "negative",
+      "review_notes": "The published en banc order expressly vacates the three-judge panel opinion. The target is identified by its reporter citation, not its full case name, in the operative sentence.",
+      "gold": [
+        {
+          "id": "aldf-veneman-vacatur",
+          "citing_id": "798126",
+          "excerpt": "The opinion of the three-judge panel, reported at 469 F.3d 826 (9th Cir.2006), is VACATED.",
+          "treatment": "vacated",
+          "attribution": "authoritative",
+          "kind": "vacatur"
+        }
+      ]
+    },
+    {
+      "id": "coleman-jeffries",
+      "category": "parenthetical subsequent history (gated)",
+      "fixture": "fixtures/coleman-jeffries.json",
+      "expected_status": "unknown",
+      "review_notes": "The unpublished Coleman memorandum cites Jeffries for the law-of-the-case standard and records its subsequent history in a citation parenthetical. The express negative language is a gated finding because the citing opinion is nonprecedential; it must not support an authoritative negative status or good_law.",
+      "gold": [
+        {
+          "id": "coleman-jeffries-parenthetical",
+          "citing_id": "4568077",
+          "excerpt": "See Jeffries v. Wood, 114 F.3d 1484, 1489 (9th Cir. 1997) (en banc), overruled on other grounds by Gonzalez v. Arizona, 677 F.3d 383 (9th Cir. 2012) (en banc).",
+          "treatment": "overruled",
+          "attribution": "gated",
+          "kind": "citation_parenthetical"
+        }
+      ]
     }
   ]
 }

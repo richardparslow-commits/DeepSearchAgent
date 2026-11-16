@@ -33,5 +33,8 @@ plan.retry.txt
 # Web app persisted job state
 .webapp/
 
+# Optional CourtListener response cache
+.courtlistener_cache/
+
 # OS
 .DS_Store

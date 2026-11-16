@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "id": "aldf-veneman",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/3039597/animal-legal-defense-fund-v-veneman/",
+      "citing": "https://www.courtlistener.com/opinion/798126/animal-legal-defense-fund-v-veneman/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/3039597/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=3039597",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/798126/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/798126/"
+    },
+    "note": "The target is the three-judge panel opinion. The citing decision is the published en banc order that vacated it. The fixture preserves selected verbatim passages; the edge count is a local sentinel one greater than the captured citing set."
+  },
+  "target_case": {
+    "title": "Animal Legal Defense Fund v. Veneman",
+    "citation": "469 F.3d 826",
+    "court": "United States Court of Appeals for the Ninth Circuit",
+    "decision_date": "2006-11-22",
+    "courtlistener_opinion_id": "3039597",
+    "url": "https://www.courtlistener.com/opinion/3039597/animal-legal-defense-fund-v-veneman/"
+  },
+  "metadata": {
+    "3039597": {
+      "title": "Animal Legal Defense Fund v. Veneman",
+      "citation": "469 F.3d 826",
+      "citations": [
+        "469 F.3d 826"
+      ],
+      "cluster_id": "3039597",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        3039597
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "2006-11-22",
+      "url": "https://www.courtlistener.com/opinion/3039597/animal-legal-defense-fund-v-veneman/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "798126": {
+      "title": "Animal Legal Defense Fund v. Veneman",
+      "citation": "490 F.3d 725",
+      "citations": [
+        "490 F.3d 725"
+      ],
+      "cluster_id": "798126",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        798126
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "2007-06-04",
+      "url": "https://www.courtlistener.com/opinion/798126/animal-legal-defense-fund-v-veneman/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "798126": "Appellant's motion to dismiss is GRANTED. The appeal is DISMISSED with prejudice, each party to bear its own costs. The opinion of the three-judge panel, reported at 469 F.3d 826 (9th Cir.2006), is VACATED."
+  },
+  "edges": [
+    {
+      "opinion_id": 3039597,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        798126
+      ],
+      "next": null
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "id": "briskin-ama",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/4776501/ama-multimedia-llc-v-marcin-wanat/",
+      "citing": "https://www.courtlistener.com/opinion/10381924/brandon-briskin-v-shopify-inc/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/4776501/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=4776501",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/10381924/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/10381924/"
+    },
+    "note": "The fixture preserves selected verbatim passages, not the full opinion. Edge count is a local sentinel one greater than the captured citing set so this partial slice cannot report complete coverage; it is not CourtListener's real cited-by total."
+  },
+  "target_case": {
+    "title": "AMA Multimedia, LLC v. Wanat",
+    "citation": "970 F.3d 1201",
+    "court": "United States Court of Appeals for the Ninth Circuit",
+    "decision_date": "2020-08-17",
+    "courtlistener_opinion_id": "4776501",
+    "url": "https://www.courtlistener.com/opinion/4776501/ama-multimedia-llc-v-marcin-wanat/"
+  },
+  "metadata": {
+    "4776501": {
+      "title": "AMA Multimedia, LLC v. Wanat",
+      "citation": "970 F.3d 1201",
+      "citations": [
+        "970 F.3d 1201"
+      ],
+      "cluster_id": "4776501",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        4776501
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "2020-08-17",
+      "url": "https://www.courtlistener.com/opinion/4776501/ama-multimedia-llc-v-marcin-wanat/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "10381924": {
+      "title": "Brandon Briskin v. Shopify, Inc.",
+      "citation": "135 F.4th 739",
+      "citations": [
+        "135 F.4th 739"
+      ],
+      "cluster_id": "10381924",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        10381924
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "2025-04-21",
+      "url": "https://www.courtlistener.com/opinion/10381924/brandon-briskin-v-shopify-inc/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    }
+  },
+  "texts": {
+    "10381924": "AMA misread Mavrix Photo to add a requirement for express aiming that \"can be found nowhere in our precedents.\" AMA, 970 F.3d at 1219 (Gould, J., dissenting). We now take this opportunity to overrule AMA and any other cases that require some sort of differential treatment of the forum state for a finding of \"express aiming\" of the defendant's allegedly tortious conduct."
+  },
+  "edges": [
+    {
+      "opinion_id": 4776501,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        10381924
+      ],
+      "next": null
+    }
+  ]
+}

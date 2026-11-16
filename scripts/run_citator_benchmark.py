@@ -68,9 +68,23 @@ SIGNATURE_FIELDS = {
     **{key: FINDING_FIELDS for key in SIGNATURE_ACTUALS},
     "timeline": TIMELINE_FIELDS,
 }
+AS_OF_EXPECTED_FIELDS = (
+    "as_of_date",
+    "good_law_as_of",
+    "post_as_of_citing_opinion_ids",
+    "undated_citing_opinion_ids",
+    "post_as_of_treatments",
+    "post_as_of_incomplete",
+    "truncated",
+    "gap_codes_contain",
+)
 OPTIONAL_EXPECTED_FIELDS = tuple(
     key
-    for key in (*SIGNATURE_FIELDS, "later_reaffirmance")
+    for key in (
+        *SIGNATURE_FIELDS,
+        "later_reaffirmance",
+        *AS_OF_EXPECTED_FIELDS,
+    )
     if key not in {"authoritative", "gated"}
 )
 ALLOWED_EXPECTED_FIELDS = frozenset(EXPECTED_FIELDS) | frozenset(
@@ -225,6 +239,32 @@ def _load_cases(data_dir: Path) -> list[dict[str, Any]]:
             expected["later_reaffirmance"], bool
         ):
             raise ValueError(f"{case_id}: later_reaffirmance must be a boolean")
+        for key in ("as_of_date", "good_law_as_of"):
+            if key in expected and not isinstance(expected[key], str):
+                raise ValueError(f"{case_id}: {key} must be a string")
+        for key in (
+            "post_as_of_citing_opinion_ids",
+            "undated_citing_opinion_ids",
+            "gap_codes_contain",
+        ):
+            if key in expected and (
+                not isinstance(expected[key], list)
+                or not all(isinstance(item, str) for item in expected[key])
+            ):
+                raise ValueError(f"{case_id}: {key} must be a string list")
+        if "post_as_of_treatments" in expected:
+            _validate_signature_list(
+                case_id,
+                "post_as_of_treatments",
+                expected["post_as_of_treatments"],
+                FINDING_FIELDS,
+            )
+        for key in (
+            "post_as_of_incomplete",
+            "truncated",
+        ):
+            if key in expected and not isinstance(expected[key], bool):
+                raise ValueError(f"{case_id}: {key} must be a boolean")
         if not isinstance(expected["same_docket_count"], int):
             raise ValueError(f"{case_id}: same_docket_count must be an integer")
     return cases
@@ -296,6 +336,34 @@ def _compare_case(
     if "later_reaffirmance" in expected:
         compare("later_reaffirmance", check.later_reaffirmance)
     compare("same_docket_count", len(check.same_docket_decisions))
+    if "as_of_date" in expected:
+        compare("as_of_date", check.as_of_date)
+    if "good_law_as_of" in expected:
+        compare("good_law_as_of", check.good_law_as_of)
+    if "post_as_of_citing_opinion_ids" in expected:
+        compare(
+            "post_as_of_citing_opinion_ids",
+            [cited.opinion_id for cited in check.post_as_of_citing_opinions],
+        )
+    if "undated_citing_opinion_ids" in expected:
+        compare(
+            "undated_citing_opinion_ids",
+            [cited.opinion_id for cited in check.undated_citing_opinions],
+        )
+    if "post_as_of_treatments" in expected:
+        compare(
+            "post_as_of_treatments",
+            _sorted_signatures(check.post_as_of_treatment_findings),
+        )
+    if "post_as_of_incomplete" in expected:
+        compare("post_as_of_incomplete", check.post_as_of_incomplete)
+    if "truncated" in expected:
+        compare("truncated", check.coverage.truncated)
+    if "gap_codes_contain" in expected:
+        actual_codes = [gap.code for gap in check.coverage.gaps]
+        for code in expected["gap_codes_contain"]:
+            if code not in actual_codes:
+                mismatches.append(f"gap_codes_contain: {code!r} not found")
     flags_text = "\n".join(check.flags)
     for phrase in expected["flags_contain"]:
         if phrase not in flags_text:
@@ -358,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider,
                 max_citing_opinions=int(limits.get("max_citing_opinions", 5)),
                 max_pages=int(limits.get("max_pages", 1)),
+                as_of_date=str(limits.get("as_of_date") or ""),
             )
             mismatches = _compare_case(case, check)
         except (KeyError, TypeError, ValueError) as exc:

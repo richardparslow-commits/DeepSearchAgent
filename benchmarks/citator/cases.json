@@ -10,7 +10,8 @@
     "binding": "Optional exact signatures expected in CitatorCheck.binding_negative_treatments.",
     "persuasive": "Optional exact signatures expected in CitatorCheck.persuasive_negative_treatments.",
     "timeline": "Optional ordered signatures expected in CitatorCheck.treatment_timeline.",
-    "later_reaffirmance": "Optional expected CitatorCheck.later_reaffirmance boolean."
+    "later_reaffirmance": "Optional expected CitatorCheck.later_reaffirmance boolean.",
+    "as_of": "Cases with limits.as_of_date label the inclusive cutoff result, later-only findings reported separately, undated opinions excluded from status, and in-scope coverage caps."
   },
   "cases": [
     {
@@ -1718,6 +1719,400 @@
           }
         ],
         "later_reaffirmance": true
+      }
+    },
+    {
+      "id": "as-of-inclusive-cutoff-negative",
+      "category": "as-of boundary",
+      "adversarial_note": "The only in-scope negative opinion is dated exactly on the cutoff, which must be included.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "On Cutoff v. McDonough",
+          "citation": "31 Vet.App. 1",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2021-01-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court overruled Smith v. Wilkie, 30 Vet.App. 123, in part."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 1,
+          "citing_ids": [
+            201
+          ],
+          "next": null
+        }
+      ],
+      "limits": {
+        "as_of_date": "2021-01-01"
+      },
+      "expected": {
+        "status": "negative",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/201/",
+            "treatment": "overruled",
+            "scope": "part",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0,
+        "as_of_date": "2021-01-01",
+        "good_law_as_of": "",
+        "post_as_of_citing_opinion_ids": [],
+        "undated_citing_opinion_ids": [],
+        "post_as_of_treatments": [],
+        "post_as_of_incomplete": false,
+        "truncated": false,
+        "gap_codes_contain": []
+      }
+    },
+    {
+      "id": "as-of-later-negative-cannot-change-status",
+      "category": "as-of separation",
+      "adversarial_note": "The only negative treatment is after the cutoff; it must be reported separately without changing as-of status.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Earlier Followed v. McDonough",
+          "citation": "31 Vet.App. 1",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2020-06-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Later Overruling v. McDonough",
+          "citation": "32 Vet.App. 2",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2022-06-01",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 2,
+          "citing_ids": [
+            201,
+            202
+          ],
+          "next": null
+        }
+      ],
+      "limits": {
+        "as_of_date": "2021-01-01"
+      },
+      "expected": {
+        "status": "good_law",
+        "coverage_complete": true,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [],
+        "same_docket_count": 0,
+        "as_of_date": "2021-01-01",
+        "good_law_as_of": "2020-06-01",
+        "post_as_of_citing_opinion_ids": [
+          "202"
+        ],
+        "undated_citing_opinion_ids": [],
+        "post_as_of_treatments": [
+          {
+            "citing_url": "https://www.courtlistener.com/opinion/202/",
+            "treatment": "overruled",
+            "scope": "all",
+            "opinion_role": "majority",
+            "precedential_status": "Published"
+          }
+        ],
+        "post_as_of_incomplete": false,
+        "truncated": false,
+        "gap_codes_contain": []
+      }
+    },
+    {
+      "id": "as-of-missing-citing-date",
+      "category": "as-of coverage",
+      "adversarial_note": "An undated negative opinion could fall on either side of the cutoff, so it must be excluded and make coverage incomplete.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Dated Followed v. McDonough",
+          "citation": "31 Vet.App. 1",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2020-01-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Undated Overruling v. McDonough",
+          "citation": "32 Vet.App. 2",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 2,
+          "citing_ids": [
+            201,
+            202
+          ],
+          "next": null
+        }
+      ],
+      "limits": {
+        "as_of_date": "2021-01-01"
+      },
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "usable decision date"
+        ],
+        "same_docket_count": 0,
+        "as_of_date": "2021-01-01",
+        "good_law_as_of": "",
+        "post_as_of_citing_opinion_ids": [],
+        "undated_citing_opinion_ids": [
+          "202"
+        ],
+        "post_as_of_treatments": [],
+        "post_as_of_incomplete": false,
+        "truncated": false,
+        "gap_codes_contain": [
+          "citing_date_missing"
+        ]
+      }
+    },
+    {
+      "id": "as-of-in-scope-review-cap",
+      "category": "as-of coverage",
+      "adversarial_note": "The citing-opinion cap binds inside the as-of window, so the unreviewed in-scope citation must keep the result incomplete.",
+      "target": {
+        "title": "Smith v. Wilkie",
+        "citation": "30 Vet.App. 123",
+        "court": "Court of Appeals for Veterans Claims",
+        "decision_date": "2018-01-01",
+        "courtlistener_opinion_id": "111",
+        "url": "https://www.courtlistener.com/opinion/111/"
+      },
+      "metadata": {
+        "111": {
+          "title": "Smith v. Wilkie",
+          "citation": "30 Vet.App. 123",
+          "citations": [
+            "30 Vet.App. 123",
+            "2020 WL 123456"
+          ],
+          "cluster_id": "777",
+          "cluster_resolved": true,
+          "opinion_ids": [
+            111,
+            112
+          ],
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2018-01-01",
+          "url": "https://www.courtlistener.com/opinion/111/"
+        },
+        "201": {
+          "title": "Older In Scope v. McDonough",
+          "citation": "31 Vet.App. 1",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2019-01-01",
+          "url": "https://www.courtlistener.com/opinion/201/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        },
+        "202": {
+          "title": "Newer In Scope v. McDonough",
+          "citation": "32 Vet.App. 2",
+          "court": "Court of Appeals for Veterans Claims",
+          "decision_date": "2020-01-01",
+          "url": "https://www.courtlistener.com/opinion/202/",
+          "opinion_type": "020lead",
+          "precedential_status": "Published"
+        }
+      },
+      "texts": {
+        "201": "The court followed Smith v. Wilkie, 30 Vet.App. 123.",
+        "202": "The court followed Smith v. Wilkie, 30 Vet.App. 123."
+      },
+      "edges": [
+        {
+          "opinion_id": 111,
+          "cursor": null,
+          "count": 2,
+          "citing_ids": [
+            201,
+            202
+          ],
+          "next": null
+        }
+      ],
+      "limits": {
+        "as_of_date": "2021-01-01",
+        "max_citing_opinions": 1
+      },
+      "expected": {
+        "status": "unknown",
+        "coverage_complete": false,
+        "target_cluster_id": "777",
+        "target_citations": [
+          "30 Vet.App. 123",
+          "2020 WL 123456"
+        ],
+        "target_opinion_ids": [
+          "111",
+          "112"
+        ],
+        "authoritative": [],
+        "gated": [],
+        "flags_contain": [
+          "coverage"
+        ],
+        "same_docket_count": 0,
+        "as_of_date": "2021-01-01",
+        "good_law_as_of": "",
+        "post_as_of_citing_opinion_ids": [],
+        "undated_citing_opinion_ids": [],
+        "post_as_of_treatments": [],
+        "post_as_of_incomplete": false,
+        "truncated": true,
+        "gap_codes_contain": [
+          "citing_opinion_cap"
+        ]
       }
     }
   ]

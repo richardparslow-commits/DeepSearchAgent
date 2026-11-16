@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 
 # Stable vocabularies for the public source-invalidator audit. The model keeps
@@ -80,6 +80,19 @@ SOURCE_AUDIT_GAP_CODES = frozenset(
         "target_not_located",
         "citing_date_missing",
         "citing_opinion_cap",
+    }
+)
+SOURCE_OPINION_LIMIT_REASONS = frozenset({"", "row", "cursor", "allocation"})
+# Stable reasons a per-opinion forward-edge fetch can fail. An empty kind means
+# the fetch did not fail. Keep these values stable for JSON consumers.
+SOURCE_OPINION_FETCH_ERROR_KINDS = frozenset(
+    {
+        "",
+        "rate_limit",
+        "authentication",
+        "timeout",
+        "malformed_response",
+        "other",
     }
 )
 
@@ -467,6 +480,65 @@ class SourceInvalidatorCheck(BaseModel):
     reason: str = ""
 
 
+class SourceOpinionAudit(BaseModel):
+    """Coverage accounting for one opinion in a source cluster.
+
+    Rows are ordered like the source cluster's opinion ids. A row describes
+    only the forward-edge fetch for that opinion; candidate metadata, review,
+    and as-of accounting remain aggregate fields on ``SourceAuditLedger``.
+    """
+
+    opinion_id: str
+    opinion_index: int = 0
+    candidate_allocation: int = 0
+    fetch_attempted: bool = False
+    reported_count_known: bool = False
+    forward_citations_reported: int = 0
+    citing_ids_collected: int = 0
+    # IDs contributed to the cluster for the first time by this opinion.
+    citing_ids_new_to_cluster: int = 0
+    # IDs already collected from an earlier opinion in the same cluster.
+    citing_ids_duplicate_across_cluster: int = 0
+    # Duplicate usable rows and unusable rows within this opinion's pages.
+    duplicate_rows_ignored: int = 0
+    invalid_rows_ignored: int = 0
+    pages_fetched: int = 0
+    complete: bool = False
+    truncated: bool = False
+    page_limit_reached: bool = False
+    candidate_pool_limit_reached: bool = False
+    # row, cursor, allocation, or empty.
+    candidate_pool_limit_reason: str = ""
+    count_mismatch: bool = False
+    # Empty unless the fetch itself failed. Values come from
+    # SOURCE_OPINION_FETCH_ERROR_KINDS; details stay in ledger.gaps.
+    fetch_error_kind: str = ""
+    # Whether retrying the same opinion fetch could reasonably succeed.
+    fetch_retryable: bool = False
+    # Stable row-level incompleteness codes; details stay in ledger.gaps.
+    gap_codes: list[str] = Field(default_factory=list)
+
+    @field_validator("candidate_pool_limit_reason")
+    @classmethod
+    def _known_limit_reason(cls, value: str) -> str:
+        if value not in SOURCE_OPINION_LIMIT_REASONS:
+            raise ValueError(
+                "candidate_pool_limit_reason must be one of "
+                f"{sorted(SOURCE_OPINION_LIMIT_REASONS)!r}"
+            )
+        return value
+
+    @field_validator("fetch_error_kind")
+    @classmethod
+    def _known_fetch_error_kind(cls, value: str) -> str:
+        if value not in SOURCE_OPINION_FETCH_ERROR_KINDS:
+            raise ValueError(
+                "fetch_error_kind must be one of "
+                f"{sorted(SOURCE_OPINION_FETCH_ERROR_KINDS)!r}"
+            )
+        return value
+
+
 class SourceAuditLedger(BaseModel):
     """Bounded coverage accounting for one source-history audit.
 
@@ -476,7 +548,8 @@ class SourceAuditLedger(BaseModel):
     signal's ``history_complete`` remains false. ``forward_citations_reported``
     is the sum of per-opinion API counts and may double-count a citing opinion
     linked to more than one cluster opinion; ``citing_ids_collected`` is the
-    de-duplicated count actually collected within the bounded pool.
+    de-duplicated count actually collected within the bounded pool. The
+    optional ``opinion_audits`` rows retain that breakdown per source opinion.
     """
 
     assessed: bool = False
@@ -510,6 +583,59 @@ class SourceAuditLedger(BaseModel):
     decisive_candidate_id: str = ""
     # Concrete incompleteness reasons; deduplicated in capture order.
     gaps: list[CitatorCoverageGap] = Field(default_factory=list)
+    # One row per source-cluster opinion, in cluster opinion-id order.
+    opinion_audits: list[SourceOpinionAudit] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def opinion_bottlenecks(self) -> dict[str, list[str]]:
+        """Derived summary serialized for JSON consumers; never stored."""
+        return self.opinion_audit_bottlenecks()
+
+    def opinion_audit_bottlenecks(self) -> dict[str, list[str]]:
+        """Return constrained opinion IDs mapped to derived reasons.
+
+        Rows are returned in source-cluster order. Gap codes, zero allocation,
+        row/cursor caps, unknown reported counts, and malformed rows are
+        highlighted. Duplicate-only rows remain data-quality notices rather
+        than coverage bottlenecks.
+
+        Raises:
+            ValueError: If a row has an empty opinion id or two rows share one.
+        """
+        bottlenecks: dict[str, list[str]] = {}
+        seen_opinion_ids: set[str] = set()
+        for row in self.opinion_audits:
+            if not row.opinion_id:
+                raise ValueError(
+                    "opinion_audits rows must have a non-empty opinion_id"
+                )
+            if row.opinion_id in seen_opinion_ids:
+                raise ValueError(
+                    "duplicate opinion_id in opinion_audits: "
+                    f"{row.opinion_id!r}"
+                )
+            seen_opinion_ids.add(row.opinion_id)
+            reasons = _opinion_bottleneck_reasons(row)
+            if reasons:
+                bottlenecks[row.opinion_id] = reasons
+        return bottlenecks
+
+
+def _opinion_bottleneck_reasons(row: SourceOpinionAudit) -> list[str]:
+    """Return the minimum coverage reasons for one opinion audit row."""
+    reasons = list(row.gap_codes)
+    if row.candidate_allocation == 0:
+        reasons.append("zero_allocation")
+    elif row.candidate_pool_limit_reason == "row":
+        reasons.append("candidate_pool_row")
+    elif row.candidate_pool_limit_reason == "cursor":
+        reasons.append("candidate_pool_cursor")
+    if row.pages_fetched > 0 and not row.reported_count_known:
+        reasons.append("reported_count_unknown")
+    if row.invalid_rows_ignored > 0:
+        reasons.append("malformed_rows")
+    return list(dict.fromkeys(reasons))
 
 
 class SourceValiditySignal(BaseModel):
@@ -707,6 +833,11 @@ class CitatorCheck(BaseModel):
     target_cluster_id: str = ""
     target_citations: list[str] = Field(default_factory=list)
     target_opinion_ids: list[str] = Field(default_factory=list)
+    # Opt-in diagnostic rows for the target cluster's forward-edge fetch.
+    # Empty unless target cluster auditing is enabled. These rows reuse the
+    # source-audit row shape but never feed status, coverage, confidence,
+    # ranking, or authority-queue behavior.
+    target_cluster_audit: list[SourceOpinionAudit] = Field(default_factory=list)
     # "negative", "good_law", or "unknown".
     status: str = "unknown"
     # Latest reviewed citing-opinion date, not a finality or history date.

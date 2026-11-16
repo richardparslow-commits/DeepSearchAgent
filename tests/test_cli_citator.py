@@ -18,6 +18,7 @@ from va_legal_agent.models import (
     SameDocketDecision,
     SourceAuditLedger,
     SourceInvalidatorCheck,
+    SourceOpinionAudit,
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
@@ -764,6 +765,33 @@ def test_citator_text_renders_source_audit_ledger():
                                 code="page_cap", detail="more pages remain"
                             )
                         ],
+                        opinion_audits=[
+                            SourceOpinionAudit(
+                                opinion_id="201",
+                                opinion_index=0,
+                                candidate_allocation=6,
+                                fetch_attempted=True,
+                                reported_count_known=True,
+                                forward_citations_reported=4,
+                                citing_ids_collected=3,
+                                citing_ids_new_to_cluster=3,
+                                pages_fetched=1,
+                                complete=False,
+                                truncated=True,
+                                page_limit_reached=True,
+                                gap_codes=["page_cap"],
+                            ),
+                            SourceOpinionAudit(
+                                opinion_id="202",
+                                opinion_index=1,
+                                candidate_allocation=0,
+                                complete=False,
+                                truncated=True,
+                                candidate_pool_limit_reached=True,
+                                candidate_pool_limit_reason="allocation",
+                                gap_codes=["source_candidate_pool_truncated"],
+                            ),
+                        ],
                     ),
                 )
             ]
@@ -779,6 +807,22 @@ def test_citator_text_renders_source_audit_ledger():
     assert "invalidating 1/clean 0; gated 0; unreviewed 1" in text
     assert "pages 1; page cap yes; candidate pool cap no" in text
     assert "decisive 301; gaps page_cap" in text
+    assert (
+        "audit bottlenecks: 201 (page_cap); "
+        "202 (source_candidate_pool_truncated, zero_allocation)"
+    ) in text
+    assert (
+        "opinion audit 201 (index 0): allocation 6; "
+        "4 reported/3 collected; new 3/duplicate 0; "
+        "rows ignored duplicate 0/invalid 0; pages 1; incomplete; "
+        "page cap yes; candidate pool cap no; gaps page_cap"
+    ) in text
+    assert (
+        "opinion audit 202 (index 1): allocation 0; fetch not attempted; "
+        "new 0/duplicate 0; rows ignored duplicate 0/invalid 0; pages 0; "
+        "incomplete; page cap no; candidate pool cap allocation; "
+        "gaps source_candidate_pool_truncated"
+    ) in text
 
 
 def test_citator_text_renders_source_validity_enforcement_actions():

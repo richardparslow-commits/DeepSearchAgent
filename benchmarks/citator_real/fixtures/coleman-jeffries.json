@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "id": "coleman-jeffries",
+  "capture": {
+    "retrieved": "2026-11-15",
+    "source_kind": "CourtListener public opinion page",
+    "raw_api_captured": false,
+    "api_status": "CourtListener v4 returned HTTP 401 without an API token; no raw API response was captured.",
+    "method": "Verbatim passages were read from the public opinion page and normalized into the provider's metadata/text/edge surface.",
+    "source_urls": {
+      "target": "https://www.courtlistener.com/opinion/741729/patrick-james-jeffries-v-tana-wood-superintendent/",
+      "citing": "https://www.courtlistener.com/opinion/4568077/ralph-coleman-v-edmund-brown-jr/"
+    },
+    "api_endpoints": {
+      "target_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/741729/",
+      "citing_edges": "https://www.courtlistener.com/api/rest/v4/opinions-cited/?cited_opinion=741729",
+      "citing_metadata": "https://www.courtlistener.com/api/rest/v4/opinions/4568077/",
+      "citing_text": "https://www.courtlistener.com/api/rest/v4/opinions/4568077/"
+    },
+    "note": "The citing opinion is an unpublished Ninth Circuit memorandum. Its citation parenthetical expressly records Jeffries's subsequent history. The finding is gated because the citing opinion is nonprecedential. Edge count is a local sentinel one greater than the captured citing set."
+  },
+  "target_case": {
+    "title": "Jeffries v. Wood",
+    "citation": "114 F.3d 1484",
+    "court": "United States Court of Appeals for the Ninth Circuit",
+    "decision_date": "1997-05-12",
+    "courtlistener_opinion_id": "741729",
+    "url": "https://www.courtlistener.com/opinion/741729/patrick-james-jeffries-v-tana-wood-superintendent/"
+  },
+  "metadata": {
+    "741729": {
+      "title": "Jeffries v. Wood",
+      "citation": "114 F.3d 1484",
+      "citations": [
+        "114 F.3d 1484"
+      ],
+      "cluster_id": "741729",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        741729
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "1997-05-12",
+      "url": "https://www.courtlistener.com/opinion/741729/patrick-james-jeffries-v-tana-wood-superintendent/",
+      "opinion_type": "020lead",
+      "precedential_status": "Published"
+    },
+    "4568077": {
+      "title": "Ralph Coleman v. Edmund G. Brown, Jr.",
+      "citation": "756 F. App'x 677",
+      "citations": [
+        "756 F. App'x 677"
+      ],
+      "cluster_id": "4568077",
+      "cluster_resolved": true,
+      "opinion_ids": [
+        4568077
+      ],
+      "court": "United States Court of Appeals for the Ninth Circuit",
+      "decision_date": "2018-11-28",
+      "url": "https://www.courtlistener.com/opinion/4568077/ralph-coleman-v-edmund-brown-jr/",
+      "opinion_type": "020lead",
+      "precedential_status": "Unpublished"
+    }
+  },
+  "texts": {
+    "4568077": "There is no \"manifest injustice\" in declining to overturn those decisions years later. See Jeffries v. Wood, 114 F.3d 1484, 1489 (9th Cir. 1997) (en banc), overruled on other grounds by Gonzalez v. Arizona, 677 F.3d 383 (9th Cir. 2012) (en banc)."
+  },
+  "edges": [
+    {
+      "opinion_id": 741729,
+      "cursor": null,
+      "count": 2,
+      "citing_ids": [
+        4568077
+      ],
+      "next": null
+    }
+  ]
+}

@@ -278,6 +278,12 @@ class Settings:
     # The sitemap is typically updated monthly, so 24h is a reasonable default.
     search_bva_local_index_max_age_hours: int = 24
     courtlistener_api_key: str | None = None
+    # Optional persistent read-through cache for public CourtListener opinion,
+    # cluster, docket, and citation-edge responses. Empty disables the cache.
+    # Entries are shared across targets and runs; request headers are never
+    # stored. A zero TTL also disables reads and writes.
+    courtlistener_cache_dir: str = ""
+    courtlistener_cache_ttl_seconds: int = 86_400
     # Pre-flight check against CourtListener's /api/rest/v4/api-usage/ before a
     # run: when the free-tier daily budget (125 requests) can't cover the
     # estimated per-issue request cost, abort with the window reset time
@@ -348,6 +354,14 @@ class Settings:
     # queue behavior; ``enforce`` additionally withholds non-authoritative
     # sources and recomputes status conservatively.
     citator_source_validity_mode: str = "extract"
+    # Opt-in diagnostic-only rows for the target cluster's forward-edge fetch.
+    # The rows reuse the source-audit row shape and are never used to derive
+    # status, coverage, confidence, ranking, or queue behavior. Off by default.
+    citator_target_cluster_audit: bool = False
+    # Experimental source-only candidate allocation. Source-history fetches
+    # carry unused per-opinion candidate budget to later opinions; target
+    # cluster fetches keep the default equal split. Off by default.
+    citator_source_adaptive_allocation: bool = False
     # Optional JSON file of human-verified appellate-history records. The
     # citator still emits candidate signals without it, but no history label
     # is exposed until a record with an authoritative source and reviewer is
@@ -483,6 +497,15 @@ class Settings:
                 min_value=0,
             ),
             courtlistener_api_key=os.getenv("COURTLISTENER_API_KEY") or None,
+            courtlistener_cache_dir=os.getenv(
+                "COURTLISTENER_CACHE_DIR", d.courtlistener_cache_dir
+            ),
+            courtlistener_cache_ttl_seconds=env_int(
+                "COURTLISTENER_CACHE_TTL_SECONDS",
+                d.courtlistener_cache_ttl_seconds,
+                min_value=0,
+                max_value=30 * 24 * 60 * 60,
+            ),
             courtlistener_usage_guard=env_bool(
                 "COURTLISTENER_USAGE_GUARD", d.courtlistener_usage_guard
             ),
@@ -536,6 +559,14 @@ class Settings:
                 "CITATOR_SOURCE_VALIDITY_MODE",
                 d.citator_source_validity_mode,
                 {"extract", "advisory", "enforce"},
+            ),
+            citator_target_cluster_audit=env_bool(
+                "CITATOR_TARGET_CLUSTER_AUDIT",
+                d.citator_target_cluster_audit,
+            ),
+            citator_source_adaptive_allocation=env_bool(
+                "CITATOR_SOURCE_ADAPTIVE_ALLOCATION",
+                d.citator_source_adaptive_allocation,
             ),
             appellate_history_file=os.getenv(
                 "APPELLATE_HISTORY_FILE", d.appellate_history_file

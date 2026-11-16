@@ -142,6 +142,46 @@ def test_citator_passes_source_validity_only_when_enabled(monkeypatch):
     assert received["source_validity_mode"] == "enforce"
 
 
+def test_citator_passes_target_cluster_audit_only_when_enabled(monkeypatch):
+    _stub_search(monkeypatch)
+    monkeypatch.setenv("CITATOR", "1")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("CITATOR_TARGET_CLUSTER_AUDIT", "1")
+    monkeypatch.setattr("va_legal_agent.agent.check_analysis_citations", lambda *a: [])
+    check = CitatorCheck(target_case="Smith v. Wilkie", status="unknown")
+    received = {}
+
+    def fake_run(cases, provider, **kwargs):
+        received.update(kwargs)
+        return [check]
+
+    monkeypatch.setattr("va_legal_agent.agent.run_citator", fake_run)
+
+    analyze_cases_for_claim("service connection")
+
+    assert received["target_cluster_audit"] is True
+
+
+def test_citator_passes_source_adaptive_allocation_only_when_enabled(monkeypatch):
+    _stub_search(monkeypatch)
+    monkeypatch.setenv("CITATOR", "1")
+    monkeypatch.setenv("COURTLISTENER_API_KEY", "secret-token")
+    monkeypatch.setenv("CITATOR_SOURCE_ADAPTIVE_ALLOCATION", "1")
+    monkeypatch.setattr("va_legal_agent.agent.check_analysis_citations", lambda *a: [])
+    check = CitatorCheck(target_case="Smith v. Wilkie", status="unknown")
+    received = {}
+
+    def fake_run(cases, provider, **kwargs):
+        received.update(kwargs)
+        return [check]
+
+    monkeypatch.setattr("va_legal_agent.agent.run_citator", fake_run)
+
+    analyze_cases_for_claim("service connection")
+
+    assert received["source_adaptive_allocation"] is True
+
+
 def test_citator_loads_verified_history_records_and_sets_their_source(
     monkeypatch, tmp_path
 ):

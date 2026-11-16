@@ -2,21 +2,35 @@
 
 from __future__ import annotations
 
+from itertools import product
+import json
+import random
+
+import pytest
+from hypothesis import given, settings, strategies as st
+
+from audit_invariants import assert_source_opinion_audit_invariants
 from va_legal_agent.adjudication import build_adjudication_queue
 from va_legal_agent.authority_queue import apply_citator_findings
 from va_legal_agent.citator import (
     _SourceAudit,
     _SourceCandidateObservation,
     _SourceValidationCache,
+    _Target,
+    _citing_priority_pool_size,
     _dedupe_audit_gaps,
     _apply_source_validity_enforcement,
+    _fetch_cluster_forward_edges,
     _source_invalidator_check,
     _source_invalidator_checks,
     _validate_source_validity,
     check_case,
 )
 from va_legal_agent.models import (
+    _opinion_bottleneck_reasons,
     SOURCE_AUDIT_GAP_CODES,
+    SOURCE_OPINION_FETCH_ERROR_KINDS,
+    SOURCE_OPINION_LIMIT_REASONS,
     SOURCE_INVALIDATOR_REASON_CODES,
     SOURCE_INVALIDATOR_REVIEW_STATUSES,
     SOURCE_VALIDITY_REASON_CODES,
@@ -25,11 +39,13 @@ from va_legal_agent.models import (
     CitatorCoverageGap,
     LegalAnalysis,
     NegativeTreatment,
+    SourceAuditLedger,
     SourceInvalidatorCheck,
+    SourceOpinionAudit,
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
-from va_legal_agent.search import SearchError
+from va_legal_agent.search import SearchError, classify_search_error
 from va_legal_agent.topics import COURT_BVA, COURT_CAVC, COURT_UNKNOWN
 
 TARGET_ID = 111
@@ -144,6 +160,7 @@ class SourceProvider:
         }
         self.metadata_errors: dict[int, SearchError] = {}
         self.text_errors: dict[int, SearchError] = {}
+        self.edge_errors: dict[tuple[int, str | None], SearchError] = {}
         self.metadata_calls: list[int] = []
         self.text_calls: list[int] = []
         self.edge_calls: list[tuple[int, int, str | None]] = []
@@ -153,6 +170,8 @@ class SourceProvider:
     ):
         self.edge_calls.append((opinion_id, page_size, cursor))
         key = (opinion_id, cursor)
+        if key in self.edge_errors:
+            raise self.edge_errors[key]
         if key in self.opinion_pages:
             return self.opinion_pages[key]
         return self.pages.get(cursor, {"count": 0, "results": [], "next": ""})
@@ -1607,6 +1626,10 @@ def _assert_audit_vocabulary(signal: SourceValiditySignal) -> None:
         assert invalidator.reason_code in SOURCE_INVALIDATOR_REASON_CODES
     for gap in signal.audit_ledger.gaps:
         assert gap.code in SOURCE_AUDIT_GAP_CODES
+    for opinion in signal.audit_ledger.opinion_audits:
+        assert opinion.candidate_pool_limit_reason in SOURCE_OPINION_LIMIT_REASONS
+        for code in opinion.gap_codes:
+            assert code in SOURCE_AUDIT_GAP_CODES
 
 
 def test_source_candidate_metadata_fetch_failure_is_audited():
@@ -2044,6 +2067,16 @@ def test_source_audit_ledger_marks_page_cap_truncation():
     gap_codes = [gap.code for gap in ledger.gaps]
     assert "page_cap" in gap_codes
     assert "count_mismatch" in gap_codes
+    assert len(ledger.opinion_audits) == 1
+    opinion = ledger.opinion_audits[0]
+    assert opinion.page_limit_reached is True
+    assert opinion.candidate_pool_limit_reached is False
+    assert opinion.count_mismatch is True
+    assert "page_cap" in opinion.gap_codes
+    assert "count_mismatch" in opinion.gap_codes
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["page_cap", "count_mismatch"]
+    }
 
 
 def test_source_audit_ledger_marks_candidate_pool_truncation():
@@ -2064,6 +2097,20 @@ def test_source_audit_ledger_marks_candidate_pool_truncation():
     assert "count_mismatch" in gap_codes
     assert "source_candidate_pool_truncated" in gap_codes
     assert "page_cap" not in gap_codes
+    opinion = ledger.opinion_audits[0]
+    assert opinion.candidate_pool_limit_reached is True
+    assert opinion.candidate_pool_limit_reason == "row"
+    assert opinion.complete is False
+    assert opinion.truncated is True
+    assert "source_candidate_pool_truncated" in opinion.gap_codes
+    assert "page_cap" not in opinion.gap_codes
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): [
+            "count_mismatch",
+            "source_candidate_pool_truncated",
+            "candidate_pool_row",
+        ]
+    }
 
 
 def test_source_audit_ledger_does_not_flag_duplicate_row_as_pool_truncation():
@@ -2101,6 +2148,14 @@ def test_source_audit_ledger_does_not_flag_duplicate_row_as_pool_truncation():
     assert ledger.candidates_post_as_of == len(ids) - 3
     assert ledger.candidates_reviewed == 3
     assert ledger.gaps == []
+    opinion = ledger.opinion_audits[0]
+    assert opinion.duplicate_rows_ignored == 1
+    assert opinion.invalid_rows_ignored == 0
+    assert opinion.candidate_pool_limit_reached is False
+    assert opinion.complete is True
+    assert opinion.truncated is False
+    assert opinion.gap_codes == []
+    assert ledger.opinion_audit_bottlenecks() == {}
 
 
 def test_source_audit_ledger_separates_multi_opinion_reported_and_unique_counts():
@@ -2140,7 +2195,758 @@ def test_source_audit_ledger_separates_multi_opinion_reported_and_unique_counts(
     assert ledger.candidates_reviewed == 3
     assert ledger.candidates_without_invalidating_finding == 3
     assert ledger.coverage_complete is True
+    assert len(ledger.opinion_audits) == 2
+    first, second = ledger.opinion_audits
+    assert first.opinion_id == str(SOURCE_ID)
+    assert second.opinion_id == "202"
+    assert first.opinion_index == 0
+    assert second.opinion_index == 1
+    assert first.candidate_allocation == 6
+    assert second.candidate_allocation == 6
+    assert first.citing_ids_collected == 2
+    assert first.citing_ids_new_to_cluster == 2
+    assert first.citing_ids_duplicate_across_cluster == 0
+    assert second.citing_ids_collected == 2
+    assert second.citing_ids_new_to_cluster == 1
+    assert second.citing_ids_duplicate_across_cluster == 1
+    assert sum(row.citing_ids_new_to_cluster for row in ledger.opinion_audits) == 3
+    assert sum(row.forward_citations_reported for row in ledger.opinion_audits) == 4
+    assert sum(row.pages_fetched for row in ledger.opinion_audits) == 2
+    assert ledger.pages_fetched == 2
+    assert ledger.opinion_audit_bottlenecks() == {}
     _assert_audit_vocabulary(signal)
+
+
+def test_source_audit_ledger_records_cursor_candidate_pool_truncation(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "va_legal_agent.citator._SOURCE_HISTORY_MAX_PAGES", 2
+    )
+    provider = _provider()
+    ids = list(range(701, 713))
+    page = _page(ids)
+    page["count"] = len(ids)
+    page["next"] = (
+        "https://www.courtlistener.com/api/rest/v4/opinions/201/citing/"
+        "?cursor=next"
+    )
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert opinion.page_limit_reached is False
+    assert opinion.candidate_pool_limit_reached is True
+    assert opinion.candidate_pool_limit_reason == "cursor"
+    assert opinion.complete is False
+    assert opinion.truncated is True
+    assert opinion.gap_codes == ["source_candidate_pool_truncated"]
+    assert ledger.candidate_pool_limit_reached is True
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): [
+            "source_candidate_pool_truncated",
+            "candidate_pool_cursor",
+        ]
+    }
+
+
+def test_source_audit_ledger_prefers_row_cap_when_cursor_also_remains(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "va_legal_agent.citator._SOURCE_HISTORY_MAX_PAGES", 2
+    )
+    provider = _provider()
+    ids = list(range(701, 714))
+    page = _page(ids)
+    page["count"] = len(ids)
+    page["next"] = (
+        "https://www.courtlistener.com/api/rest/v4/opinions/201/citing/"
+        "?cursor=next"
+    )
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert opinion.candidate_pool_limit_reached is True
+    assert opinion.candidate_pool_limit_reason == "row"
+    assert opinion.page_limit_reached is False
+    assert opinion.complete is False
+    assert opinion.truncated is True
+    assert "source_candidate_pool_truncated" in opinion.gap_codes
+    assert "count_mismatch" in opinion.gap_codes
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): [
+            "count_mismatch",
+            "source_candidate_pool_truncated",
+            "candidate_pool_row",
+        ]
+    }
+
+
+def test_source_audit_ledger_marks_reported_count_unknown_when_omitted():
+    provider = _provider()
+    page = _page([])
+    page.pop("count")
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert opinion.fetch_attempted is True
+    assert opinion.reported_count_known is False
+    assert opinion.forward_citations_reported == 0
+    assert opinion.pages_fetched == 1
+    assert opinion.complete is True
+    assert opinion.gap_codes == []
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["reported_count_unknown"]
+    }
+
+
+def test_source_opinion_audit_rejects_unknown_limit_reason():
+    with pytest.raises(ValueError, match="candidate_pool_limit_reason"):
+        SourceOpinionAudit(
+            opinion_id="201",
+            candidate_pool_limit_reason="page",
+        )
+
+
+def test_source_audit_ledger_records_invalid_and_duplicate_rows_per_opinion():
+    provider = _provider()
+    ids = list(range(701, 713))
+    page = _page(ids)
+    page["results"] = [
+        *page["results"],
+        {
+            "citing_opinion": (
+                "https://www.courtlistener.com/api/rest/v4/"
+                f"opinions/{ids[0]}/"
+            )
+        },
+        {"citing_opinion": "not-an-opinion-id"},
+        "not-a-row",
+    ]
+    page["count"] = len(ids)
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert opinion.duplicate_rows_ignored == 1
+    assert opinion.invalid_rows_ignored == 2
+    assert opinion.complete is True
+    assert opinion.truncated is False
+    assert opinion.candidate_pool_limit_reached is False
+    assert opinion.gap_codes == []
+    assert ledger.citing_ids_collected == len(ids)
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["malformed_rows"]
+    }
+
+
+def test_source_audit_ledger_records_forward_fetch_failure_per_opinion():
+    provider = _provider()
+    provider.edge_errors[(SOURCE_ID, None)] = SearchError("boom")
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert opinion.candidate_allocation == 12
+    assert opinion.fetch_attempted is True
+    assert opinion.reported_count_known is False
+    assert opinion.pages_fetched == 0
+    assert opinion.complete is False
+    assert opinion.truncated is False
+    assert opinion.count_mismatch is False
+    assert opinion.gap_codes == ["forward_fetch_failed"]
+    assert "forward_fetch_failed" in [gap.code for gap in ledger.gaps]
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["forward_fetch_failed"]
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_kind", "expected_retryable"),
+    [
+        (SearchError("429 Too Many Requests"), "rate_limit", True),
+        (SearchError("401 Unauthorized"), "authentication", False),
+        (SearchError("request timed out"), "timeout", True),
+        (SearchError("invalid JSON response"), "malformed_response", False),
+        (SearchError("boom"), "other", False),
+        (
+            SearchError("opaque provider error", kind="timeout", retryable=True),
+            "timeout",
+            True,
+        ),
+    ],
+)
+def test_source_opinion_fetch_failure_records_stable_kind_and_retryability(
+    error: SearchError, expected_kind: str, expected_retryable: bool
+) -> None:
+    provider = _provider()
+    provider.edge_errors[(SOURCE_ID, None)] = error
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    opinion = check.source_validity[0].audit_ledger.opinion_audits[0]
+    assert opinion.fetch_error_kind == expected_kind
+    assert opinion.fetch_error_kind in SOURCE_OPINION_FETCH_ERROR_KINDS
+    assert opinion.fetch_retryable is expected_retryable
+    assert opinion.gap_codes == ["forward_fetch_failed"]
+
+
+def test_source_opinion_fetch_success_has_no_fetch_error_signal():
+    provider = _provider()
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    opinion = check.source_validity[0].audit_ledger.opinion_audits[0]
+    assert opinion.fetch_error_kind == ""
+    assert opinion.fetch_retryable is False
+
+
+def test_source_opinion_audit_rejects_unknown_fetch_error_kind():
+    with pytest.raises(ValueError, match="fetch_error_kind"):
+        SourceOpinionAudit(opinion_id="201", fetch_error_kind="server_error")
+
+
+def test_classify_search_error_uses_structured_kind_and_http_status():
+    assert classify_search_error(
+        SearchError("opaque throttling", kind="rate_limit")
+    ) == ("rate_limit", True)
+    assert classify_search_error(
+        SearchError("opaque authentication", kind="authentication")
+    ) == ("authentication", False)
+
+    response = type("Response", (), {"status_code": 429})()
+    status_error = SearchError("opaque provider failure")
+    status_error.response = response  # type: ignore[attr-defined]
+    assert classify_search_error(status_error) == ("rate_limit", True)
+
+    timeout_response = type("Response", (), {"status_code": 408})()
+    timeout_error = SearchError("opaque provider failure")
+    timeout_error.response = timeout_response  # type: ignore[attr-defined]
+    assert classify_search_error(timeout_error) == ("timeout", True)
+    assert classify_search_error(SearchError("opaque", retryable=True)) == (
+        "other",
+        True,
+    )
+
+
+def test_source_opinion_fetch_malformed_response_is_not_retryable():
+    provider = _provider()
+    provider.opinion_pages[(SOURCE_ID, None)] = []  # type: ignore[assignment]
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    opinion = check.source_validity[0].audit_ledger.opinion_audits[0]
+    assert opinion.fetch_attempted is True
+    assert opinion.fetch_error_kind == "malformed_response"
+    assert opinion.fetch_retryable is False
+    assert opinion.gap_codes == ["forward_fetch_failed"]
+
+
+def test_source_audit_ledger_records_zero_allocation_for_extra_opinions():
+    provider = _provider()
+    opinion_ids = list(range(SOURCE_ID, SOURCE_ID + 13))
+    source_metadata = _source_meta()
+    source_metadata["opinion_ids"] = opinion_ids
+    provider.metadata[SOURCE_ID] = source_metadata
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    assert ledger.cluster_opinion_count == 13
+    assert len(ledger.opinion_audits) == 13
+    assert [row.opinion_index for row in ledger.opinion_audits] == list(range(13))
+    assert [row.opinion_id for row in ledger.opinion_audits] == [
+        str(opinion_id) for opinion_id in opinion_ids
+    ]
+    assert all(row.candidate_allocation == 1 for row in ledger.opinion_audits[:12])
+    last = ledger.opinion_audits[-1]
+    assert last.candidate_allocation == 0
+    assert last.fetch_attempted is False
+    assert last.complete is False
+    assert last.truncated is True
+    assert last.candidate_pool_limit_reached is True
+    assert last.candidate_pool_limit_reason == "allocation"
+    assert last.gap_codes == ["source_candidate_pool_truncated"]
+    assert ledger.candidate_pool_limit_reached is True
+    assert ledger.coverage_complete is False
+    assert ledger.opinion_audit_bottlenecks() == {
+        last.opinion_id: [
+            "source_candidate_pool_truncated",
+            "zero_allocation",
+        ]
+    }
+
+
+def _opinion_audit_row(opinion_id: str, **updates) -> SourceOpinionAudit:
+    values = {
+        "candidate_allocation": 1,
+        "fetch_attempted": True,
+        "reported_count_known": True,
+        "pages_fetched": 1,
+        "complete": True,
+    }
+    values.update(updates)
+    return SourceOpinionAudit(opinion_id=opinion_id, **values)
+
+
+def test_source_audit_ledger_derives_minimum_bottleneck_summary():
+    rows = [
+        _opinion_audit_row("200"),
+        _opinion_audit_row(
+            "201",
+            candidate_allocation=0,
+            fetch_attempted=False,
+            pages_fetched=0,
+            complete=False,
+            truncated=True,
+            candidate_pool_limit_reached=True,
+            candidate_pool_limit_reason="allocation",
+            gap_codes=["source_candidate_pool_truncated"],
+        ),
+        _opinion_audit_row(
+            "202",
+            complete=False,
+            truncated=True,
+            candidate_pool_limit_reached=True,
+            candidate_pool_limit_reason="row",
+            gap_codes=["source_candidate_pool_truncated"],
+        ),
+        _opinion_audit_row(
+            "203",
+            complete=False,
+            truncated=True,
+            candidate_pool_limit_reached=True,
+            candidate_pool_limit_reason="cursor",
+            gap_codes=["source_candidate_pool_truncated"],
+        ),
+        _opinion_audit_row("204", reported_count_known=False),
+        _opinion_audit_row("205", invalid_rows_ignored=2),
+        _opinion_audit_row("206", duplicate_rows_ignored=1),
+        _opinion_audit_row(
+            "207",
+            reported_count_known=False,
+            pages_fetched=0,
+            complete=False,
+            gap_codes=["forward_fetch_failed"],
+        ),
+    ]
+
+    bottlenecks = SourceAuditLedger(
+        cluster_opinion_count=len(rows), opinion_audits=rows
+    ).opinion_audit_bottlenecks()
+
+    assert list(bottlenecks) == ["201", "202", "203", "204", "205", "207"]
+    assert bottlenecks == {
+        "201": ["source_candidate_pool_truncated", "zero_allocation"],
+        "202": ["source_candidate_pool_truncated", "candidate_pool_row"],
+        "203": ["source_candidate_pool_truncated", "candidate_pool_cursor"],
+        "204": ["reported_count_unknown"],
+        "205": ["malformed_rows"],
+        "207": ["forward_fetch_failed"],
+    }
+
+
+def test_source_audit_ledger_bottleneck_summary_rejects_invalid_opinion_ids():
+    duplicate = SourceAuditLedger(
+        opinion_audits=[
+            _opinion_audit_row("201"),
+            _opinion_audit_row(
+                "201",
+                complete=False,
+                gap_codes=["forward_fetch_failed"],
+            ),
+        ]
+    )
+    with pytest.raises(ValueError, match="duplicate opinion_id"):
+        duplicate.opinion_audit_bottlenecks()
+
+    empty = SourceAuditLedger(opinion_audits=[_opinion_audit_row("")])
+    with pytest.raises(ValueError, match="non-empty opinion_id"):
+        empty.opinion_audit_bottlenecks()
+
+
+def test_opinion_bottleneck_reasons_exhaustive_state_matrix():
+    gap_cases = (
+        (),
+        ("page_cap",),
+        ("page_cap", "count_mismatch"),
+        ("page_cap", "page_cap"),
+        ("source_candidate_pool_truncated",),
+    )
+    for gaps, allocation, limit_reason, pages, known in product(
+        gap_cases,
+        (0, 1, 2),
+        ("", "row", "cursor", "allocation"),
+        (0, 1),
+        (False, True),
+    ):
+        row = SourceOpinionAudit(
+            opinion_id="201",
+            candidate_allocation=allocation,
+            fetch_attempted=True,
+            reported_count_known=known,
+            pages_fetched=pages,
+            # These flags conflict with several matrix states; the pure
+            # mapping must rely only on gaps, allocation, pages, count, and
+            # malformed-row counts.
+            complete=False,
+            truncated=True,
+            page_limit_reached=True,
+            candidate_pool_limit_reached=True,
+            candidate_pool_limit_reason=limit_reason,
+            count_mismatch=True,
+            invalid_rows_ignored=2,
+            duplicate_rows_ignored=1,
+            gap_codes=list(gaps),
+        )
+        expected = list(dict.fromkeys(gaps))
+        if allocation == 0:
+            expected.append("zero_allocation")
+        elif limit_reason in ("row", "cursor"):
+            expected.append(f"candidate_pool_{limit_reason}")
+        if pages and not known:
+            expected.append("reported_count_unknown")
+        expected.append("malformed_rows")
+        expected = list(dict.fromkeys(expected))
+
+        actual = _opinion_bottleneck_reasons(row)
+
+        assert actual == expected, (
+            gaps,
+            allocation,
+            limit_reason,
+            pages,
+            known,
+            actual,
+            expected,
+        )
+
+
+def test_source_audit_ledger_serializes_derived_bottlenecks_without_storage():
+    ledger = SourceAuditLedger(
+        opinion_audits=[
+            _opinion_audit_row("200"),
+            _opinion_audit_row(
+                "201",
+                candidate_allocation=0,
+                fetch_attempted=False,
+                pages_fetched=0,
+                complete=False,
+                truncated=True,
+                candidate_pool_limit_reached=True,
+                candidate_pool_limit_reason="allocation",
+                gap_codes=["source_candidate_pool_truncated"],
+            ),
+            _opinion_audit_row("202", reported_count_known=False),
+            _opinion_audit_row("205", invalid_rows_ignored=1),
+        ]
+    )
+
+    expected = {
+        "201": ["source_candidate_pool_truncated", "zero_allocation"],
+        "202": ["reported_count_unknown"],
+        "205": ["malformed_rows"],
+    }
+    payload = json.loads(ledger.model_dump_json())
+
+    assert payload["opinion_bottlenecks"] == expected
+    assert ledger.opinion_bottlenecks == expected
+    assert "opinion_bottlenecks" not in ledger.__dict__
+    assert "opinion_bottlenecks" not in SourceAuditLedger.model_fields
+
+    restored = SourceAuditLedger.model_validate_json(ledger.model_dump_json())
+    assert restored == ledger
+    assert restored.opinion_bottlenecks == expected
+
+
+def _generated_edge_cluster(seed: int):
+    """Build a deterministic cluster with pagination, pool, and fetch states."""
+    rng = random.Random(seed)
+    opinion_count = rng.randint(3, 6)
+    if seed % 4 == 0:
+        # More opinions than the pool budget, so trailing rows get no slot.
+        opinion_count = 13 + rng.randint(0, 4)
+    opinion_ids = tuple(
+        SOURCE_ID + 1000 + index for index in range(opinion_count)
+    )
+    target = _Target(
+        _case(),
+        opinion_ids[0],
+        "",
+        f"Generated cluster {seed}",
+        f"generated-{seed}",
+        opinion_ids,
+    )
+    provider = SourceProvider()
+    for opinion_id in opinion_ids:
+        page_ids = [rng.randint(700, 760) for _ in range(rng.randint(0, 12))]
+        page = _page(page_ids)
+        page["count"] = rng.randint(0, 14)
+        if rng.random() < 0.4:
+            page["next"] = (
+                "https://www.courtlistener.com/api/rest/v4/"
+                f"opinions/{opinion_id}/citing/?cursor=next"
+            )
+        provider.opinion_pages[(opinion_id, None)] = page
+    # Exercise two distinct fetch states explicitly: a successful page that
+    # omitted count, and a fetch that never reached a page.
+    omitted_count = _page([])
+    omitted_count.pop("count")
+    provider.opinion_pages[(opinion_ids[0], None)] = omitted_count
+    provider.edge_errors[(opinion_ids[1], None)] = SearchError("generated failure")
+    return provider, target
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_generated_cluster_rows_preserve_audit_invariants(seed):
+    provider, target = _generated_edge_cluster(seed)
+    max_ids = 2 + seed % 8
+
+    edge_fetch = _fetch_cluster_forward_edges(
+        provider,
+        target,
+        max_pages=1 + seed % 3,
+        page_size=max_ids,
+        max_ids=max_ids,
+    )
+
+    rows = edge_fetch.opinion_audits
+    assert any(row.page_limit_reached for row in rows) is (
+        edge_fetch.page_limit_reached
+    )
+    assert any(row.candidate_pool_limit_reached for row in rows) is (
+        edge_fetch.candidate_limit_reached
+    )
+    if seed % 4 == 0:
+        assert any(row.candidate_allocation == 0 for row in rows)
+    assert any(
+        row.pages_fetched > 0 and not row.reported_count_known
+        for row in rows
+    )
+    assert any("forward_fetch_failed" in row.gap_codes for row in rows)
+    assert_source_opinion_audit_invariants(
+        rows,
+        cluster_opinion_count=len(target.opinion_ids),
+        total_new_to_cluster=edge_fetch.unique_count,
+        total_reported=edge_fetch.reported_count,
+        total_pages=edge_fetch.pages,
+    )
+
+
+def test_source_adaptive_allocation_reallocates_unused_opinion_budget():
+    def run(adaptive: bool):
+        provider = _provider()
+        opinion_ids = [SOURCE_ID, 202, 203]
+        metadata = _source_meta()
+        metadata["opinion_ids"] = opinion_ids
+        provider.metadata[SOURCE_ID] = metadata
+        provider.opinion_pages[(SOURCE_ID, None)] = _page([])
+        provider.opinion_pages[(202, None)] = _page([9001])
+        provider.opinion_pages[(203, None)] = _page(list(range(9100, 9120)))
+        check = _check()
+
+        _validate_source_validity(
+            provider,
+            check,
+            _SourceValidationCache(),
+            adaptive_allocation=adaptive,
+        )
+        return check.source_validity[0].audit_ledger.opinion_audits
+
+    equal = run(False)
+    adaptive = run(True)
+
+    assert [row.candidate_allocation for row in equal] == [4, 4, 4]
+    assert [row.citing_ids_collected for row in equal] == [0, 1, 4]
+    assert [row.candidate_allocation for row in adaptive] == [4, 8, 11]
+    assert [row.citing_ids_collected for row in adaptive] == [0, 1, 11]
+    assert sum(row.citing_ids_new_to_cluster for row in adaptive) == 12
+    assert sum(row.citing_ids_new_to_cluster for row in equal) == 5
+
+
+def test_source_adaptive_allocation_does_not_change_target_fetch():
+    def run(adaptive: bool):
+        provider = _provider()
+        target_metadata = provider.metadata[TARGET_ID]
+        target_metadata["opinion_ids"] = [TARGET_ID, TARGET_ID + 1]
+        provider.opinion_pages[(TARGET_ID, None)] = _page([SOURCE_ID])
+        provider.opinion_pages[(TARGET_ID + 1, None)] = _page([])
+        return check_case(
+            _case(),
+            provider,
+            target_cluster_audit=True,
+            source_validity=True,
+            source_validity_mode="advisory",
+            source_adaptive_allocation=adaptive,
+        )
+
+    default = run(False)
+    adaptive = run(True)
+
+    assert adaptive.target_cluster_audit == default.target_cluster_audit
+    assert [
+        row.candidate_allocation for row in adaptive.target_cluster_audit
+    ] == [row.candidate_allocation for row in default.target_cluster_audit]
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    cluster_size=st.integers(min_value=1, max_value=4),
+    page_sizes=st.lists(
+        st.integers(min_value=0, max_value=5),
+        min_size=4,
+        max_size=4,
+    ),
+)
+def test_adaptive_source_allocation_preserves_target_equal_split(
+    cluster_size: int,
+    page_sizes: list[int],
+) -> None:
+    def run(adaptive: bool):
+        provider = _provider()
+        target_metadata = provider.metadata[TARGET_ID]
+        opinion_ids = [TARGET_ID + index for index in range(cluster_size)]
+        target_metadata["opinion_ids"] = opinion_ids
+        for index, opinion_id in enumerate(opinion_ids):
+            base = 8000 + index * 10
+            provider.opinion_pages[(opinion_id, None)] = _page(
+                list(range(base, base + page_sizes[index]))
+            )
+        return check_case(
+            _case(),
+            provider,
+            target_cluster_audit=True,
+            source_validity=True,
+            source_validity_mode="advisory",
+            source_adaptive_allocation=adaptive,
+        )
+
+    default = run(False)
+    adaptive = run(True)
+
+    assert adaptive.target_cluster_audit == default.target_cluster_audit
+    pool = _citing_priority_pool_size(5, 1)
+    share, remainder = divmod(pool, cluster_size)
+    expected_allocations = [
+        share + (1 if index < remainder else 0)
+        for index in range(cluster_size)
+    ]
+    assert [
+        row.candidate_allocation for row in default.target_cluster_audit
+    ] == expected_allocations
+    assert [
+        row.candidate_allocation for row in adaptive.target_cluster_audit
+    ] == expected_allocations
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    failure_kind=st.sampled_from(
+        ("rate_limit", "authentication", "timeout", "malformed_response", "other")
+    ),
+    failure_retryable=st.booleans(),
+    malformed_count=st.integers(min_value=1, max_value=2),
+    row_cap_rows=st.integers(min_value=4, max_value=6),
+    page_cap_rows=st.integers(min_value=1, max_value=2),
+)
+def test_source_validation_mixed_ledger_round_trips_through_signal_json(
+    failure_kind: str,
+    failure_retryable: bool,
+    malformed_count: int,
+    row_cap_rows: int,
+    page_cap_rows: int,
+) -> None:
+    provider = _provider()
+    source_meta = _source_meta()
+    source_meta["opinion_ids"] = [SOURCE_ID, 202, 203, 204]
+    provider.metadata[SOURCE_ID] = source_meta
+    provider.edge_errors[(SOURCE_ID, None)] = SearchError(
+        "generated source failure",
+        kind=failure_kind,
+        retryable=failure_retryable,
+    )
+    malformed_page = _page([9101])
+    malformed_page["results"] += [None] * malformed_count
+    provider.opinion_pages[(202, None)] = malformed_page
+    provider.opinion_pages[(203, None)] = _page(
+        list(range(9200, 9200 + row_cap_rows))
+    )
+    page_cap_page = _page(list(range(9300, 9300 + page_cap_rows)))
+    page_cap_page["next"] = (
+        "https://www.courtlistener.com/api/rest/v4/"
+        "opinions/204/citing/?cursor=next"
+    )
+    provider.opinion_pages[(204, None)] = page_cap_page
+
+    check = _check()
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    ledger = signal.audit_ledger
+    failure_row, malformed_row, row_cap_row, page_cap_row = ledger.opinion_audits
+    assert failure_row.fetch_error_kind == failure_kind
+    assert failure_row.fetch_retryable is failure_retryable
+    assert failure_row.gap_codes == ["forward_fetch_failed"]
+    assert malformed_row.invalid_rows_ignored == malformed_count
+    assert "malformed_rows" in ledger.opinion_bottlenecks["202"]
+    assert row_cap_row.candidate_pool_limit_reached is True
+    assert row_cap_row.candidate_pool_limit_reason == "row"
+    assert page_cap_row.page_limit_reached is True
+    assert "page_cap" in ledger.opinion_bottlenecks["204"]
+
+    serialized = signal.model_dump_json()
+    assert json.loads(serialized)["audit_ledger"][
+        "opinion_bottlenecks"
+    ] == ledger.opinion_bottlenecks
+
+    restored = SourceValiditySignal.model_validate_json(serialized)
+    assert restored == signal
+    assert restored.audit_ledger.opinion_bottlenecks == (
+        ledger.opinion_bottlenecks
+    )
+
+
+def test_source_adaptive_allocation_cache_is_mode_specific():
+    provider = _provider()
+    check = _check()
+    cache = _SourceValidationCache()
+
+    _validate_source_validity(provider, check, cache, adaptive_allocation=False)
+    _validate_source_validity(provider, check, cache, adaptive_allocation=True)
+
+    source_calls = [
+        call for call in provider.edge_calls if call[0] == SOURCE_ID
+    ]
+    assert len(source_calls) == 2
+
+
+def test_source_audit_ledger_accepts_legacy_json_without_opinion_rows():
+    ledger = SourceAuditLedger.model_validate(
+        {"assessed": True, "cluster_opinion_count": 2}
+    )
+
+    assert ledger.opinion_audits == []
 
 
 def test_source_audit_ledger_round_trips_through_json():

@@ -1,17 +1,11 @@
 {
   "version": 1,
-  "known_misses": [
-    "roe-dobbs",
-    "casey-dobbs",
-    "chevron-loper",
-    "abood-janus",
-    "austin-citizens"
-  ],
+  "known_misses": [],
   "metric_floor": {
-    "target_precision": 0.33,
-    "target_recall": 0.1,
-    "authoritative_precision": 0.33,
-    "authoritative_recall": 0.1
+    "target_precision": 1.0,
+    "target_recall": 1.0,
+    "authoritative_precision": 1.0,
+    "authoritative_recall": 1.0
   },
-  "notes": "This is a measurement baseline, not a correctness claim. The known misses record two real generalization gaps: short-form target names are not located or bound, and a question-presented sentence yields the non-treatment terms 'questioned' and 'limited'. A case listed here that starts passing is reported as fixed; remove it from known_misses when that happens. The metric_floor prevents a regression below the recorded target and authoritative precision/recall."
+  "notes": "The measured real-opinion set now passes all labeled passages. The sample now covers short-form names, reporter spacing, question-term false positives, a gated subsequent-history parenthetical, an en banc short-form holding, and a vacated panel opinion. This remains a measurement baseline for the checked-in sample, not a correctness claim about the full citator."
 }

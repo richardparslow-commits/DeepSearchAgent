@@ -24,6 +24,7 @@ dev = [
     # mutmut is deliberately upgraded and the baseline re-triaged.
     "pytest>=8.0.0,<9",
     "pytest-cov>=5.0.0",
+    "hypothesis>=6.0.0",
     "ruff>=0.6.0",
     # Pinned exactly, not floored: .mutation-baseline.json records *triaged*
     # survivor names, and a mutmut release changes which mutants are generated

@@ -35,7 +35,8 @@ Each case contains:
   citing ids, and optional next cursor. Pages for the same opinion model
   pagination.
 - `lookup`, `same_docket`, and `errors` — optional resolution/advisory fixtures.
-- `limits` — optional `max_citing_opinions` / `max_pages` overrides.
+- `limits` — optional `max_citing_opinions` / `max_pages` overrides and an
+  optional `as_of_date` ISO cutoff for as-of cases.
 - `expected` — gold labels:
   - `status`: `negative`, `good_law`, or `unknown`.
   - `coverage_complete`: expected `CitatorCheck.coverage.complete`.
@@ -52,6 +53,16 @@ Each case contains:
     `binding_negative_treatments` and `persuasive_negative_treatments`.
   - `timeline`: optional ordered signatures expected in `treatment_timeline`.
   - `later_reaffirmance`: optional expected `later_reaffirmance` boolean.
+  - `as_of_date`: optional expected `CitatorCheck.as_of_date`.
+  - `good_law_as_of`: optional expected cutoff date when status is `good_law`.
+  - `post_as_of_citing_opinion_ids` / `undated_citing_opinion_ids`: optional
+    ordered citing-opinion ids in those as-of buckets.
+  - `post_as_of_treatments`: optional exact treatment signatures, using the
+    same fields as `authoritative`, expected in
+    `CitatorCheck.post_as_of_treatment_findings`.
+  - `post_as_of_incomplete` / `truncated`: optional expected flags for an
+    incomplete later review and an as-of truncation, respectively.
+  - `gap_codes_contain`: optional coverage-gap codes that must be present.
 
 Finding signatures compare `citing_url`, `treatment`, `scope`, `opinion_role`,
 and `precedential_status`. Timeline signatures additionally compare `signal`,
@@ -61,7 +72,7 @@ only when present, so existing cases keep their original expectations.
 
 ## Corpus
 
-There are 20 cases across these adversarial categories:
+There are 24 cases across these adversarial categories:
 
 | Category | Cases | What it tests |
 | --- | --- | --- |
@@ -79,13 +90,16 @@ There are 20 cases across these adversarial categories:
 | Adversarial false positive | `same-name-different-citation`, `dissent-attribution-trap` | A negative verb must bind to the target citation and to the court's own holding, not a same-named case or a dissent. |
 | Cap prioritization | `cap-prioritizes-later-authority` | Under a citing-opinion cap, older API-order citations are skipped so the later decisions are reviewed first. |
 | Binding/persuasive timeline | `binding-persuasive-later-reaffirmance` | A Board negative is persuasive, a CAVC negative is binding, and a later CAVC reaffirmance postdates the binding negative. |
+| As-of boundary | `as-of-inclusive-cutoff-negative` | Treatment dated exactly on the cutoff is included. |
+| As-of separation | `as-of-later-negative-cannot-change-status` | A later negative finding is reported separately and cannot change the as-of status. |
+| As-of coverage | `as-of-missing-citing-date`, `as-of-in-scope-review-cap` | An undated citing opinion is excluded and makes coverage incomplete; an in-scope review cap remains a coverage failure. |
 
 ## Baseline
 
 `baseline.json` records the current known misses. It is empty: every case has
 an expected label that the production citator must satisfy.
 
-Current score: **20/20 cases pass; 0 known misses; 0 new misses.**
+Current score: **24/24 cases pass; 0 known misses; 0 new misses.**
 
 CI fails if a case not listed in `known_misses` fails. A listed case that starts
 passing is reported as `fixed`; remove it from the baseline when the production

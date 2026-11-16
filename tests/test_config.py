@@ -45,6 +45,8 @@ _ENV_VARS = (
     "SEARCH_BVA_LOCAL_INDEX_MAX_FILES",
     "SEARCH_BVA_LOCAL_INDEX_MAX_AGE_HOURS",
     "COURTLISTENER_API_KEY",
+    "COURTLISTENER_CACHE_DIR",
+    "COURTLISTENER_CACHE_TTL_SECONDS",
     "COURTLISTENER_USAGE_GUARD",
     "COURTLISTENER_SEMANTIC_GAP_SEARCH",
     "CAVC_PANEL_VALIDATION",
@@ -60,6 +62,8 @@ _ENV_VARS = (
     "CITATOR_AS_OF_DATE",
     "CITATOR_SOURCE_VALIDITY",
     "CITATOR_SOURCE_VALIDITY_MODE",
+    "CITATOR_TARGET_CLUSTER_AUDIT",
+    "CITATOR_SOURCE_ADAPTIVE_ALLOCATION",
     "ENRICH_CASE_LIMIT",
     "INTERPRET_CASE_LIMIT",
     "PRINCIPLE_SCAN_LIMIT",
@@ -234,6 +238,8 @@ def test_settings_defaults(monkeypatch):
     assert settings.search_max_results == 10
     assert settings.search_bva_local_index_years == 5
     assert settings.courtlistener_api_key is None
+    assert settings.courtlistener_cache_dir == ""
+    assert settings.courtlistener_cache_ttl_seconds == 86_400
     assert settings.courtlistener_usage_guard is True
     assert settings.courtlistener_semantic_gap_search is False
     assert settings.cavc_panel_validation is False
@@ -249,6 +255,8 @@ def test_settings_defaults(monkeypatch):
     assert settings.citator_as_of_date == ""
     assert settings.citator_source_validity is False
     assert settings.citator_source_validity_mode == "extract"
+    assert settings.citator_target_cluster_audit is False
+    assert settings.citator_source_adaptive_allocation is False
     assert settings.enrich_case_limit == 5
     assert settings.interpret_case_limit == 3
     assert settings.principle_scan_limit == 5
@@ -313,6 +321,8 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("CITATOR_AS_OF_DATE", "2021-03-04")
     monkeypatch.setenv("CITATOR_SOURCE_VALIDITY", "1")
     monkeypatch.setenv("CITATOR_SOURCE_VALIDITY_MODE", "enforce")
+    monkeypatch.setenv("CITATOR_TARGET_CLUSTER_AUDIT", "1")
+    monkeypatch.setenv("CITATOR_SOURCE_ADAPTIVE_ALLOCATION", "1")
     monkeypatch.setenv("ENRICH_CASE_LIMIT", "4")
     monkeypatch.setenv("INTERPRET_CASE_LIMIT", "7")
     monkeypatch.setenv("PRINCIPLE_SCAN_LIMIT", "9")
@@ -364,6 +374,8 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.citator_as_of_date == "2021-03-04"
     assert settings.citator_source_validity is True
     assert settings.citator_source_validity_mode == "enforce"
+    assert settings.citator_target_cluster_audit is True
+    assert settings.citator_source_adaptive_allocation is True
     assert settings.enrich_case_limit == 4
     assert settings.interpret_case_limit == 7
     assert settings.principle_scan_limit == 9

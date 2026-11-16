@@ -1330,6 +1330,10 @@ def analyze_cases_for_claim(
                 citator_kwargs["source_validity_mode"] = (
                     settings.citator_source_validity_mode
                 )
+            if settings.citator_target_cluster_audit:
+                citator_kwargs["target_cluster_audit"] = True
+            if settings.citator_source_adaptive_allocation:
+                citator_kwargs["source_adaptive_allocation"] = True
             if history_records:
                 citator_kwargs["history_records"] = history_records
             if snapshot_store is not None:

@@ -4,6 +4,7 @@ import logging
 import random
 import threading
 import time
+from collections.abc import Iterator
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
@@ -20,8 +21,173 @@ from .config import get_settings
 logger = logging.getLogger(__name__)
 
 
+# Stable machine-readable failure categories used by audit rows. Keep these
+# values aligned with SOURCE_OPINION_FETCH_ERROR_KINDS in models.
+SEARCH_ERROR_KINDS = frozenset(
+    {
+        "rate_limit",
+        "authentication",
+        "timeout",
+        "malformed_response",
+        "other",
+    }
+)
+_RETRYABLE_SEARCH_ERROR_KINDS = frozenset({"rate_limit", "timeout"})
+_MAX_SEARCH_ERROR_CAUSES = 4
+_SEARCH_ERROR_MESSAGE_MARKERS = (
+    (
+        "malformed_response",
+        (
+            "invalid json",
+            "malformed",
+            "unexpected response",
+            "not a collection",
+            "response was not",
+        ),
+    ),
+    (
+        "rate_limit",
+        (
+            "rate limit",
+            "rate-limit",
+            "throttl",
+            "too many requests",
+            "429",
+        ),
+    ),
+    ("timeout", ("timeout", "timed out", "time out")),
+    (
+        "authentication",
+        ("unauthorized", "authentication", "api token", "401", "403"),
+    ),
+)
+
+
 class SearchError(RuntimeError):
-    pass
+    """Provider failure with an optional stable kind and retryability hint.
+
+    The cause is still preserved for logging, but callers that build audit
+    rows must not have to parse human-readable request messages to distinguish
+    authentication, throttling, timeout, and malformed-response failures.
+    """
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        kind: str = "",
+        retryable: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.retryable = retryable
+
+
+def _search_error_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield an exception and up to three explicitly wrapped causes."""
+    current: BaseException | None = exc
+    for _ in range(_MAX_SEARCH_ERROR_CAUSES):
+        if current is None:
+            break
+        yield current
+        current = current.__cause__
+
+
+def _search_error_status(exc: BaseException) -> int | None:
+    """Find an HTTP status on an exception or one of its wrapped causes."""
+    for current in _search_error_chain(exc):
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status
+    return None
+
+
+def _search_error_transport_kind(exc: BaseException) -> str:
+    """Classify a transport failure on an exception or its wrapped causes."""
+    for current in _search_error_chain(exc):
+        if isinstance(current, (requests.Timeout, CffiTimeout)):
+            return "timeout"
+        if isinstance(current, (requests.ConnectionError, CffiConnectionError)):
+            return "connection"
+    return ""
+
+
+def _search_error_structured_kind(exc: BaseException) -> str | None:
+    """Return the nearest valid structured kind in the exception chain."""
+    for current in _search_error_chain(exc):
+        kind = getattr(current, "kind", "")
+        if kind in SEARCH_ERROR_KINDS:
+            return kind
+    return None
+
+
+def _search_error_retryable(exc: BaseException) -> bool | None:
+    """Return the nearest explicit retryability hint in the exception chain."""
+    for current in _search_error_chain(exc):
+        retryable = getattr(current, "retryable", None)
+        if retryable is not None:
+            return bool(retryable)
+    return None
+
+
+def _search_error_message_kind(exc: BaseException) -> str:
+    """Return the nearest message-derived kind in the exception chain."""
+    for current in _search_error_chain(exc):
+        message = str(current).casefold()
+        for kind, markers in _SEARCH_ERROR_MESSAGE_MARKERS:
+            if any(marker in message for marker in markers):
+                return kind
+    return ""
+
+
+def classify_search_error(exc: BaseException) -> tuple[str, bool]:
+    """Return a stable ``(kind, retryable)`` pair for a provider failure.
+
+    Structured values on the outer ``SearchError`` win. Otherwise the nearest
+    valid structured kind in the wrapped-cause chain is used, followed by HTTP
+    status, transport type, and the nearest message marker. Explicit
+    retryability follows the same outer-to-cause order and overrides fallback
+    results.
+    """
+    explicit_kind = getattr(exc, "kind", "")
+    explicit_retryable = getattr(exc, "retryable", None)
+    if explicit_kind in SEARCH_ERROR_KINDS:
+        if explicit_retryable is None:
+            explicit_retryable = explicit_kind in _RETRYABLE_SEARCH_ERROR_KINDS
+        return explicit_kind, bool(explicit_retryable)
+
+    inherited_kind = _search_error_structured_kind(exc)
+    if inherited_kind is not None:
+        retryable = _search_error_retryable(exc)
+        if retryable is None:
+            retryable = inherited_kind in _RETRYABLE_SEARCH_ERROR_KINDS
+        return inherited_kind, retryable
+
+    status = _search_error_status(exc)
+    transport_kind = _search_error_transport_kind(exc)
+    message_kind = _search_error_message_kind(exc)
+    kind = "other"
+    retryable = False
+    if status in {401, 403}:
+        kind = "authentication"
+    elif status == 429:
+        kind = "rate_limit"
+        retryable = True
+    elif status in {408, 504} or transport_kind == "timeout":
+        kind = "timeout"
+        retryable = True
+    elif message_kind:
+        kind = message_kind
+        retryable = kind in _RETRYABLE_SEARCH_ERROR_KINDS
+    elif status is not None and 500 <= status <= 599:
+        retryable = True
+    elif transport_kind == "connection":
+        retryable = True
+    retryable_override = _search_error_retryable(exc)
+    if retryable_override is not None:
+        retryable = retryable_override
+    return kind, retryable
 
 
 # HTTP statuses that indicate transient provider throttling or server trouble

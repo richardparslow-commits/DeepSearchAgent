@@ -54,6 +54,7 @@ from .models import (
     SameDocketDecision,
     SourceAuditLedger,
     SourceInvalidatorCheck,
+    SourceOpinionAudit,
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
@@ -64,7 +65,7 @@ from .providers import (
     _cluster_opinion_ids,
     _positive_id,
 )
-from .search import SearchError
+from .search import SearchError, classify_search_error
 from .topics import AUTHORITY_WEIGHTS
 
 # Ranking requires one metadata read per candidate, so the candidate pool is
@@ -377,6 +378,13 @@ class _EdgeFetch:
     truncated: bool
     page_limit_reached: bool
     candidate_limit_reached: bool
+    candidate_limit_reason: str
+    fetch_attempted: bool
+    fetch_error_kind: str
+    fetch_retryable: bool
+    reported_count_known: bool
+    duplicate_rows_ignored: int
+    invalid_rows_ignored: int
     flags: list[str]
     gaps: list[CitatorCoverageGap]
     # Subset of gaps caused by the bounded candidate allocation. The source
@@ -404,6 +412,7 @@ class _ClusterEdgeFetch:
     flags: list[str]
     gaps: list[CitatorCoverageGap]
     candidate_pool_gaps: list[CitatorCoverageGap]
+    opinion_audits: list[SourceOpinionAudit]
 
 
 @dataclass(frozen=True)
@@ -436,8 +445,9 @@ class _SourceAudit:
 class _SourceValidationCache:
     """Run-scoped cache for source audits, shared by citator checks."""
 
-    # Depth is part of the key because an immediate invalidator audit stops at a
-    # different depth than a top-level source audit.
+    # A mode switch clears the cache so a shared run cannot reuse an audit
+    # fetched under another source allocation strategy.
+    adaptive_allocation: bool = False
     audits: dict[tuple[int, str, int], _SourceAudit] = field(default_factory=dict)
 
 
@@ -855,16 +865,25 @@ def _fetch_forward_edges(
     truncated = False
     page_limit_reached = False
     candidate_limit_reached = False
+    candidate_limit_reason = ""
+    fetch_attempted = False
+    fetch_error_kind = ""
+    fetch_retryable = False
+    reported_count_known = False
+    duplicate_rows_ignored = 0
+    invalid_rows_ignored = 0
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
     candidate_pool_gaps: list[CitatorCoverageGap] = []
 
     while pages < max_pages and len(ids) < max_ids:
+        fetch_attempted = True
         try:
             data = provider.citing_edges(
                 opinion_id, page_size=page_size, cursor=cursor
             )
         except SearchError as exc:
+            fetch_error_kind, fetch_retryable = classify_search_error(exc)
             detail = (
                 f"Citator forward-citation fetch failed for opinion "
                 f"{opinion_id}: {exc}"
@@ -874,22 +893,42 @@ def _fetch_forward_edges(
             complete = False
             break
         pages += 1
-        page_count = _safe_int(data.get("count"))
+        if not isinstance(data, dict):
+            fetch_error_kind = "malformed_response"
+            fetch_retryable = False
+            detail = (
+                f"Citator forward-citation fetch returned an invalid response "
+                f"for opinion {opinion_id}."
+            )
+            flags.append(detail)
+            gaps.append(_coverage_gap("forward_fetch_failed", detail))
+            complete = False
+            break
+        count_value = data.get("count")
+        if count_value is not None:
+            reported_count_known = True
+        page_count = _safe_int(count_value)
         if page_count > reported_count:
             reported_count = page_count
         rows = data.get("results")
         if isinstance(rows, list):
             for row in rows:
                 if not isinstance(row, dict):
+                    invalid_rows_ignored += 1
                     continue
                 citing_id = _positive_id(row.get("citing_opinion"))
-                if citing_id is None or citing_id in seen:
+                if citing_id is None:
+                    invalid_rows_ignored += 1
+                    continue
+                if citing_id in seen:
+                    duplicate_rows_ignored += 1
                     continue
                 # A full pool is only truncated when the row that would have
                 # contributed a new candidate is actually skipped. Duplicate
                 # or malformed trailing rows do not count as omitted candidates.
                 if len(ids) >= max_ids:
                     candidate_limit_reached = True
+                    candidate_limit_reason = "row"
                     break
                 seen.add(citing_id)
                 ids.append(citing_id)
@@ -931,6 +970,11 @@ def _fetch_forward_edges(
             gaps.append(_coverage_gap("page_cap", detail))
         elif len(ids) >= max_ids:
             candidate_limit_reached = True
+            # A row cap may have stopped the page while a cursor remained. The
+            # row that was skipped is the binding limit, so preserve it instead
+            # of relabeling the same truncation as a cursor cap.
+            if candidate_limit_reason != "row":
+                candidate_limit_reason = "cursor"
             truncated = True
             complete = False
             detail = (
@@ -959,10 +1003,32 @@ def _fetch_forward_edges(
         truncated=truncated,
         page_limit_reached=page_limit_reached,
         candidate_limit_reached=candidate_limit_reached,
+        candidate_limit_reason=candidate_limit_reason,
+        fetch_attempted=fetch_attempted,
+        fetch_error_kind=fetch_error_kind,
+        fetch_retryable=fetch_retryable,
+        reported_count_known=reported_count_known,
+        duplicate_rows_ignored=duplicate_rows_ignored,
+        invalid_rows_ignored=invalid_rows_ignored,
         flags=flags,
         gaps=gaps,
         candidate_pool_gaps=candidate_pool_gaps,
     )
+
+
+def _opinion_audit_gap_codes(edge: _EdgeFetch) -> list[str]:
+    """Return stable row-level gap codes for one opinion fetch."""
+    candidate_pool_keys = {
+        (gap.code, gap.detail) for gap in edge.candidate_pool_gaps
+    }
+    codes = [
+        gap.code
+        for gap in edge.gaps
+        if (gap.code, gap.detail) not in candidate_pool_keys
+    ]
+    if edge.candidate_limit_reached:
+        codes.append("source_candidate_pool_truncated")
+    return list(dict.fromkeys(codes))
 
 
 def _fetch_cluster_forward_edges(
@@ -971,6 +1037,7 @@ def _fetch_cluster_forward_edges(
     max_pages: int,
     page_size: int = 100,
     max_ids: int = _CITING_PRIORITY_POOL_MAX,
+    adaptive_allocation: bool = False,
 ) -> _ClusterEdgeFetch:
     """Fetch forward citations for every opinion in the target's cluster.
 
@@ -978,6 +1045,9 @@ def _fetch_cluster_forward_edges(
     the first sub-opinion misses citations attached to the lead, concurrence,
     or dissent. ``max_ids`` is one target-wide budget, split evenly across the
     cluster so every sub-opinion gets a chance without multiplying the pool.
+    When ``adaptive_allocation`` is true, an opinion that uses less than its
+    share carries the unused budget to later opinions; source-history callers
+    can opt into this experiment while target fetches keep the equal split.
     The returned ids are de-duplicated across the cluster. ``target_count``
     preserves the citator's existing count semantics: one opinion keeps the
     API's reported count; a cluster reports the unique count because the same
@@ -996,12 +1066,16 @@ def _fetch_cluster_forward_edges(
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
     candidate_pool_gaps: list[CitatorCoverageGap] = []
+    opinion_audits: list[SourceOpinionAudit] = []
     opinion_ids = target.opinion_ids
     # Split the target-wide pool evenly, giving the remainder to the earliest
     # sub-opinions so one lead opinion cannot consume every candidate.
     share, remainder = divmod(max_ids, len(opinion_ids))
+    carry = 0
     for index, opinion_id in enumerate(opinion_ids):
         allocation = share + (1 if index < remainder else 0)
+        if adaptive_allocation:
+            allocation += carry
         if allocation <= 0:
             detail = (
                 f"Citator candidate pool for '{target.case_name}' had no "
@@ -1015,6 +1089,20 @@ def _fetch_cluster_forward_edges(
             complete = False
             truncated = True
             candidate_limit_reached = True
+            opinion_audits.append(
+                SourceOpinionAudit(
+                    opinion_id=str(opinion_id),
+                    opinion_index=index,
+                    candidate_allocation=0,
+                    fetch_attempted=False,
+                    reported_count_known=False,
+                    complete=False,
+                    truncated=True,
+                    candidate_pool_limit_reached=True,
+                    candidate_pool_limit_reason="allocation",
+                    gap_codes=["source_candidate_pool_truncated"],
+                )
+            )
             continue
         edge = _fetch_forward_edges(
             provider,
@@ -1023,6 +1111,11 @@ def _fetch_cluster_forward_edges(
             page_size=page_size,
             max_ids=allocation,
         )
+        if adaptive_allocation:
+            # Carry only the slice this opinion did not consume. Later opinions
+            # keep their equal-share reservation, so the source-wide pool is
+            # never exceeded even though unused capacity moves forward.
+            carry = max(0, allocation - len(edge.ids))
         pages += edge.pages
         reported_count += edge.reported_count
         target_count += edge.reported_count
@@ -1035,10 +1128,45 @@ def _fetch_cluster_forward_edges(
         flags.extend(edge.flags)
         gaps.extend(edge.gaps)
         candidate_pool_gaps.extend(edge.candidate_pool_gaps)
-        for citing_id in edge.ids:
-            if citing_id not in seen:
-                seen.add(citing_id)
-                ids.append(citing_id)
+        new_ids = [citing_id for citing_id in edge.ids if citing_id not in seen]
+        duplicate_ids = len(edge.ids) - len(new_ids)
+        opinion_audits.append(
+            SourceOpinionAudit(
+                opinion_id=str(opinion_id),
+                opinion_index=index,
+                candidate_allocation=allocation,
+                fetch_attempted=edge.fetch_attempted,
+                fetch_error_kind=edge.fetch_error_kind,
+                fetch_retryable=edge.fetch_retryable,
+                reported_count_known=edge.reported_count_known,
+                forward_citations_reported=edge.reported_count,
+                citing_ids_collected=len(edge.ids),
+                citing_ids_new_to_cluster=len(new_ids),
+                citing_ids_duplicate_across_cluster=duplicate_ids,
+                duplicate_rows_ignored=edge.duplicate_rows_ignored,
+                invalid_rows_ignored=edge.invalid_rows_ignored,
+                pages_fetched=edge.pages,
+                complete=(
+                    edge.complete
+                    and edge.candidate_limit_reason != "row"
+                ),
+                truncated=(
+                    edge.truncated
+                    or edge.candidate_limit_reason == "row"
+                ),
+                page_limit_reached=edge.page_limit_reached,
+                candidate_pool_limit_reached=edge.candidate_limit_reached,
+                candidate_pool_limit_reason=edge.candidate_limit_reason,
+                count_mismatch=(
+                    edge.reported_count_known
+                    and edge.reported_count > len(edge.ids)
+                ),
+                gap_codes=_opinion_audit_gap_codes(edge),
+            )
+        )
+        for citing_id in new_ids:
+            seen.add(citing_id)
+            ids.append(citing_id)
     unique_count = len(ids)
     if len(opinion_ids) > 1:
         target_count = unique_count
@@ -1055,6 +1183,7 @@ def _fetch_cluster_forward_edges(
         flags=flags,
         gaps=gaps,
         candidate_pool_gaps=candidate_pool_gaps,
+        opinion_audits=opinion_audits,
     )
 
 
@@ -2407,7 +2536,6 @@ def _source_audit_ledger(
     candidate_gaps: list[CitatorCoverageGap],
     review_gaps: list[CitatorCoverageGap],
     coverage_complete: bool,
-    cluster_opinion_count: int,
 ) -> SourceAuditLedger:
     """Summarize source-history coverage from already collected observations."""
     status_ids: dict[str, set[str]] = {}
@@ -2472,7 +2600,7 @@ def _source_audit_ledger(
             and not edge_fetch.page_limit_reached
             and not edge_fetch.candidate_limit_reached
         ),
-        cluster_opinion_count=cluster_opinion_count,
+        cluster_opinion_count=len(edge_fetch.opinion_audits),
         forward_citations_reported=edge_fetch.reported_count,
         citing_ids_collected=edge_fetch.unique_count,
         candidates_metadata_loaded=metadata_loaded,
@@ -2497,6 +2625,7 @@ def _source_audit_ledger(
         page_limit_reached=edge_fetch.page_limit_reached,
         candidate_pool_limit_reached=edge_fetch.candidate_limit_reached,
         gaps=_dedupe_audit_gaps(gaps),
+        opinion_audits=edge_fetch.opinion_audits,
     )
 
 
@@ -2516,6 +2645,7 @@ def _source_history_audit(
         _SOURCE_HISTORY_MAX_PAGES,
         page_size=max_ids,
         max_ids=max_ids,
+        adaptive_allocation=cache.adaptive_allocation,
     )
     citing_ids = edge_fetch.ids
     edges_complete = edge_fetch.complete
@@ -2611,7 +2741,6 @@ def _source_history_audit(
         candidate_gaps=candidate_gaps,
         review_gaps=review_gaps,
         coverage_complete=not incomplete,
-        cluster_opinion_count=len(source_target.opinion_ids),
     )
     invalidator_checks = _source_invalidator_checks(
         provider, observations, as_of_date, cache, depth
@@ -2909,8 +3038,12 @@ def _validate_source_validity(
     provider: CourtListenerProvider,
     check: CitatorCheck,
     cache: _SourceValidationCache,
+    adaptive_allocation: bool = False,
 ) -> None:
     """Fill advisory source statuses; never change status or queue inputs."""
+    if cache.adaptive_allocation != adaptive_allocation:
+        cache.audits.clear()
+        cache.adaptive_allocation = adaptive_allocation
     for signal in check.source_validity:
         source_id = _positive_id(signal.source_opinion_id)
         if source_id is None:
@@ -3095,9 +3228,11 @@ def check_case(
     history_records: list[AppellateHistoryRecord] | None = None,
     snapshot_store: SnapshotStore | None = None,
     authority_entry: AuthorityQueueEntry | None = None,
+    target_cluster_audit: bool = False,
     source_validity: bool = False,
     source_validity_mode: str = "extract",
     source_validation_cache: _SourceValidationCache | None = None,
+    source_adaptive_allocation: bool = False,
 ) -> CitatorCheck:
     """Resolve and check one queued authority, returning an advisory result.
 
@@ -3110,8 +3245,10 @@ def check_case(
     when *source_validity* is true, the check also gets an advisory list of
     those sources. In ``advisory`` mode the source list is bounded and
     validated against current metadata and later history; that validation
-    never changes status, coverage, ranking, or queue order. In ``enforce``
-    mode the validated signals additionally withhold non-authoritative or
+    never changes status, coverage, ranking, or queue order. When
+    *target_cluster_audit* is true, the target cluster's already-fetched
+    per-opinion rows are exposed as diagnostic-only data. In ``enforce`` mode
+    the validated signals additionally withhold non-authoritative or
     invalid sources from status support and queue demotion. Enforcement is
     opt-in and never upgrades status.
     """
@@ -3371,6 +3508,9 @@ def check_case(
         target_cluster_id=target.cluster_id,
         target_citations=list(target.citations),
         target_opinion_ids=[str(value) for value in target.opinion_ids],
+        target_cluster_audit=(
+            list(edge_fetch.opinion_audits) if target_cluster_audit else []
+        ),
         status=status,
         good_law_as_of=good_law_as_of,
         as_of_date=as_of_date,
@@ -3424,6 +3564,7 @@ def check_case(
             provider,
             check,
             source_validation_cache or _SourceValidationCache(),
+            adaptive_allocation=source_adaptive_allocation,
         )
     if source_validity and source_validity_mode == "enforce":
         _apply_source_validity_enforcement(check)
@@ -3442,17 +3583,23 @@ def run_citator(
     history_records: list[AppellateHistoryRecord] | None = None,
     snapshot_store: SnapshotStore | None = None,
     authority_queue: list[QueuedAuthority] | None = None,
+    target_cluster_audit: bool = False,
     source_validity: bool = False,
     source_validity_mode: str = "extract",
+    source_adaptive_allocation: bool = False,
 ) -> list[CitatorCheck]:
     """Check the prioritized authority queue up to *max_cases*.
 
     Callers may pass a pre-built queue; otherwise the queue is built from
     *cases*. The queue changes review order only, never ranking or status.
-    *source_validity* adds source identifiers to each check; in ``advisory``
-    mode it also validates those sources without changing status or queue
-    behavior. ``enforce`` mode additionally applies the withheld-source rules
-    to status and queue demotion.
+    *target_cluster_audit* exposes the target cluster's already-fetched
+    per-opinion rows as diagnostic-only data. *source_validity* adds source
+    identifiers to each check; in ``advisory`` mode it also validates those
+    sources without changing status or queue behavior. ``enforce`` mode
+    additionally applies the withheld-source rules
+    to status and queue demotion. *source_adaptive_allocation* is an
+    experiment limited to source-history fetches; it has no effect on target
+    cluster fetches or on the default equal split.
     """
     active_provider = (
         SnapshottingCourtListenerProvider(provider, snapshot_store)
@@ -3475,9 +3622,11 @@ def run_citator(
             history_records=history_records,
             snapshot_store=snapshot_store,
             authority_entry=item.entry,
+            target_cluster_audit=target_cluster_audit,
             source_validity=source_validity,
             source_validity_mode=source_validity_mode,
             source_validation_cache=validation_cache,
+            source_adaptive_allocation=source_adaptive_allocation,
         )
         for item in queued
     ]

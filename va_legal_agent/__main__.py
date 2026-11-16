@@ -703,6 +703,46 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                         f"{page_cap}; candidate pool cap {pool_cap}; decisive "
                         f"{decisive}; gaps {gaps}"
                     )
+                    bottleneck_summary = "; ".join(
+                        f"{opinion_id} ({', '.join(reasons)})"
+                        for opinion_id, reasons in (
+                            ledger.opinion_audit_bottlenecks().items()
+                        )
+                    )
+                    lines.append(
+                        f"    audit bottlenecks: {bottleneck_summary or 'none'}"
+                    )
+                    for opinion in ledger.opinion_audits:
+                        opinion_state = (
+                            "complete"
+                            if opinion.complete
+                            else "incomplete"
+                        )
+                        if opinion.fetch_attempted:
+                            fetched = (
+                                f"{opinion.forward_citations_reported} reported/"
+                                f"{opinion.citing_ids_collected} collected"
+                            )
+                        else:
+                            fetched = "fetch not attempted"
+                        opinion_gaps = ", ".join(
+                            opinion.gap_codes
+                        ) or "none"
+                        lines.append(
+                            f"    opinion audit {opinion.opinion_id} "
+                            f"(index {opinion.opinion_index}): allocation "
+                            f"{opinion.candidate_allocation}; {fetched}; "
+                            f"new {opinion.citing_ids_new_to_cluster}/duplicate "
+                            f"{opinion.citing_ids_duplicate_across_cluster}; "
+                            f"rows ignored duplicate "
+                            f"{opinion.duplicate_rows_ignored}/invalid "
+                            f"{opinion.invalid_rows_ignored}; pages "
+                            f"{opinion.pages_fetched}; {opinion_state}; page "
+                            f"cap {'yes' if opinion.page_limit_reached else 'no'}; "
+                            f"candidate pool cap "
+                            f"{opinion.candidate_pool_limit_reason or 'no'}; "
+                            f"gaps {opinion_gaps}"
+                        )
                 for invalidator in signal.invalidator_checks:
                     if invalidator.accepted:
                         verdict = "accepted"
