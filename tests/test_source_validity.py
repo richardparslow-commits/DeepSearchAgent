@@ -2312,6 +2312,60 @@ def test_source_audit_ledger_marks_reported_count_unknown_when_omitted():
     }
 
 
+def test_source_audit_ledger_preserves_underreported_count():
+    provider = _provider()
+    page = _page([HISTORY_ID])
+    page["count"] = 0
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert ledger.forward_citations_reported == 0
+    assert ledger.citing_ids_collected == 1
+    assert ledger.coverage_complete is False
+    assert opinion.reported_count_known is True
+    assert opinion.reported_count_malformed is False
+    assert opinion.forward_citations_reported == 0
+    assert opinion.citing_ids_collected == 1
+    assert opinion.count_mismatch is True
+    assert opinion.complete is False
+    assert opinion.truncated is False
+    assert opinion.gap_codes == ["count_mismatch"]
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["count_mismatch"]
+    }
+
+
+def test_source_audit_ledger_flags_malformed_count():
+    provider = _provider()
+    page = _page([HISTORY_ID])
+    page["count"] = "not-a-count"
+    provider.opinion_pages[(SOURCE_ID, None)] = page
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    opinion = ledger.opinion_audits[0]
+    assert ledger.forward_citations_reported == 0
+    assert ledger.citing_ids_collected == 1
+    assert ledger.coverage_complete is False
+    assert opinion.reported_count_known is False
+    assert opinion.reported_count_malformed is True
+    assert opinion.forward_citations_reported == 0
+    assert opinion.citing_ids_collected == 1
+    assert opinion.count_mismatch is False
+    assert opinion.complete is False
+    assert opinion.truncated is False
+    assert opinion.gap_codes == ["count_malformed"]
+    assert ledger.opinion_audit_bottlenecks() == {
+        str(SOURCE_ID): ["count_malformed"]
+    }
+
+
 def test_source_opinion_audit_rejects_unknown_limit_reason():
     with pytest.raises(ValueError, match="candidate_pool_limit_reason"):
         SourceOpinionAudit(

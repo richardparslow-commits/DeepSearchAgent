@@ -114,14 +114,17 @@ _FAILURE_CASES = tuple(
     _structured_failure(kind) for kind in _FAILURE_KINDS
 ) + (_Failure("malformed_response", ()),)
 
+_OMITTED = object()
 _COUNT_CASES = (
-    (None, False, 0),
-    ("not-a-count", True, 0),
-    (0, True, 0),
-    (3, True, 3),
-    ("3", True, 3),
-    (2.5, True, 2),
-    (-1, True, -1),
+    (_OMITTED, False, False, 0),
+    (None, False, True, 0),
+    ("not-a-count", False, True, 0),
+    (True, False, True, 0),
+    (0, True, False, 0),
+    (3, True, False, 3),
+    ("3", True, False, 3),
+    (2.5, False, True, 0),
+    (-1, False, True, 0),
 )
 _RESULTS_CASE = st.one_of(
     st.none(),
@@ -630,14 +633,52 @@ def test_duplicate_and_malformed_rows_preserve_invariants(
 @settings(max_examples=50, deadline=None)
 @given(count_case=st.sampled_from(_COUNT_CASES))
 def test_malformed_count_payload_preserves_accounting(
-    count_case: tuple[object, bool, int],
+    count_case: tuple[object, bool, bool, int],
 ) -> None:
-    count_value, known, parsed = count_case
+    count_value, known, malformed, parsed = count_case
+    payload = {
+        "results": [_valid_row(1)],
+        "next": "",
+    }
+    if count_value is not _OMITTED:
+        payload["count"] = count_value
+    edge_fetch = _fetch_cluster_forward_edges(
+        _PayloadProvider(payload),
+        _target(1),
+        max_pages=1,
+        page_size=3,
+        max_ids=3,
+    )
+
+    _assert_edge_fetch_invariants(edge_fetch, 1)
+    row = edge_fetch.opinion_audits[0]
+    expected_reported = parsed if count_value is not _OMITTED else 1
+    count_mismatch = known and expected_reported != 1
+    expected_gaps = (
+        ["count_malformed"]
+        if malformed
+        else ["count_mismatch"]
+        if count_mismatch
+        else []
+    )
+    assert row.pages_fetched == 1
+    assert row.citing_ids_collected == 1
+    assert row.reported_count_known is known
+    assert row.reported_count_malformed is malformed
+    assert row.forward_citations_reported == expected_reported
+    assert row.count_mismatch is count_mismatch
+    assert row.gap_codes == expected_gaps
+    assert row.complete is not (count_mismatch or malformed)
+    assert row.truncated is (known and expected_reported > 1)
+    assert [gap.code for gap in edge_fetch.gaps] == expected_gaps
+
+
+def test_underreported_count_preserves_raw_count_and_flags_mismatch() -> None:
     edge_fetch = _fetch_cluster_forward_edges(
         _PayloadProvider(
             {
-                "count": count_value,
-                "results": [_valid_row(1)],
+                "count": 1,
+                "results": [_valid_row(1), _valid_row(2)],
                 "next": "",
             }
         ),
@@ -649,17 +690,14 @@ def test_malformed_count_payload_preserves_accounting(
 
     _assert_edge_fetch_invariants(edge_fetch, 1)
     row = edge_fetch.opinion_audits[0]
-    expected_reported = max(parsed, 1)
-    count_mismatch = expected_reported > 1
-    expected_gaps = ["count_mismatch"] if count_mismatch else []
-    assert row.pages_fetched == 1
-    assert row.citing_ids_collected == 1
-    assert row.reported_count_known is known
-    assert row.forward_citations_reported == expected_reported
-    assert row.gap_codes == expected_gaps
-    assert row.complete is not count_mismatch
-    assert row.truncated is count_mismatch
-    assert [gap.code for gap in edge_fetch.gaps] == expected_gaps
+    assert row.reported_count_known is True
+    assert row.reported_count_malformed is False
+    assert row.forward_citations_reported == 1
+    assert row.citing_ids_collected == 2
+    assert row.count_mismatch is True
+    assert row.complete is False
+    assert row.truncated is False
+    assert row.gap_codes == ["count_mismatch"]
 
 
 @settings(max_examples=50, deadline=None)
@@ -671,10 +709,11 @@ def test_malformed_results_payload_preserves_accounting(
     results: object,
     count: int | None,
 ) -> None:
+    payload = {"results": results, "next": ""}
+    if count is not None:
+        payload["count"] = count
     edge_fetch = _fetch_cluster_forward_edges(
-        _PayloadProvider(
-            {"count": count, "results": results, "next": ""}
-        ),
+        _PayloadProvider(payload),
         _target(1),
         max_pages=1,
         page_size=3,
@@ -743,20 +782,18 @@ def test_repeated_pagination_cursor_preserves_accounting(
         "https://www.courtlistener.com/api/rest/v4/"
         "opinions/101/citing/?cursor=repeat"
     )
-    provider = _SequenceProvider(
-        (
-            {
-                "count": count,
-                "results": [_valid_row(first_id)],
-                "next": repeated_cursor,
-            },
-            {
-                "count": count,
-                "results": [_valid_row(second_id)],
-                "next": repeated_cursor,
-            },
-        )
-    )
+    first_page = {
+        "results": [_valid_row(first_id)],
+        "next": repeated_cursor,
+    }
+    second_page = {
+        "results": [_valid_row(second_id)],
+        "next": repeated_cursor,
+    }
+    if count is not None:
+        first_page["count"] = count
+        second_page["count"] = count
+    provider = _SequenceProvider((first_page, second_page))
     edge_fetch = _fetch_cluster_forward_edges(
         provider,
         _target(1),

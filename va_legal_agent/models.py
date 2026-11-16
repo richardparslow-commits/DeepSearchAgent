@@ -72,6 +72,7 @@ SOURCE_AUDIT_GAP_CODES = frozenset(
         "pagination_cursor_missing",
         "pagination_cursor_repeated",
         "page_cap",
+        "count_malformed",
         "count_mismatch",
         "citing_metadata_fetch_failed",
         "citing_metadata_unavailable",
@@ -493,6 +494,10 @@ class SourceOpinionAudit(BaseModel):
     candidate_allocation: int = 0
     fetch_attempted: bool = False
     reported_count_known: bool = False
+    # True when the API count was present but not a non-negative integer.
+    reported_count_malformed: bool = False
+    # Raw reported count when valid. It can be lower than the number of IDs
+    # collected when the provider underreports its own count.
     forward_citations_reported: int = 0
     citing_ids_collected: int = 0
     # IDs contributed to the cluster for the first time by this opinion.
@@ -546,10 +551,11 @@ class SourceAuditLedger(BaseModel):
     valid. ``coverage_complete`` means the bounded review finished; a reviewed
     but rejected or gated candidate can still have complete coverage while the
     signal's ``history_complete`` remains false. ``forward_citations_reported``
-    is the sum of per-opinion API counts and may double-count a citing opinion
-    linked to more than one cluster opinion; ``citing_ids_collected`` is the
-    de-duplicated count actually collected within the bounded pool. The
-    optional ``opinion_audits`` rows retain that breakdown per source opinion.
+    is the sum of valid per-opinion API counts and may double-count a citing
+    opinion linked to more than one cluster opinion; malformed counts are
+    flagged separately, and an underreported count can be lower than the
+    de-duplicated ids actually collected within the bounded pool. The optional
+    ``opinion_audits`` rows retain that breakdown per source opinion.
     """
 
     assessed: bool = False
@@ -631,7 +637,11 @@ def _opinion_bottleneck_reasons(row: SourceOpinionAudit) -> list[str]:
         reasons.append("candidate_pool_row")
     elif row.candidate_pool_limit_reason == "cursor":
         reasons.append("candidate_pool_cursor")
-    if row.pages_fetched > 0 and not row.reported_count_known:
+    if (
+        row.pages_fetched > 0
+        and not row.reported_count_known
+        and not row.reported_count_malformed
+    ):
         reasons.append("reported_count_unknown")
     if row.invalid_rows_ignored > 0:
         reasons.append("malformed_rows")

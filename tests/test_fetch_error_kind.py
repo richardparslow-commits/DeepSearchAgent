@@ -53,15 +53,17 @@ _MESSAGE_MARKER_CASES = (
     ("rate-limit", "rate_limit", True),
     ("throttl", "rate_limit", True),
     ("too many requests", "rate_limit", True),
-    ("429", "rate_limit", True),
+    ("HTTP 429", "rate_limit", True),
     ("timeout", "timeout", True),
     ("timed out", "timeout", True),
     ("time out", "timeout", True),
     ("unauthorized", "authentication", False),
     ("authentication", "authentication", False),
     ("api token", "authentication", False),
-    ("401", "authentication", False),
-    ("403", "authentication", False),
+    ("forbidden", "authentication", False),
+    ("HTTP 401", "authentication", False),
+    ("status code 403", "authentication", False),
+    ("status=429", "rate_limit", True),
 )
 _MIXED_MARKER_CASES = (
     (
@@ -219,6 +221,28 @@ def test_classify_search_error_mixed_message_marker_precedence(
     error = SearchError(message)
 
     assert classify_search_error(error) == (expected_kind, expected_retryable)
+
+
+@pytest.mark.parametrize(
+    "opinion_id",
+    ("401", "403", "429", "1401", "1403", "1429"),
+)
+def test_numeric_status_markers_ignore_opinion_ids(opinion_id) -> None:
+    error = SearchError(
+        "CourtListener request failed: "
+        "https://www.courtlistener.com/api/rest/v4/"
+        f"opinions/{opinion_id}/: boom"
+    )
+
+    assert classify_search_error(error) == ("other", False)
+
+
+@pytest.mark.parametrize(
+    "message",
+    ("provider failure: 401", "provider failure: 403", "provider failure: 429"),
+)
+def test_numeric_status_markers_require_http_context(message) -> None:
+    assert classify_search_error(SearchError(message)) == ("other", False)
 
 
 @pytest.mark.parametrize(

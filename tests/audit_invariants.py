@@ -24,7 +24,11 @@ def _expected_bottlenecks(
             reasons.append("zero_allocation")
         elif row.candidate_pool_limit_reason in {"row", "cursor"}:
             reasons.append(f"candidate_pool_{row.candidate_pool_limit_reason}")
-        if row.pages_fetched > 0 and not row.reported_count_known:
+        if (
+            row.pages_fetched > 0
+            and not row.reported_count_known
+            and not row.reported_count_malformed
+        ):
             reasons.append("reported_count_unknown")
         if row.invalid_rows_ignored > 0:
             reasons.append("malformed_rows")
@@ -64,7 +68,7 @@ def assert_source_opinion_audit_invariants(
             + row.citing_ids_duplicate_across_cluster
         )
         assert row.citing_ids_collected <= row.candidate_allocation
-        assert row.forward_citations_reported >= row.citing_ids_collected
+        assert row.forward_citations_reported >= 0
         assert row.duplicate_rows_ignored >= 0
         assert row.invalid_rows_ignored >= 0
         assert row.pages_fetched >= 0
@@ -78,6 +82,17 @@ def assert_source_opinion_audit_invariants(
             assert row.forward_citations_reported == 0
         if row.reported_count_known:
             assert row.pages_fetched > 0
+            assert row.count_mismatch is (
+                row.forward_citations_reported != row.citing_ids_collected
+            )
+        else:
+            assert row.count_mismatch is False
+        if row.reported_count_malformed:
+            assert row.reported_count_known is False
+            assert "count_malformed" in row.gap_codes
+            assert row.complete is False
+        if "count_malformed" in row.gap_codes:
+            assert row.reported_count_malformed is True
         if not row.fetch_error_kind:
             assert row.fetch_retryable is False
 
@@ -119,8 +134,9 @@ def assert_source_opinion_audit_invariants(
 
         if row.count_mismatch:
             assert row.complete is False
-            assert row.truncated is True
             assert "count_mismatch" in row.gap_codes
+            if row.forward_citations_reported > row.citing_ids_collected:
+                assert row.truncated is True
 
         if not row.complete:
             assert row.gap_codes

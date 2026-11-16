@@ -2080,7 +2080,7 @@ def test_malformed_forward_rows_make_coverage_incomplete():
     assert "no_usable_citing_ids" in _gap_codes(check)
 
 
-def test_count_lower_than_collected_ids_is_raised_to_the_id_count():
+def test_underreported_count_keeps_collected_ids_but_flags_mismatch():
     provider = FakeProvider()
     provider.pages[None] = _page([201], count=0)
     _wire_good_citing_opinions(provider, 201)
@@ -2088,7 +2088,10 @@ def test_count_lower_than_collected_ids_is_raised_to_the_id_count():
     check = check_case(_case(), provider)
 
     assert check.coverage.forward_citations_found == 1
-    assert check.coverage.complete is True
+    assert check.coverage.citing_opinions_reviewed == 1
+    assert check.coverage.complete is False
+    assert check.coverage.truncated is False
+    assert "count_mismatch" in _gap_codes(check)
 
 
 def test_zero_forward_citations_is_unknown_even_though_coverage_is_complete():

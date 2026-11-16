@@ -383,6 +383,7 @@ class _EdgeFetch:
     fetch_error_kind: str
     fetch_retryable: bool
     reported_count_known: bool
+    reported_count_malformed: bool
     duplicate_rows_ignored: int
     invalid_rows_ignored: int
     flags: list[str]
@@ -488,6 +489,19 @@ def _safe_int(value: object) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _api_count(value: object) -> int | None:
+    """Return a non-negative API count, or ``None`` when malformed."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            return int(text)
+    return None
 
 
 def _coverage_gap(code: str, detail: str) -> CitatorCoverageGap:
@@ -870,6 +884,7 @@ def _fetch_forward_edges(
     fetch_error_kind = ""
     fetch_retryable = False
     reported_count_known = False
+    reported_count_malformed = False
     duplicate_rows_ignored = 0
     invalid_rows_ignored = 0
     flags: list[str] = []
@@ -904,12 +919,14 @@ def _fetch_forward_edges(
             gaps.append(_coverage_gap("forward_fetch_failed", detail))
             complete = False
             break
-        count_value = data.get("count")
-        if count_value is not None:
-            reported_count_known = True
-        page_count = _safe_int(count_value)
-        if page_count > reported_count:
-            reported_count = page_count
+        if "count" in data:
+            page_count = _api_count(data["count"])
+            if page_count is None:
+                reported_count_malformed = True
+            else:
+                reported_count_known = True
+                if page_count > reported_count:
+                    reported_count = page_count
         rows = data.get("results")
         if isinstance(rows, list):
             for row in rows:
@@ -955,7 +972,12 @@ def _fetch_forward_edges(
             break
         seen_cursors.add(cursor)
 
-    if reported_count < len(ids):
+    if reported_count_malformed:
+        reported_count_known = False
+    elif not reported_count_known and reported_count < len(ids):
+        # An omitted count has no raw value to preserve. Keep the historical
+        # collected-count placeholder, but leave ``reported_count_known`` false
+        # so the audit still exposes the uncertainty.
         reported_count = len(ids)
     if cursor:
         if pages >= max_pages:
@@ -986,12 +1008,23 @@ def _fetch_forward_edges(
             gap = _coverage_gap("page_cap", detail)
             gaps.append(gap)
             candidate_pool_gaps.append(gap)
-    if reported_count > len(ids):
-        truncated = True
+    if reported_count_malformed:
         complete = False
         detail = (
-            f"Citator forward-citation coverage for opinion {opinion_id} is "
-            f"incomplete: {reported_count} reported, {len(ids)} collected."
+            f"Citator forward-citation count for opinion {opinion_id} was "
+            "present but malformed."
+        )
+        flags.append(detail)
+        gaps.append(_coverage_gap("count_malformed", detail))
+    elif reported_count_known and reported_count != len(ids):
+        # Preserve the raw count in either direction. An underreported count
+        # is a provider-integrity failure even though no page was truncated.
+        complete = False
+        if reported_count > len(ids):
+            truncated = True
+        detail = (
+            f"Citator forward-citation count mismatch for opinion {opinion_id}: "
+            f"{reported_count} reported, {len(ids)} collected."
         )
         flags.append(detail)
         gaps.append(_coverage_gap("count_mismatch", detail))
@@ -1008,6 +1041,7 @@ def _fetch_forward_edges(
         fetch_error_kind=fetch_error_kind,
         fetch_retryable=fetch_retryable,
         reported_count_known=reported_count_known,
+        reported_count_malformed=reported_count_malformed,
         duplicate_rows_ignored=duplicate_rows_ignored,
         invalid_rows_ignored=invalid_rows_ignored,
         flags=flags,
@@ -1139,6 +1173,7 @@ def _fetch_cluster_forward_edges(
                 fetch_error_kind=edge.fetch_error_kind,
                 fetch_retryable=edge.fetch_retryable,
                 reported_count_known=edge.reported_count_known,
+                reported_count_malformed=edge.reported_count_malformed,
                 forward_citations_reported=edge.reported_count,
                 citing_ids_collected=len(edge.ids),
                 citing_ids_new_to_cluster=len(new_ids),
@@ -1159,7 +1194,7 @@ def _fetch_cluster_forward_edges(
                 candidate_pool_limit_reason=edge.candidate_limit_reason,
                 count_mismatch=(
                     edge.reported_count_known
-                    and edge.reported_count > len(edge.ids)
+                    and edge.reported_count != len(edge.ids)
                 ),
                 gap_codes=_opinion_audit_gap_codes(edge),
             )
@@ -1170,6 +1205,10 @@ def _fetch_cluster_forward_edges(
     unique_count = len(ids)
     if len(opinion_ids) > 1:
         target_count = unique_count
+    else:
+        # Preserve the API count for a single opinion, but never report fewer
+        # citations than were actually collected when the API underreports.
+        target_count = max(target_count, unique_count)
     return _ClusterEdgeFetch(
         ids=ids,
         target_count=target_count,

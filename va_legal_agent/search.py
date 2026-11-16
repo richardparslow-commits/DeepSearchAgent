@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import threading
 import time
 from collections.abc import Iterator
@@ -52,15 +53,23 @@ _SEARCH_ERROR_MESSAGE_MARKERS = (
             "rate-limit",
             "throttl",
             "too many requests",
-            "429",
         ),
     ),
     ("timeout", ("timeout", "timed out", "time out")),
     (
         "authentication",
-        ("unauthorized", "authentication", "api token", "401", "403"),
+        ("unauthorized", "authentication", "api token", "forbidden"),
     ),
 )
+_SEARCH_ERROR_HTTP_STATUS_MARKER = re.compile(
+    r"\b(?:http(?: status)?|status(?: code)?)\s*[:=]?\s*(401|403|429)\b",
+    re.IGNORECASE,
+)
+_SEARCH_ERROR_HTTP_STATUS_KINDS = {
+    "401": "authentication",
+    "403": "authentication",
+    "429": "rate_limit",
+}
 
 
 class SearchError(RuntimeError):
@@ -138,6 +147,9 @@ def _search_error_message_kind(exc: BaseException) -> str:
         for kind, markers in _SEARCH_ERROR_MESSAGE_MARKERS:
             if any(marker in message for marker in markers):
                 return kind
+        status_match = _SEARCH_ERROR_HTTP_STATUS_MARKER.search(message)
+        if status_match:
+            return _SEARCH_ERROR_HTTP_STATUS_KINDS[status_match.group(1)]
     return ""
 
 
