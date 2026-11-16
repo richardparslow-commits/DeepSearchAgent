@@ -655,6 +655,20 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                     f"cluster {signal.source_cluster_id or 'unknown'}; "
                     f"status {signal.status}{withheld}{detail}"
                 )
+                for invalidator in signal.invalidator_checks:
+                    verdict = "accepted" if invalidator.accepted else "rejected"
+                    if invalidator.binding is True:
+                        binding = "binding"
+                    elif invalidator.binding is False:
+                        binding = "not binding"
+                    else:
+                        binding = "binding status unknown"
+                    lines.append(
+                        f"    invalidator {invalidator.source_opinion_id or 'unknown'} "
+                        f"({invalidator.citing_case or 'case unknown'}); "
+                        f"{verdict}; {binding}; invalidator status "
+                        f"{invalidator.invalidator_status}; {invalidator.reason}"
+                    )
             if check.source_validity_actions:
                 lines.append("  Source-validity enforcement actions:")
                 for action in check.source_validity_actions:

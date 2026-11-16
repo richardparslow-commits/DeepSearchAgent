@@ -346,6 +346,34 @@ class TreatmentTimelineEntry(BaseModel):
     later_than_negative: bool = False
 
 
+class SourceInvalidatorCheck(BaseModel):
+    """Bounded audit of one later finding offered as invalidating a source.
+
+    ``source_opinion_id`` and the citing fields identify the later opinion
+    that would invalidate the source. A source-history finding is not enough
+    by itself: the citing court must have authority over the source, the
+    finding must not be attribution-ambiguous, and the later decision's own
+    bounded status must be valid. ``invalidator_status`` is ``not_checked``
+    when authority or attribution was rejected before the audit; otherwise it
+    is the immediate invalidator's bounded source status. ``accepted`` is true
+    only for a valid, complete invalidator history.
+    """
+
+    source_opinion_id: str = ""
+    citing_case: str = ""
+    citing_citation: str = ""
+    citing_court: str = ""
+    citing_date: str = ""
+    treatment: str = ""
+    scope: str = ""
+    binding: bool | None = None
+    # not_checked before the audit, or the invalidator's own bounded source
+    # status: valid, invalid, qualified, or unverified.
+    invalidator_status: str = "not_checked"
+    accepted: bool = False
+    reason: str = ""
+
+
 class SourceValiditySignal(BaseModel):
     """Advisory validation of one reviewed citing opinion.
 
@@ -359,7 +387,9 @@ class SourceValiditySignal(BaseModel):
     from enforcement; when its history is otherwise clean its status is
     ``precedence_defect``. Only an authoritative source may be used by
     enforcement. When an as-of cutoff is set, source-history review stops at
-    that cutoff.
+    that cutoff. ``invalidator_checks`` retains every source-history candidate
+    considered as invalidating, including rejected candidates and the reasons
+    for rejection.
     """
 
     source_opinion_id: str
@@ -380,6 +410,9 @@ class SourceValiditySignal(BaseModel):
     # True only when the bounded one-hop source history review completed.
     # With an as-of cutoff, this covers only history on or before the cutoff.
     history_complete: bool = False
+    # Each source-history candidate considered as invalidating the source,
+    # including rejected candidates, their authority, and audit reason.
+    invalidator_checks: list[SourceInvalidatorCheck] = Field(default_factory=list)
     checked_at: str = ""
 
 

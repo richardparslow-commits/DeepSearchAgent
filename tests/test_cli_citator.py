@@ -16,6 +16,7 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     SameDocketDecision,
+    SourceInvalidatorCheck,
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
@@ -623,6 +624,61 @@ def test_citator_text_renders_advisory_source_validity_reason():
         "source opinion 201; cluster 888; status invalid; "
         "source was overruled by Later v. Secretary" in text
     )
+
+
+def test_citator_text_renders_source_invalidator_checks():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    status="unverified",
+                    reason="source-history invalidation was not established",
+                    precedence="authoritative",
+                    withheld=True,
+                    history_complete=False,
+                    invalidator_checks=[
+                        SourceInvalidatorCheck(
+                            source_opinion_id="301",
+                            citing_case="Later v. Secretary",
+                            treatment="overruled",
+                            scope="all",
+                            binding=False,
+                            invalidator_status="not_checked",
+                            accepted=False,
+                            reason="invalidator court is lower than the source court",
+                        ),
+                        SourceInvalidatorCheck(
+                            source_opinion_id="302",
+                            citing_case="Unknown v. Secretary",
+                            binding=None,
+                            invalidator_status="not_checked",
+                            accepted=False,
+                            reason="invalidator court relationship to the source is unknown",
+                        ),
+                        SourceInvalidatorCheck(
+                            source_opinion_id="303",
+                            citing_case="Binding v. Secretary",
+                            binding=True,
+                            invalidator_status="valid",
+                            accepted=True,
+                            reason="invalidator's own bounded status is valid",
+                        ),
+                    ],
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "invalidator 301 (Later v. Secretary); rejected; not binding" in text
+    assert "invalidator status not_checked" in text
+    assert "invalidator court is lower than the source court" in text
+    assert "binding status unknown" in text
+    assert "invalidator court relationship to the source is unknown" in text
+    assert "invalidator 303 (Binding v. Secretary); accepted; binding" in text
 
 
 def test_citator_text_renders_source_validity_enforcement_actions():

@@ -51,6 +51,7 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    SourceInvalidatorCheck,
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
@@ -81,6 +82,10 @@ _CITING_PRIORITY_POOL_MAX = 100
 # unverified rather than claiming the source is valid.
 _SOURCE_HISTORY_MAX_CITING = 3
 _SOURCE_HISTORY_MAX_PAGES = 1
+# Verify the immediate invalidator's own bounded status, but do not recurse
+# through an unbounded chain of invalidators. At this depth an unresolved
+# invalidating candidate makes the source unverified rather than invalid.
+_SOURCE_INVALIDATOR_MAX_DEPTH = 1
 _SOURCE_INVALIDATING_TREATMENTS = frozenset(
     {"overruled", "abrogated", "superseded", "vacated"}
 )
@@ -368,13 +373,16 @@ class _SourceAudit:
     validity_status: str = "unverified"
     reason: str = ""
     history_complete: bool = False
+    invalidator_checks: tuple[SourceInvalidatorCheck, ...] = ()
 
 
 @dataclass
 class _SourceValidationCache:
     """Run-scoped cache for source audits, shared by citator checks."""
 
-    audits: dict[tuple[int, str], _SourceAudit] = field(default_factory=dict)
+    # Depth is part of the key because an immediate invalidator audit stops at a
+    # different depth than a top-level source audit.
+    audits: dict[tuple[int, str, int], _SourceAudit] = field(default_factory=dict)
 
 
 def _checked_at() -> str:
@@ -1991,13 +1999,74 @@ def _source_precedence(
     return "unverified", "source court relationship is unknown"
 
 
+def _source_invalidator_check(
+    provider: CourtListenerProvider,
+    finding: NegativeTreatment,
+    as_of_date: str,
+    cache: _SourceValidationCache,
+    depth: int,
+) -> SourceInvalidatorCheck:
+    """Check whether one later finding may invalidate the source.
+
+    The finding must bind to the source court and have unambiguous attribution.
+    Its invalidator is then audited one level deeper. A candidate is accepted
+    only when that immediate invalidator's own bounded status is valid. A
+    nonbinding, ambiguous, missing, or unresolved candidate is rejected; if no
+    candidate is accepted, the source is unverified.
+    """
+    check = SourceInvalidatorCheck(
+        source_opinion_id=finding.source_opinion_id,
+        citing_case=finding.citing_case,
+        citing_citation=finding.citing_citation,
+        citing_court=finding.citing_court,
+        citing_date=finding.citing_date,
+        treatment=finding.treatment,
+        scope=finding.scope,
+        binding=finding.binding,
+    )
+    if finding.binding is False:
+        check.reason = "invalidator court is lower than the source court"
+        return check
+    if finding.binding is None:
+        check.reason = "invalidator court relationship to the source is unknown"
+        return check
+    if finding.attribution_ambiguous:
+        check.reason = "invalidator finding has ambiguous attribution"
+        return check
+    invalidator_id = _positive_id(finding.source_opinion_id)
+    if invalidator_id is None:
+        check.invalidator_status = "unverified"
+        check.reason = "invalidator opinion id is missing or unusable"
+        return check
+    if depth >= _SOURCE_INVALIDATOR_MAX_DEPTH:
+        check.invalidator_status = "unverified"
+        check.reason = (
+            "invalidator status was not checked because the verification "
+            "depth limit was reached"
+        )
+        return check
+    audit = _source_audit(
+        provider, invalidator_id, as_of_date, cache, depth=depth + 1
+    )
+    check.invalidator_status = audit.validity_status
+    if audit.validity_status == "valid" and audit.history_complete:
+        check.accepted = True
+        check.reason = "invalidator's own bounded status is valid"
+    else:
+        detail = audit.reason or "invalidator's own status is not valid"
+        check.reason = f"invalidator status {audit.validity_status}: {detail}"
+    return check
+
+
 def _source_history_audit(
     provider: CourtListenerProvider,
     source_target: _Target,
     metadata: dict[str, object],
     as_of_date: str,
+    cache: _SourceValidationCache,
+    depth: int = 0,
 ) -> _SourceAudit:
-    """Review a bounded one-hop history for one source opinion."""
+    """Review a bounded source history, including immediate invalidators."""
     max_ids = max(1, _SOURCE_HISTORY_MAX_CITING * 4)
     (
         citing_ids,
@@ -2068,46 +2137,74 @@ def _source_history_audit(
         )
         or reviewed < len(scope_ids)
     )
-    invalidating = [
+    invalidating_findings = [
         finding
         for finding in treatments
         if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
-        and finding.scope == "all"
-    ]
-    partial = [
-        finding
-        for finding in treatments
-        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
-        and finding.scope != "all"
     ]
     gated_invalidating = [
         finding
         for finding in gated
         if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
     ]
-    if invalidating:
-        first = invalidating[0]
+    invalidator_checks: list[SourceInvalidatorCheck] = []
+    accepted_findings: list[NegativeTreatment] = []
+    for finding in invalidating_findings:
+        check = _source_invalidator_check(
+            provider, finding, as_of_date, cache, depth
+        )
+        invalidator_checks.append(check)
+        if check.accepted:
+            accepted_findings.append(finding)
+    full_invalidator = next(
+        (finding for finding in accepted_findings if finding.scope == "all"),
+        None,
+    )
+    if full_invalidator:
+        first = full_invalidator
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
             validity_status="invalid",
             reason=(
                 f"source was {first.treatment} by {first.citing_case} "
-                f"({first.citing_date or 'date unknown'})"
+                f"({first.citing_date or 'date unknown'}); "
+                "invalidator status valid"
             ),
             history_complete=not incomplete,
+            invalidator_checks=tuple(invalidator_checks),
         )
-    if partial:
-        first = partial[0]
+    partial_invalidator = next(
+        (finding for finding in accepted_findings if finding.scope != "all"),
+        None,
+    )
+    if partial_invalidator:
+        first = partial_invalidator
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
             validity_status="qualified",
             reason=(
                 f"source was {first.treatment} only in part by "
-                f"{first.citing_case} ({first.citing_date or 'date unknown'})"
+                f"{first.citing_case} ({first.citing_date or 'date unknown'}); "
+                "invalidator status valid"
             ),
             history_complete=not incomplete,
+            invalidator_checks=tuple(invalidator_checks),
+        )
+    if invalidator_checks:
+        first_check = invalidator_checks[0]
+        return _SourceAudit(
+            source_cluster_id=source_target.cluster_id,
+            metadata=metadata,
+            validity_status="unverified",
+            reason=(
+                "source-history invalidation was not established: "
+                f"{first_check.citing_case or 'later opinion'} was not "
+                f"accepted ({first_check.reason})"
+            ),
+            history_complete=False,
+            invalidator_checks=tuple(invalidator_checks),
         )
     if gated_invalidating:
         first = gated_invalidating[0]
@@ -2147,9 +2244,10 @@ def _source_audit(
     source_id: int,
     as_of_date: str,
     cache: _SourceValidationCache,
+    depth: int = 0,
 ) -> _SourceAudit:
     """Return a cached source audit, fetching current metadata and history once."""
-    key = (source_id, as_of_date)
+    key = (source_id, as_of_date, depth)
     if key in cache.audits:
         return cache.audits[key]
     metadata = _source_metadata(provider, source_id)
@@ -2192,7 +2290,9 @@ def _source_audit(
         )
         cache.audits[key] = audit
         return audit
-    audit = _source_history_audit(provider, source_target, metadata, as_of_date)
+    audit = _source_history_audit(
+        provider, source_target, metadata, as_of_date, cache, depth
+    )
     cache.audits[key] = audit
     return audit
 
@@ -2242,6 +2342,7 @@ def _apply_source_audit(
         precedence == "authoritative" and status in {"valid", "invalid", "qualified"}
     )
     signal.history_complete = audit.history_complete
+    signal.invalidator_checks = list(audit.invalidator_checks)
     signal.checked_at = _checked_at()
 
 
