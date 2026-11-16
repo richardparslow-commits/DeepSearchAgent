@@ -6,13 +6,18 @@ from va_legal_agent.adjudication import build_adjudication_queue
 from va_legal_agent.authority_queue import apply_citator_findings
 from va_legal_agent.citator import (
     _SourceAudit,
+    _SourceCandidateObservation,
     _SourceValidationCache,
     _apply_source_validity_enforcement,
     _source_invalidator_check,
+    _source_invalidator_checks,
     _validate_source_validity,
     check_case,
 )
 from va_legal_agent.models import (
+    SOURCE_INVALIDATOR_REASON_CODES,
+    SOURCE_INVALIDATOR_REVIEW_STATUSES,
+    SOURCE_VALIDITY_REASON_CODES,
     CaseRecord,
     CitatorCheck,
     LegalAnalysis,
@@ -135,6 +140,7 @@ class SourceProvider:
             SOURCE_ID: "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
         }
         self.metadata_errors: dict[int, SearchError] = {}
+        self.text_errors: dict[int, SearchError] = {}
         self.metadata_calls: list[int] = []
         self.text_calls: list[int] = []
         self.edge_calls: list[tuple[int, int, str | None]] = []
@@ -159,6 +165,8 @@ class SourceProvider:
 
     def fetch_opinion_text(self, opinion_id: int):
         self.text_calls.append(opinion_id)
+        if opinion_id in self.text_errors:
+            raise self.text_errors[opinion_id]
         return self.texts.get(opinion_id, "")
 
 
@@ -332,13 +340,19 @@ def test_advisory_invalid_source_exposes_accepted_invalidator_check():
 
     signal = check.source_validity[0]
     assert signal.status == "invalid"
+    assert signal.reason_code == "source_invalidator_accepted_full"
     assert len(signal.invalidator_checks) == 1
     invalidator = signal.invalidator_checks[0]
     assert invalidator.source_opinion_id == str(HISTORY_ID)
+    assert invalidator.source_cluster_id == "999"
     assert invalidator.citing_case == "Later v. Secretary"
+    assert invalidator.citing_url.endswith(f"/opinion/{HISTORY_ID}/")
+    assert invalidator.review_status == "reviewed"
+    assert invalidator.authoritative is True
     assert invalidator.binding is True
     assert invalidator.invalidator_status == "valid"
     assert invalidator.accepted is True
+    assert invalidator.reason_code == "invalidator_accepted"
     assert "valid" in invalidator.reason
 
 
@@ -350,11 +364,14 @@ def test_advisory_lower_court_invalidator_is_unverified_without_audit():
 
     signal = check.source_validity[0]
     assert signal.status == "unverified"
+    assert signal.reason_code == "source_invalidator_rejected"
     assert signal.history_complete is False
     invalidator = signal.invalidator_checks[0]
+    assert invalidator.review_status == "reviewed"
     assert invalidator.binding is False
     assert invalidator.invalidator_status == "not_checked"
     assert invalidator.accepted is False
+    assert invalidator.reason_code == "invalidator_authority_lower"
     assert "lower" in invalidator.reason
     assert (HISTORY_ID, 100, None) not in provider.edge_calls
 
@@ -370,6 +387,7 @@ def test_advisory_unknown_authority_invalidator_is_unverified():
     invalidator = signal.invalidator_checks[0]
     assert invalidator.binding is None
     assert invalidator.accepted is False
+    assert invalidator.reason_code == "invalidator_authority_unknown"
     assert "unknown" in invalidator.reason
 
 
@@ -386,6 +404,7 @@ def test_advisory_ambiguous_invalidator_is_unverified():
     invalidator = signal.invalidator_checks[0]
     assert invalidator.invalidator_status == "not_checked"
     assert invalidator.accepted is False
+    assert invalidator.reason_code == "invalidator_attribution_ambiguous"
     assert "ambiguous" in invalidator.reason
 
 
@@ -422,6 +441,7 @@ def test_source_invalidator_missing_id_is_rejected_before_lookup():
 
     assert check.invalidator_status == "unverified"
     assert check.accepted is False
+    assert check.reason_code == "invalidator_missing_id"
     assert "missing" in check.reason
 
 
@@ -436,6 +456,7 @@ def test_advisory_nested_invalidator_is_unverified_at_depth_limit():
     invalidator = signal.invalidator_checks[0]
     assert invalidator.invalidator_status == "unverified"
     assert invalidator.accepted is False
+    assert invalidator.reason_code == "invalidator_depth_exceeded"
     assert "depth limit" in signal.reason
     assert (SECOND_HISTORY_ID, 100, None) not in provider.edge_calls
 
@@ -457,6 +478,7 @@ def test_advisory_cached_invalid_or_qualified_invalidator_is_rejected():
         assert signal.status == "unverified"
         assert signal.invalidator_checks[0].invalidator_status == status
         assert signal.invalidator_checks[0].accepted is False
+        assert signal.invalidator_checks[0].reason_code == f"invalidator_{status}"
         assert status in signal.invalidator_checks[0].reason
 
 
@@ -476,6 +498,7 @@ def test_advisory_invalidator_metadata_failure_is_unverified():
     signal = check.source_validity[0]
     assert signal.status == "unverified"
     assert signal.invalidator_checks[0].invalidator_status == "unverified"
+    assert signal.invalidator_checks[0].reason_code == "invalidator_unverified"
     assert "metadata unavailable" in signal.invalidator_checks[0].reason
 
 
@@ -538,21 +561,30 @@ def test_advisory_invalidator_cache_reuses_depth_one_audit():
 def test_source_invalidator_checks_round_trip_through_json():
     signal = SourceValiditySignal(
         source_opinion_id="201",
+        source_cluster_id="888",
+        status="invalid",
+        reason_code="source_invalidator_accepted_full",
         invalidator_checks=[
             SourceInvalidatorCheck(
                 source_opinion_id="301",
+                source_cluster_id="999",
                 citing_case="Later v. Secretary",
+                citing_url="https://www.courtlistener.com/opinion/301/",
+                review_status="reviewed",
                 treatment="overruled",
                 scope="all",
+                authoritative=True,
+                gate_reason="",
                 binding=True,
                 invalidator_status="valid",
                 accepted=True,
+                reason_code="invalidator_accepted",
                 reason="invalidator's own bounded status is valid",
             )
         ],
     )
 
-    restored = SourceValiditySignal.model_validate(signal.model_dump())
+    restored = SourceValiditySignal.model_validate_json(signal.model_dump_json())
 
     assert restored == signal
 
@@ -599,6 +631,7 @@ def test_advisory_nonprecedential_source_is_precedence_defect():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     assert check.source_validity[0].status == "precedence_defect"
+    assert check.source_validity[0].reason_code == "source_precedence_defect"
     assert check.source_validity[0].precedence == "nonprecedential"
     assert check.source_validity[0].withheld is True
     assert check.status == "negative"
@@ -613,6 +646,7 @@ def test_advisory_lower_court_source_is_precedence_defect():
     )
 
     assert check.source_validity[0].status == "precedence_defect"
+    assert check.source_validity[0].reason_code == "source_precedence_defect"
     assert check.source_validity[0].precedence == "persuasive"
     assert check.source_validity[0].withheld is True
     assert "withheld from enforcement" in check.source_validity[0].reason
@@ -663,6 +697,7 @@ def test_advisory_unknown_court_is_unverified():
 
     assert check.source_validity[0].status == "unverified"
     assert check.source_validity[0].precedence == "unverified"
+    assert check.source_validity[0].reason_code == "source_precedence_unverified"
     assert check.source_validity[0].withheld is True
 
 
@@ -713,6 +748,7 @@ def test_advisory_unknown_role_and_status_are_unverified():
 
     assert check.source_validity[0].status == "unverified"
     assert check.source_validity[0].precedence == "unverified"
+    assert check.source_validity[0].reason_code == "source_precedence_gate_failed"
 
 
 def test_advisory_missing_status_is_unverified():
@@ -724,6 +760,7 @@ def test_advisory_missing_status_is_unverified():
 
     assert check.source_validity[0].status == "unverified"
     assert check.source_validity[0].precedence == "unverified"
+    assert check.source_validity[0].reason_code == "source_precedence_gate_failed"
 
 
 def test_advisory_partial_source_history_is_qualified():
@@ -739,6 +776,7 @@ def test_advisory_partial_source_history_is_qualified():
     )
 
     assert check.source_validity[0].status == "qualified"
+    assert check.source_validity[0].reason_code == "source_invalidator_accepted_partial"
     assert check.source_validity[0].withheld is False
     assert "only in part" in check.source_validity[0].reason
     assert check.source_validity[0].invalidator_checks[0].accepted is True
@@ -753,7 +791,14 @@ def test_advisory_incomplete_source_history_is_unverified():
     )
 
     assert check.source_validity[0].status == "unverified"
+    assert check.source_validity[0].reason_code == "source_history_incomplete"
     assert check.source_validity[0].history_complete is False
+    assert check.source_validity[0].invalidator_checks[0].review_status == (
+        "metadata_unavailable"
+    )
+    assert check.source_validity[0].invalidator_checks[0].reason_code == (
+        "citing_metadata_unavailable"
+    )
 
 
 def test_advisory_gated_source_history_is_unverified():
@@ -768,8 +813,16 @@ def test_advisory_gated_source_history_is_unverified():
         _case(), provider, source_validity=True, source_validity_mode="advisory"
     )
 
-    assert check.source_validity[0].status == "unverified"
-    assert "gated source-history" in check.source_validity[0].reason
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_invalidator_gated"
+    assert "gated source-history" in signal.reason
+    invalidator = signal.invalidator_checks[0]
+    assert invalidator.review_status == "gated"
+    assert invalidator.reason_code == "invalidator_gated"
+    assert invalidator.authoritative is False
+    assert invalidator.treatment == "overruled"
+    assert invalidator.gate_reason
 
 
 def test_advisory_metadata_failure_is_unverified():
@@ -780,6 +833,7 @@ def test_advisory_metadata_failure_is_unverified():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     assert check.source_validity[0].status == "unverified"
+    assert check.source_validity[0].reason_code == "source_metadata_unavailable"
     assert check.source_validity[0].withheld is True
     assert check.source_validity[0].reason == "source metadata unavailable"
 
@@ -792,6 +846,7 @@ def test_advisory_source_cluster_mismatch_is_unverified():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     assert check.source_validity[0].status == "unverified"
+    assert check.source_validity[0].reason_code == "source_cluster_mismatch"
     assert check.source_validity[0].withheld is True
     assert "cluster id" in check.source_validity[0].reason
 
@@ -853,9 +908,13 @@ def test_advisory_as_of_excludes_post_cutoff_source_history():
 
     _validate_source_validity(provider, check, _SourceValidationCache())
 
-    assert check.source_validity[0].status == "valid"
-    assert check.source_validity[0].withheld is False
-    assert check.source_validity[0].history_complete is True
+    signal = check.source_validity[0]
+    assert signal.status == "valid"
+    assert signal.reason_code == "source_no_invalidating_treatment"
+    assert signal.withheld is False
+    assert signal.history_complete is True
+    assert signal.invalidator_checks[0].review_status == "out_of_scope"
+    assert signal.invalidator_checks[0].reason_code == "post_as_of"
     assert check.status == "negative"
     assert HISTORY_ID not in provider.text_calls
 
@@ -906,9 +965,13 @@ def test_advisory_as_of_undated_history_is_unverified():
 
     _validate_source_validity(provider, check, _SourceValidationCache())
 
-    assert check.source_validity[0].status == "unverified"
-    assert check.source_validity[0].withheld is True
-    assert check.source_validity[0].history_complete is False
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_as_of_undated"
+    assert signal.withheld is True
+    assert signal.history_complete is False
+    assert signal.invalidator_checks[0].review_status == "out_of_scope"
+    assert signal.invalidator_checks[0].reason_code == "undated_as_of"
 
 
 def test_advisory_unresolved_source_cluster_is_unverified():
@@ -921,6 +984,7 @@ def test_advisory_unresolved_source_cluster_is_unverified():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     assert check.source_validity[0].status == "unverified"
+    assert check.source_validity[0].reason_code == "source_cluster_unresolved"
     assert check.source_validity[0].withheld is True
     assert "cluster could not be resolved" in check.source_validity[0].reason
 
@@ -1531,3 +1595,236 @@ def test_enforce_mode_without_source_validity_does_nothing():
     assert check.source_validity == []
     assert check.source_validity_enforced is False
     assert check.source_validity_actions == []
+
+
+def _assert_audit_vocabulary(signal: SourceValiditySignal) -> None:
+    assert signal.reason_code in SOURCE_VALIDITY_REASON_CODES
+    for invalidator in signal.invalidator_checks:
+        assert invalidator.review_status in SOURCE_INVALIDATOR_REVIEW_STATUSES
+        assert invalidator.reason_code in SOURCE_INVALIDATOR_REASON_CODES
+
+
+def test_source_candidate_metadata_fetch_failure_is_audited():
+    provider = _provider()
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata_errors[HISTORY_ID] = SearchError("metadata rejected")
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_history_incomplete"
+    assert len(signal.invalidator_checks) == 1
+    invalidator = signal.invalidator_checks[0]
+    assert invalidator.source_opinion_id == str(HISTORY_ID)
+    assert invalidator.review_status == "metadata_failed"
+    assert invalidator.reason_code == "citing_metadata_fetch_failed"
+    assert invalidator.treatment == ""
+    assert invalidator.authoritative is None
+    _assert_audit_vocabulary(signal)
+
+
+def test_source_candidate_text_failures_are_audited():
+    cases = [
+        ("text_failed", "citing_text_fetch_failed", True),
+        ("text_empty", "citing_text_empty", False),
+    ]
+    for review_status, reason_code, fetch_error in cases:
+        provider = _history_provider(text="")
+        if fetch_error:
+            provider.text_errors[HISTORY_ID] = SearchError("text rejected")
+        check = _check()
+
+        _validate_source_validity(provider, check, _SourceValidationCache())
+
+        signal = check.source_validity[0]
+        assert signal.status == "unverified"
+        assert signal.reason_code == "source_history_incomplete"
+        invalidator = signal.invalidator_checks[0]
+        assert invalidator.review_status == review_status
+        assert invalidator.reason_code == reason_code
+        assert invalidator.authoritative is None
+        _assert_audit_vocabulary(signal)
+
+
+def test_source_candidate_target_not_located_is_audited():
+    provider = _history_provider(
+        text="This opinion discusses a different decision entirely."
+    )
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_history_incomplete"
+    invalidator = signal.invalidator_checks[0]
+    assert invalidator.review_status == "target_not_located"
+    assert invalidator.reason_code == "target_not_located"
+    assert invalidator.authoritative is None
+    _assert_audit_vocabulary(signal)
+
+
+def _cap_provider() -> SourceProvider:
+    provider = _provider()
+    ids = [HISTORY_ID, SECOND_HISTORY_ID, 501, 601]
+    provider.opinion_pages[(SOURCE_ID, None)] = _page(ids)
+    dates = ["2024-04-01", "2023-04-01", "2022-04-01", "2021-04-01"]
+    for opinion_id, decision_date in zip(ids, dates, strict=True):
+        provider.metadata[opinion_id] = _history_meta(
+            opinion_id=opinion_id,
+            title=f"Later {opinion_id} v. Secretary",
+            citation=f"{opinion_id} Vet.App. 1",
+            cluster_id=str(opinion_id + 1000),
+            decision_date=decision_date,
+        )
+        provider.texts[opinion_id] = (
+            "The court overruled Jones v. McDonough, 31 Vet.App. 456."
+        )
+    return provider
+
+
+def test_source_candidate_cap_records_unreviewed_candidates():
+    provider = _cap_provider()
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "invalid"
+    assert signal.reason_code == "source_invalidator_accepted_full"
+    assert signal.history_complete is False
+    assert [item.source_opinion_id for item in signal.invalidator_checks] == [
+        "301",
+        "401",
+        "501",
+        "601",
+    ]
+    assert [
+        item.review_status for item in signal.invalidator_checks
+    ] == ["reviewed", "reviewed", "reviewed", "unreviewed"]
+    unreviewed = signal.invalidator_checks[-1]
+    assert unreviewed.reason_code == "citing_opinion_cap"
+    assert unreviewed.treatment == ""
+    assert 601 not in provider.text_calls
+    _assert_audit_vocabulary(signal)
+
+
+def test_source_candidate_check_uses_finding_identity_when_present():
+    observation = _SourceCandidateObservation(
+        opinion_id=HISTORY_ID,
+        metadata=_history_meta(),
+        review_status="reviewed",
+        reason_code="not_checked",
+        reason="",
+        finding=NegativeTreatment(
+            citing_case="Later v. Secretary",
+            source_opinion_id="",
+            treatment="overruled",
+            scope="all",
+            binding=True,
+            excerpt="The court overruled Jones v. McDonough.",
+        ),
+    )
+
+    checks = _source_invalidator_checks(
+        _provider(), [observation], "", _SourceValidationCache(), 0
+    )
+
+    assert checks[0].source_opinion_id == ""
+    assert checks[0].reason_code == "invalidator_missing_id"
+    assert checks[0].review_status == "reviewed"
+
+
+def test_source_invalidator_checks_deduplicate_identical_observations():
+    observation = _SourceCandidateObservation(
+        opinion_id=HISTORY_ID,
+        metadata=_history_meta(),
+        review_status="metadata_unavailable",
+        reason_code="citing_metadata_unavailable",
+        reason="metadata unavailable",
+    )
+
+    checks = _source_invalidator_checks(
+        _provider(), [observation, observation], "", _SourceValidationCache(), 0
+    )
+
+    assert len(checks) == 1
+    assert checks[0].review_status == "metadata_unavailable"
+
+
+def test_source_reviewed_noninvalidating_finding_is_not_audited():
+    provider = _history_provider(
+        text="The court criticized Jones v. McDonough, 31 Vet.App. 456."
+    )
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "valid"
+    assert signal.reason_code == "source_no_invalidating_treatment"
+    assert signal.invalidator_checks == []
+
+
+def test_source_clean_reviewed_candidate_is_not_an_invalidator_candidate():
+    provider = _history_provider(
+        text="The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    )
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "valid"
+    assert signal.reason_code == "source_no_invalidating_treatment"
+    assert signal.invalidator_checks == []
+
+
+def test_source_rejected_candidate_precedes_gated_candidate():
+    provider = _history_provider(court=COURT_BVA)
+    provider.opinion_pages[(SECOND_HISTORY_ID, None)] = _page([])
+    provider.opinion_pages[(SOURCE_ID, None)] = _page(
+        [HISTORY_ID, SECOND_HISTORY_ID]
+    )
+    provider.metadata[SECOND_HISTORY_ID] = _history_meta(
+        opinion_id=SECOND_HISTORY_ID,
+        title="Dissent v. Secretary",
+        citation="33 Vet.App. 2",
+        cluster_id="1000",
+        opinion_type="040dissent",
+        decision_date="2023-01-01",
+    )
+    provider.texts[SECOND_HISTORY_ID] = (
+        "The dissent would overrule Jones v. McDonough, 31 Vet.App. 456."
+    )
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_invalidator_rejected"
+    statuses = {
+        item.source_opinion_id: item.review_status
+        for item in signal.invalidator_checks
+    }
+    assert statuses == {"301": "reviewed", "401": "gated"}
+    _assert_audit_vocabulary(signal)
+
+
+def test_source_gated_candidate_keeps_gated_status_with_as_of():
+    provider = _history_provider(
+        text="The dissent would overrule Jones v. McDonough, 31 Vet.App. 456."
+    )
+    provider.metadata[HISTORY_ID]["opinion_type"] = "040dissent"
+    check = _check().model_copy(update={"as_of_date": "2023-01-01"})
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    signal = check.source_validity[0]
+    assert signal.status == "unverified"
+    assert signal.reason_code == "source_invalidator_gated"
+    assert len(signal.invalidator_checks) == 1
+    assert signal.invalidator_checks[0].review_status == "gated"

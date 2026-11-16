@@ -653,10 +653,25 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                 lines.append(
                     f"  - source opinion {signal.source_opinion_id or 'unknown'}; "
                     f"cluster {signal.source_cluster_id or 'unknown'}; "
-                    f"status {signal.status}{withheld}{detail}"
+                    f"status {signal.status}; code {signal.reason_code}"
+                    f"{withheld}{detail}"
                 )
                 for invalidator in signal.invalidator_checks:
-                    verdict = "accepted" if invalidator.accepted else "rejected"
+                    if invalidator.accepted:
+                        verdict = "accepted"
+                    elif invalidator.review_status in {
+                        "gated",
+                        "unreviewed",
+                        "metadata_failed",
+                        "metadata_unavailable",
+                        "text_failed",
+                        "text_empty",
+                        "target_not_located",
+                        "out_of_scope",
+                    }:
+                        verdict = invalidator.review_status.replace("_", " ")
+                    else:
+                        verdict = "rejected"
                     if invalidator.binding is True:
                         binding = "binding"
                     elif invalidator.binding is False:
@@ -666,8 +681,10 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                     lines.append(
                         f"    invalidator {invalidator.source_opinion_id or 'unknown'} "
                         f"({invalidator.citing_case or 'case unknown'}); "
-                        f"{verdict}; {binding}; invalidator status "
-                        f"{invalidator.invalidator_status}; {invalidator.reason}"
+                        f"{verdict}; {binding}; review "
+                        f"{invalidator.review_status}; invalidator status "
+                        f"{invalidator.invalidator_status}; "
+                        f"code {invalidator.reason_code}; {invalidator.reason}"
                     )
             if check.source_validity_actions:
                 lines.append("  Source-validity enforcement actions:")

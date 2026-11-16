@@ -34,6 +34,7 @@ reads. Every unread candidate or page remains an explicit coverage gap.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from urllib.parse import parse_qs, urlsplit
@@ -365,6 +366,18 @@ class _CitingCandidate:
 
 
 @dataclass(frozen=True)
+class _SourceCandidateObservation:
+    """Source-history candidate outcome collected while reviewing citations."""
+
+    opinion_id: int
+    metadata: dict[str, object] | None
+    review_status: str
+    reason_code: str
+    reason: str
+    finding: NegativeTreatment | None = None
+
+
+@dataclass(frozen=True)
 class _SourceAudit:
     """Raw, target-independent result of one source-history review."""
 
@@ -372,6 +385,7 @@ class _SourceAudit:
     metadata: dict[str, object] | None = None
     validity_status: str = "unverified"
     reason: str = ""
+    reason_code: str = "not_assessed"
     history_complete: bool = False
     invalidator_checks: tuple[SourceInvalidatorCheck, ...] = ()
 
@@ -1639,7 +1653,10 @@ def _batch_citing_metadata(
 
 
 def _load_citing_candidates(
-    provider: CourtListenerProvider, citing_ids: list[int]
+    provider: CourtListenerProvider,
+    citing_ids: list[int],
+    *,
+    observer: Callable[[_SourceCandidateObservation], None] | None = None,
 ) -> tuple[list[_CitingCandidate], list[str], list[CitatorCoverageGap]]:
     """Fetch ranking metadata once, then order candidates for a capped review.
 
@@ -1668,6 +1685,16 @@ def _load_citing_candidates(
                 gaps.append(
                     _coverage_gap("citing_metadata_fetch_failed", detail)
                 )
+                if observer is not None:
+                    observer(
+                        _SourceCandidateObservation(
+                            opinion_id=opinion_id,
+                            metadata=None,
+                            review_status="metadata_failed",
+                            reason_code="citing_metadata_fetch_failed",
+                            reason=detail,
+                        )
+                    )
                 continue
         if not metadata:
             detail = (
@@ -1676,6 +1703,16 @@ def _load_citing_candidates(
             )
             flags.append(detail)
             gaps.append(_coverage_gap("citing_metadata_unavailable", detail))
+            if observer is not None:
+                observer(
+                    _SourceCandidateObservation(
+                        opinion_id=opinion_id,
+                        metadata=None,
+                        review_status="metadata_unavailable",
+                        reason_code="citing_metadata_unavailable",
+                        reason=detail,
+                    )
+                )
             continue
         citing_court = str(metadata.get("court") or "")
         candidates.append(
@@ -1733,6 +1770,7 @@ def _review_candidates(
     *,
     source_ids: list[int],
     total_citing: int,
+    observer: Callable[[_SourceCandidateObservation], None] | None = None,
 ) -> tuple[
     list[NegativeTreatment],
     list[NegativeTreatment],
@@ -1754,8 +1792,23 @@ def _review_candidates(
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
     short_names = _target_short_names(target.case_name)
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
         if reviewed >= max_citing:
+            if observer is not None:
+                for remaining in candidates[index:]:
+                    detail = (
+                        f"Source-history candidate {remaining.opinion_id} was "
+                        "not reviewed because the review cap was reached."
+                    )
+                    observer(
+                        _SourceCandidateObservation(
+                            opinion_id=remaining.opinion_id,
+                            metadata=remaining.metadata,
+                            review_status="unreviewed",
+                            reason_code="citing_opinion_cap",
+                            reason=detail,
+                        )
+                    )
             break
         opinion_id = candidate.opinion_id
         metadata = candidate.metadata
@@ -1767,11 +1820,31 @@ def _review_candidates(
             )
             flags.append(detail)
             gaps.append(_coverage_gap("citing_text_fetch_failed", detail))
+            if observer is not None:
+                observer(
+                    _SourceCandidateObservation(
+                        opinion_id=opinion_id,
+                        metadata=metadata,
+                        review_status="text_failed",
+                        reason_code="citing_text_fetch_failed",
+                        reason=detail,
+                    )
+                )
             continue
         if not text.strip():
             detail = f"Citator text was empty for citing opinion {opinion_id}."
             flags.append(detail)
             gaps.append(_coverage_gap("citing_text_empty", detail))
+            if observer is not None:
+                observer(
+                    _SourceCandidateObservation(
+                        opinion_id=opinion_id,
+                        metadata=metadata,
+                        review_status="text_empty",
+                        reason_code="citing_text_empty",
+                        reason=detail,
+                    )
+                )
             continue
         if not _target_spans(
             text, target.case_name, target.citations, short_names
@@ -1782,6 +1855,16 @@ def _review_candidates(
             )
             flags.append(detail)
             gaps.append(_coverage_gap("target_not_located", detail))
+            if observer is not None:
+                observer(
+                    _SourceCandidateObservation(
+                        opinion_id=opinion_id,
+                        metadata=metadata,
+                        review_status="target_not_located",
+                        reason_code="target_not_located",
+                        reason=detail,
+                    )
+                )
             continue
         reviewed += 1
         summary = _citing_summary(opinion_id, metadata)
@@ -1837,6 +1920,19 @@ def _review_candidates(
                 treatments.append(item)
             else:
                 gated.append(item)
+            if observer is not None:
+                observer(
+                    _SourceCandidateObservation(
+                        opinion_id=opinion_id,
+                        metadata=metadata,
+                        review_status="reviewed" if eligible else "gated",
+                        reason_code=(
+                            "not_checked" if eligible else "invalidator_gated"
+                        ),
+                        reason=(gate_reason if not eligible else ""),
+                        finding=item,
+                    )
+                )
             timeline.append(_timeline_entry("negative", item))
         for finding in extract_reaffirmance_signals(
             text,
@@ -1999,12 +2095,67 @@ def _source_precedence(
     return "unverified", "source court relationship is unknown"
 
 
+def _source_candidate_check(
+    observation: _SourceCandidateObservation,
+) -> SourceInvalidatorCheck:
+    """Build the public audit record for one candidate observation."""
+    finding = observation.finding
+    metadata = observation.metadata or {}
+    return SourceInvalidatorCheck(
+        source_opinion_id=(
+            finding.source_opinion_id
+            if finding is not None
+            else str(observation.opinion_id or "")
+        ),
+        source_cluster_id=(
+            finding.source_cluster_id
+            if finding is not None
+            else str(metadata.get("cluster_id") or "")
+        ),
+        citing_case=(
+            finding.citing_case
+            if finding is not None
+            else str(metadata.get("title") or "")
+        ),
+        citing_citation=(
+            finding.citing_citation
+            if finding is not None
+            else str(metadata.get("citation") or "")
+        ),
+        citing_court=(
+            finding.citing_court
+            if finding is not None
+            else str(metadata.get("court") or "")
+        ),
+        citing_date=(
+            finding.citing_date
+            if finding is not None
+            else str(metadata.get("decision_date") or "")
+        ),
+        citing_url=(
+            finding.citing_url
+            if finding is not None
+            else str(metadata.get("url") or "")
+        ),
+        review_status=observation.review_status,
+        treatment=finding.treatment if finding is not None else "",
+        scope=finding.scope if finding is not None else "",
+        authoritative=finding.authoritative if finding is not None else None,
+        gate_reason=finding.gate_reason if finding is not None else "",
+        binding=finding.binding if finding is not None else None,
+        reason_code=observation.reason_code,
+        reason=observation.reason,
+    )
+
+
 def _source_invalidator_check(
     provider: CourtListenerProvider,
     finding: NegativeTreatment,
     as_of_date: str,
     cache: _SourceValidationCache,
     depth: int,
+    *,
+    check: SourceInvalidatorCheck | None = None,
 ) -> SourceInvalidatorCheck:
     """Check whether one later finding may invalidate the source.
 
@@ -2014,32 +2165,42 @@ def _source_invalidator_check(
     nonbinding, ambiguous, missing, or unresolved candidate is rejected; if no
     candidate is accepted, the source is unverified.
     """
-    check = SourceInvalidatorCheck(
-        source_opinion_id=finding.source_opinion_id,
-        citing_case=finding.citing_case,
-        citing_citation=finding.citing_citation,
-        citing_court=finding.citing_court,
-        citing_date=finding.citing_date,
-        treatment=finding.treatment,
-        scope=finding.scope,
-        binding=finding.binding,
-    )
+    if check is None:
+        check = SourceInvalidatorCheck(
+            source_opinion_id=finding.source_opinion_id,
+            source_cluster_id=finding.source_cluster_id,
+            citing_case=finding.citing_case,
+            citing_citation=finding.citing_citation,
+            citing_court=finding.citing_court,
+            citing_date=finding.citing_date,
+            citing_url=finding.citing_url,
+            treatment=finding.treatment,
+            scope=finding.scope,
+            authoritative=finding.authoritative,
+            gate_reason=finding.gate_reason,
+            binding=finding.binding,
+        )
     if finding.binding is False:
+        check.reason_code = "invalidator_authority_lower"
         check.reason = "invalidator court is lower than the source court"
         return check
     if finding.binding is None:
+        check.reason_code = "invalidator_authority_unknown"
         check.reason = "invalidator court relationship to the source is unknown"
         return check
     if finding.attribution_ambiguous:
+        check.reason_code = "invalidator_attribution_ambiguous"
         check.reason = "invalidator finding has ambiguous attribution"
         return check
     invalidator_id = _positive_id(finding.source_opinion_id)
     if invalidator_id is None:
         check.invalidator_status = "unverified"
+        check.reason_code = "invalidator_missing_id"
         check.reason = "invalidator opinion id is missing or unusable"
         return check
     if depth >= _SOURCE_INVALIDATOR_MAX_DEPTH:
         check.invalidator_status = "unverified"
+        check.reason_code = "invalidator_depth_exceeded"
         check.reason = (
             "invalidator status was not checked because the verification "
             "depth limit was reached"
@@ -2051,11 +2212,84 @@ def _source_invalidator_check(
     check.invalidator_status = audit.validity_status
     if audit.validity_status == "valid" and audit.history_complete:
         check.accepted = True
+        check.reason_code = "invalidator_accepted"
         check.reason = "invalidator's own bounded status is valid"
     else:
+        if audit.validity_status == "invalid":
+            check.reason_code = "invalidator_invalid"
+        elif audit.validity_status == "qualified":
+            check.reason_code = "invalidator_qualified"
+        elif any(
+            item.reason_code == "invalidator_depth_exceeded"
+            for item in audit.invalidator_checks
+        ):
+            check.reason_code = "invalidator_depth_exceeded"
+        else:
+            check.reason_code = "invalidator_unverified"
         detail = audit.reason or "invalidator's own status is not valid"
         check.reason = f"invalidator status {audit.validity_status}: {detail}"
     return check
+
+
+def _source_invalidator_checks(
+    provider: CourtListenerProvider,
+    observations: list[_SourceCandidateObservation],
+    as_of_date: str,
+    cache: _SourceValidationCache,
+    depth: int,
+) -> list[SourceInvalidatorCheck]:
+    """Turn candidate observations into deterministic public audit records."""
+    checks: list[SourceInvalidatorCheck] = []
+    for observation in observations:
+        finding = observation.finding
+        if finding is None:
+            checks.append(_source_candidate_check(observation))
+            continue
+        if finding.treatment not in _SOURCE_INVALIDATING_TREATMENTS:
+            continue
+        check = _source_candidate_check(observation)
+        if not finding.authoritative:
+            check.review_status = "gated"
+            check.reason_code = "invalidator_gated"
+            check.reason = finding.gate_reason or "invalidator finding was gated"
+            checks.append(check)
+            continue
+        checks.append(
+            _source_invalidator_check(
+                provider,
+                finding,
+                as_of_date,
+                cache,
+                depth,
+                check=check,
+            )
+        )
+    unique: list[SourceInvalidatorCheck] = []
+    seen: set[tuple[str, str, str, str, str]] = set()
+    for check in checks:
+        key = (
+            check.source_opinion_id,
+            check.review_status,
+            check.treatment,
+            check.scope,
+            check.reason_code,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(check)
+    # Newest candidates first; undated/failed candidates sort last. The second
+    # stable sort keeps identity order deterministic within a date.
+    unique.sort(
+        key=lambda check: (
+            check.source_opinion_id,
+            check.treatment,
+            check.scope,
+            check.review_status,
+        )
+    )
+    unique.sort(key=lambda check: check.citing_date, reverse=True)
+    return unique
 
 
 def _source_history_audit(
@@ -2083,33 +2317,56 @@ def _source_history_audit(
         page_size=max_ids,
         max_ids=max_ids,
     )
+    observations: list[_SourceCandidateObservation] = []
     candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
-        provider, citing_ids
+        provider, citing_ids, observer=observations.append
     )
+    undated_as_of = False
     # Policy: as-of source validation stops at the cutoff. Only source-history
     # candidates dated on or before the cutoff can invalidate or qualify the
-    # source. Later candidates are ignored; undated candidates make the as-of
-    # review incomplete rather than being treated as in scope.
+    # source. Later candidates are retained as out-of-scope audit records;
+    # undated candidates make the as-of review incomplete.
     if as_of_date:
         cutoff = date.fromisoformat(as_of_date)
         scoped: list[_CitingCandidate] = []
-        undated = False
         for candidate in candidates:
             relation = _candidate_date_relation(candidate.decision_date, cutoff)
             if relation == "in_scope":
                 scoped.append(candidate)
             elif relation == "undated":
-                undated = True
+                undated_as_of = True
+                observations.append(
+                    _SourceCandidateObservation(
+                        opinion_id=candidate.opinion_id,
+                        metadata=candidate.metadata,
+                        review_status="out_of_scope",
+                        reason_code="undated_as_of",
+                        reason=(
+                            "source-history candidate has no usable decision "
+                            "date for the as-of cutoff"
+                        ),
+                    )
+                )
+            else:
+                observations.append(
+                    _SourceCandidateObservation(
+                        opinion_id=candidate.opinion_id,
+                        metadata=candidate.metadata,
+                        review_status="out_of_scope",
+                        reason_code="post_as_of",
+                        reason="source-history candidate is after the as-of cutoff",
+                    )
+                )
         candidates = scoped
-        if undated:
+        if undated_as_of:
             candidate_flags.append(
                 "Source-history candidate had no usable decision date; "
                 "as-of source validation is incomplete."
             )
     scope_ids = [candidate.opinion_id for candidate in candidates]
     (
-        treatments,
-        gated,
+        _treatments,
+        _gated,
         _later_citing,
         reviewed,
         _latest,
@@ -2124,6 +2381,7 @@ def _source_history_audit(
         _SOURCE_HISTORY_MAX_CITING,
         source_ids=scope_ids,
         total_citing=len(scope_ids),
+        observer=observations.append,
     )
     incomplete = (
         not edges_complete
@@ -2137,63 +2395,65 @@ def _source_history_audit(
         )
         or reviewed < len(scope_ids)
     )
-    invalidating_findings = [
-        finding
-        for finding in treatments
-        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+    invalidator_checks = _source_invalidator_checks(
+        provider, observations, as_of_date, cache, depth
+    )
+    authoritative_checks = [
+        check
+        for check in invalidator_checks
+        if check.review_status == "reviewed"
+        and check.treatment in _SOURCE_INVALIDATING_TREATMENTS
     ]
-    gated_invalidating = [
-        finding
-        for finding in gated
-        if finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+    accepted_checks = [check for check in authoritative_checks if check.accepted]
+    rejected_checks = [
+        check for check in authoritative_checks if not check.accepted
     ]
-    invalidator_checks: list[SourceInvalidatorCheck] = []
-    accepted_findings: list[NegativeTreatment] = []
-    for finding in invalidating_findings:
-        check = _source_invalidator_check(
-            provider, finding, as_of_date, cache, depth
-        )
-        invalidator_checks.append(check)
-        if check.accepted:
-            accepted_findings.append(finding)
+    gated_checks = [
+        check
+        for check in invalidator_checks
+        if check.review_status == "gated"
+        and check.treatment in _SOURCE_INVALIDATING_TREATMENTS
+    ]
     full_invalidator = next(
-        (finding for finding in accepted_findings if finding.scope == "all"),
+        (check for check in accepted_checks if check.scope == "all"),
         None,
     )
     if full_invalidator:
-        first = full_invalidator
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
             validity_status="invalid",
             reason=(
-                f"source was {first.treatment} by {first.citing_case} "
-                f"({first.citing_date or 'date unknown'}); "
+                f"source was {full_invalidator.treatment} by "
+                f"{full_invalidator.citing_case} "
+                f"({full_invalidator.citing_date or 'date unknown'}); "
                 "invalidator status valid"
             ),
+            reason_code="source_invalidator_accepted_full",
             history_complete=not incomplete,
             invalidator_checks=tuple(invalidator_checks),
         )
     partial_invalidator = next(
-        (finding for finding in accepted_findings if finding.scope != "all"),
+        (check for check in accepted_checks if check.scope != "all"),
         None,
     )
     if partial_invalidator:
-        first = partial_invalidator
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
             validity_status="qualified",
             reason=(
-                f"source was {first.treatment} only in part by "
-                f"{first.citing_case} ({first.citing_date or 'date unknown'}); "
+                f"source was {partial_invalidator.treatment} only in part by "
+                f"{partial_invalidator.citing_case} "
+                f"({partial_invalidator.citing_date or 'date unknown'}); "
                 "invalidator status valid"
             ),
+            reason_code="source_invalidator_accepted_partial",
             history_complete=not incomplete,
             invalidator_checks=tuple(invalidator_checks),
         )
-    if invalidator_checks:
-        first_check = invalidator_checks[0]
+    if rejected_checks:
+        first_check = rejected_checks[0]
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
@@ -2203,20 +2463,23 @@ def _source_history_audit(
                 f"{first_check.citing_case or 'later opinion'} was not "
                 f"accepted ({first_check.reason})"
             ),
+            reason_code="source_invalidator_rejected",
             history_complete=False,
             invalidator_checks=tuple(invalidator_checks),
         )
-    if gated_invalidating:
-        first = gated_invalidating[0]
+    if gated_checks:
+        first_check = gated_checks[0]
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
             validity_status="unverified",
             reason=(
                 f"only a gated source-history finding was found: "
-                f"{first.treatment} by {first.citing_case}"
+                f"{first_check.treatment} by {first_check.citing_case}"
             ),
+            reason_code="source_invalidator_gated",
             history_complete=not incomplete,
+            invalidator_checks=tuple(invalidator_checks),
         )
     if incomplete:
         detail = (
@@ -2228,14 +2491,22 @@ def _source_history_audit(
             metadata=metadata,
             validity_status="unverified",
             reason=detail,
+            reason_code=(
+                "source_as_of_undated"
+                if undated_as_of
+                else "source_history_incomplete"
+            ),
             history_complete=False,
+            invalidator_checks=tuple(invalidator_checks),
         )
     return _SourceAudit(
         source_cluster_id=source_target.cluster_id,
         metadata=metadata,
         validity_status="valid",
         reason="no invalidating treatment found in the bounded source history",
+        reason_code="source_no_invalidating_treatment",
         history_complete=True,
+        invalidator_checks=tuple(invalidator_checks),
     )
 
 
@@ -2255,6 +2526,7 @@ def _source_audit(
         audit = _SourceAudit(
             validity_status="unverified",
             reason="source metadata unavailable",
+            reason_code="source_metadata_unavailable",
         )
         cache.audits[key] = audit
         return audit
@@ -2267,6 +2539,7 @@ def _source_audit(
             metadata=metadata,
             validity_status="unverified",
             reason="source history was not reviewed because its precedence gate failed",
+            reason_code="source_precedence_gate_failed",
         )
         cache.audits[key] = audit
         return audit
@@ -2287,6 +2560,7 @@ def _source_audit(
             metadata=metadata,
             validity_status="unverified",
             reason="source cluster could not be resolved for history review",
+            reason_code="source_cluster_unresolved",
         )
         cache.audits[key] = audit
         return audit
@@ -2320,23 +2594,34 @@ def _apply_source_audit(
     ):
         status = "unverified"
         reason = "source cluster id did not match the fetched cluster"
+        reason_code = "source_cluster_mismatch"
     elif audit.validity_status == "invalid":
         status = "invalid"
         reason = audit.reason
+        reason_code = "source_invalidator_accepted_full"
     elif precedence in {"separate", "nonprecedential", "persuasive"}:
         status = "precedence_defect"
         reason = precedence_reason
+        reason_code = "source_precedence_defect"
     elif audit.validity_status == "qualified":
         status = "qualified"
         reason = audit.reason
+        reason_code = "source_invalidator_accepted_partial"
     elif audit.validity_status == "unverified" or precedence == "unverified":
         status = "unverified"
         reason = audit.reason or precedence_reason
+        reason_code = (
+            "source_precedence_unverified"
+            if audit.validity_status == "valid" and precedence == "unverified"
+            else audit.reason_code
+        )
     else:
         status = "valid"
         reason = audit.reason
+        reason_code = audit.reason_code
     signal.status = status
     signal.reason = reason
+    signal.reason_code = reason_code
     signal.precedence = precedence
     signal.withheld = not (
         precedence == "authoritative" and status in {"valid", "invalid", "qualified"}
@@ -2357,6 +2642,7 @@ def _validate_source_validity(
         if source_id is None:
             signal.status = "not_assessed"
             signal.reason = "source opinion id is not usable for validation"
+            signal.reason_code = "not_assessed"
             continue
         audit = _source_audit(provider, source_id, check.as_of_date, cache)
         _apply_source_audit(signal, audit, check.target_court)

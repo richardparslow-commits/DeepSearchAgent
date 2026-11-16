@@ -3,6 +3,65 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+# Stable vocabularies for the public source-invalidator audit. The model keeps
+# these as strings for backward-compatible JSON, but producers and tests must
+# only emit values from these sets.
+SOURCE_INVALIDATOR_REVIEW_STATUSES = frozenset(
+    {
+        "reviewed",
+        "gated",
+        "unreviewed",
+        "metadata_failed",
+        "metadata_unavailable",
+        "text_failed",
+        "text_empty",
+        "target_not_located",
+        "out_of_scope",
+    }
+)
+SOURCE_INVALIDATOR_REASON_CODES = frozenset(
+    {
+        "not_checked",
+        "invalidator_accepted",
+        "invalidator_authority_lower",
+        "invalidator_authority_unknown",
+        "invalidator_attribution_ambiguous",
+        "invalidator_missing_id",
+        "invalidator_gated",
+        "invalidator_invalid",
+        "invalidator_qualified",
+        "invalidator_unverified",
+        "invalidator_depth_exceeded",
+        "citing_metadata_fetch_failed",
+        "citing_metadata_unavailable",
+        "citing_text_fetch_failed",
+        "citing_text_empty",
+        "target_not_located",
+        "citing_opinion_cap",
+        "post_as_of",
+        "undated_as_of",
+    }
+)
+SOURCE_VALIDITY_REASON_CODES = frozenset(
+    {
+        "not_assessed",
+        "source_metadata_unavailable",
+        "source_precedence_gate_failed",
+        "source_cluster_unresolved",
+        "source_cluster_mismatch",
+        "source_precedence_defect",
+        "source_precedence_unverified",
+        "source_no_invalidating_treatment",
+        "source_invalidator_accepted_full",
+        "source_invalidator_accepted_partial",
+        "source_invalidator_rejected",
+        "source_invalidator_gated",
+        "source_history_incomplete",
+        "source_as_of_undated",
+    }
+)
+
+
 class ExtractionCandidate(BaseModel):
     """A quote-verified extraction proposal that is never authoritative.
 
@@ -347,30 +406,42 @@ class TreatmentTimelineEntry(BaseModel):
 
 
 class SourceInvalidatorCheck(BaseModel):
-    """Bounded audit of one later finding offered as invalidating a source.
+    """One source-history candidate and its invalidator audit outcome.
 
     ``source_opinion_id`` and the citing fields identify the later opinion
-    that would invalidate the source. A source-history finding is not enough
-    by itself: the citing court must have authority over the source, the
-    finding must not be attribution-ambiguous, and the later decision's own
-    bounded status must be valid. ``invalidator_status`` is ``not_checked``
-    when authority or attribution was rejected before the audit; otherwise it
-    is the immediate invalidator's bounded source status. ``accepted`` is true
-    only for a valid, complete invalidator history.
+    that could invalidate the source. A candidate that could not be read or
+    was excluded by the as-of cutoff has no ``treatment``; ``review_status``
+    says which stage it reached, and ``reason_code`` is stable for machine
+    consumers. A reviewed finding is accepted only when it binds the source,
+    has unambiguous attribution, and the decision's immediate bounded status
+    is valid. ``invalidator_status`` is ``not_checked`` for candidates that
+    never reached that audit; ``accepted`` is true only for a valid, complete
+    invalidator history.
     """
 
     source_opinion_id: str = ""
+    source_cluster_id: str = ""
     citing_case: str = ""
     citing_citation: str = ""
     citing_court: str = ""
     citing_date: str = ""
+    citing_url: str = ""
+    # reviewed, gated, unreviewed, metadata_failed, metadata_unavailable,
+    # text_failed, text_empty, target_not_located, or out_of_scope.
+    review_status: str = "reviewed"
+    # Only meaningful for a reviewed/gated finding.
     treatment: str = ""
     scope: str = ""
+    # None when no finding was obtained (for example, a read failure).
+    authoritative: bool | None = None
+    gate_reason: str = ""
     binding: bool | None = None
     # not_checked before the audit, or the invalidator's own bounded source
     # status: valid, invalid, qualified, or unverified.
     invalidator_status: str = "not_checked"
     accepted: bool = False
+    # Stable reason code; human-readable detail remains in ``reason``.
+    reason_code: str = "not_checked"
     reason: str = ""
 
 
@@ -388,8 +459,9 @@ class SourceValiditySignal(BaseModel):
     ``precedence_defect``. Only an authoritative source may be used by
     enforcement. When an as-of cutoff is set, source-history review stops at
     that cutoff. ``invalidator_checks`` retains every source-history candidate
-    considered as invalidating, including rejected candidates and the reasons
-    for rejection.
+    relevant to invalidation, including gated, unreviewed, failed, and
+    as-of-excluded candidates. Reviewed candidates with no invalidating
+    treatment are intentionally omitted.
     """
 
     source_opinion_id: str
@@ -398,6 +470,8 @@ class SourceValiditySignal(BaseModel):
     status: str = "not_assessed"
     # Human-readable reason for the status; advisory only.
     reason: str = ""
+    # Stable machine-readable companion to ``status``.
+    reason_code: str = "not_assessed"
     # authoritative, persuasive, nonprecedential, separate, or unverified.
     precedence: str = ""
     # True when this signal must be withheld from enforcement. This includes
@@ -410,8 +484,8 @@ class SourceValiditySignal(BaseModel):
     # True only when the bounded one-hop source history review completed.
     # With an as-of cutoff, this covers only history on or before the cutoff.
     history_complete: bool = False
-    # Each source-history candidate considered as invalidating the source,
-    # including rejected candidates, their authority, and audit reason.
+    # Each source-history candidate relevant to invalidation, including
+    # gated, unreviewed, failed, and as-of-excluded candidates.
     invalidator_checks: list[SourceInvalidatorCheck] = Field(default_factory=list)
     checked_at: str = ""
 

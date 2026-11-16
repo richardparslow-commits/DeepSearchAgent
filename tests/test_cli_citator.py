@@ -598,7 +598,10 @@ def test_citator_text_renders_advisory_source_validity_identifiers():
     text = render_analysis(_analysis(check), "text")
 
     assert "Source validity (advisory; never counted toward status)" in text
-    assert "source opinion 201; cluster 888; status not_assessed" in text
+    assert (
+        "source opinion 201; cluster 888; status not_assessed; "
+        "code not_assessed" in text
+    )
 
 
 def test_citator_text_renders_advisory_source_validity_reason():
@@ -622,7 +625,7 @@ def test_citator_text_renders_advisory_source_validity_reason():
 
     assert (
         "source opinion 201; cluster 888; status invalid; "
-        "source was overruled by Later v. Secretary" in text
+        "code not_assessed; source was overruled by Later v. Secretary" in text
     )
 
 
@@ -681,6 +684,47 @@ def test_citator_text_renders_source_invalidator_checks():
     assert "invalidator 303 (Binding v. Secretary); accepted; binding" in text
 
 
+def test_citator_text_renders_source_candidate_review_reason_codes():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    status="unverified",
+                    reason_code="source_invalidator_gated",
+                    invalidator_checks=[
+                        SourceInvalidatorCheck(
+                            source_opinion_id="301",
+                            citing_case="Gated v. Secretary",
+                            review_status="gated",
+                            treatment="overruled",
+                            scope="all",
+                            authoritative=False,
+                            gate_reason="nonprecedential citing opinion",
+                            reason_code="invalidator_gated",
+                            reason="nonprecedential citing opinion",
+                        ),
+                        SourceInvalidatorCheck(
+                            source_opinion_id="302",
+                            review_status="unreviewed",
+                            reason_code="citing_opinion_cap",
+                            reason="review cap reached",
+                        ),
+                    ],
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "status unverified; code source_invalidator_gated" in text
+    assert "invalidator 301 (Gated v. Secretary); gated;" in text
+    assert "review gated; invalidator status not_checked; code invalidator_gated" in text
+    assert "invalidator 302 (case unknown); unreviewed;" in text
+    assert "review unreviewed; invalidator status not_checked; code citing_opinion_cap" in text
+
+
 def test_citator_text_renders_source_validity_enforcement_actions():
     check = _check().model_copy(
         update={
@@ -705,7 +749,9 @@ def test_citator_text_renders_source_validity_enforcement_actions():
     text = render_analysis(_analysis(check), "text")
 
     assert "Source validity (enforcement enabled;" in text
-    assert "status precedence_defect; withheld" in text
+    assert (
+        "status precedence_defect; code not_assessed; withheld" in text
+    )
     assert "Source-validity enforcement actions:" in text
     assert "source 201 withheld from enforcement" in text
 
