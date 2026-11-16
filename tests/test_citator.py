@@ -1618,6 +1618,22 @@ def test_reported_count_larger_than_collected_ids_truncates():
     assert check.status == "unknown"
 
 
+def test_row_cap_does_not_add_a_target_coverage_gap():
+    provider = FakeProvider()
+    ids = list(range(201, 222))
+    provider.pages[None] = _page(ids)
+    _wire_good_citing_opinions(provider, *ids)
+
+    check = check_case(
+        _case(), provider, max_citing_opinions=1, max_pages=1
+    )
+
+    assert check.coverage.forward_citations_found == len(ids)
+    assert check.coverage.truncated is True
+    assert check.coverage.complete is False
+    assert _gap_codes(check) == ["count_mismatch", "citing_opinion_cap"]
+
+
 def test_citing_opinion_cap_truncates_after_reviewed_subset():
     provider = FakeProvider()
     provider.pages[None] = _page([201, 202], count=2)

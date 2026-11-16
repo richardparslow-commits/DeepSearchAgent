@@ -656,6 +656,53 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                     f"status {signal.status}; code {signal.reason_code}"
                     f"{withheld}{detail}"
                 )
+                ledger = signal.audit_ledger
+                if ledger.assessed:
+                    coverage = (
+                        "complete"
+                        if ledger.coverage_complete
+                        else "incomplete"
+                    )
+                    history = (
+                        "attempted"
+                        if ledger.history_attempted
+                        else "not attempted"
+                    )
+                    page_cap = "yes" if ledger.page_limit_reached else "no"
+                    pool_cap = (
+                        "yes" if ledger.candidate_pool_limit_reached else "no"
+                    )
+                    failures = (
+                        ledger.metadata_fetch_failures
+                        + ledger.metadata_unavailable
+                        + ledger.text_fetch_failures
+                        + ledger.text_empty
+                        + ledger.target_not_located
+                    )
+                    gaps = ", ".join(
+                        gap.code for gap in ledger.gaps
+                    ) or "none"
+                    decisive = ledger.decisive_candidate_id or "none"
+                    lines.append(
+                        f"    audit ledger: coverage {coverage}; "
+                        f"history {history}; as of "
+                        f"{ledger.as_of_date or 'none'}; cluster opinions "
+                        f"{ledger.cluster_opinion_count}; forward citations "
+                        f"{ledger.forward_citations_reported} reported/"
+                        f"{ledger.citing_ids_collected} collected; candidates "
+                        f"{ledger.candidates_metadata_loaded} loaded/"
+                        f"{ledger.candidates_in_scope} in scope/"
+                        f"{ledger.candidates_reviewed} reviewed; invalidating "
+                        f"{ledger.candidates_with_invalidating_finding}/clean "
+                        f"{ledger.candidates_without_invalidating_finding}; "
+                        f"gated {ledger.candidates_gated}; unreviewed "
+                        f"{ledger.candidates_unreviewed}; post-as-of "
+                        f"{ledger.candidates_post_as_of}; undated "
+                        f"{ledger.candidates_undated_as_of}; failures "
+                        f"{failures}; pages {ledger.pages_fetched}; page cap "
+                        f"{page_cap}; candidate pool cap {pool_cap}; decisive "
+                        f"{decisive}; gaps {gaps}"
+                    )
                 for invalidator in signal.invalidator_checks:
                     if invalidator.accepted:
                         verdict = "accepted"

@@ -52,6 +52,7 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    SourceAuditLedger,
     SourceInvalidatorCheck,
     SourceValiditySignal,
     TreatmentTimelineEntry,
@@ -366,6 +367,46 @@ class _CitingCandidate:
 
 
 @dataclass(frozen=True)
+class _EdgeFetch:
+    """Forward-edge fetch result for one opinion."""
+
+    ids: list[int]
+    reported_count: int
+    pages: int
+    complete: bool
+    truncated: bool
+    page_limit_reached: bool
+    candidate_limit_reached: bool
+    flags: list[str]
+    gaps: list[CitatorCoverageGap]
+    # Subset of gaps caused by the bounded candidate allocation. The source
+    # ledger replaces these with one normalized source-specific gap.
+    candidate_pool_gaps: list[CitatorCoverageGap]
+
+
+@dataclass(frozen=True)
+class _ClusterEdgeFetch:
+    """Forward-edge fetch result for every opinion in a cluster."""
+
+    ids: list[int]
+    # Existing target-facing count: one opinion keeps the API count; a cluster
+    # reports the unique count because one citing opinion may link to several
+    # sub-opinions.
+    target_count: int
+    # Raw sum of per-opinion API counts. This can exceed the unique count.
+    reported_count: int
+    unique_count: int
+    pages: int
+    complete: bool
+    truncated: bool
+    page_limit_reached: bool
+    candidate_limit_reached: bool
+    flags: list[str]
+    gaps: list[CitatorCoverageGap]
+    candidate_pool_gaps: list[CitatorCoverageGap]
+
+
+@dataclass(frozen=True)
 class _SourceCandidateObservation:
     """Source-history candidate outcome collected while reviewing citations."""
 
@@ -388,6 +429,7 @@ class _SourceAudit:
     reason_code: str = "not_assessed"
     history_complete: bool = False
     invalidator_checks: tuple[SourceInvalidatorCheck, ...] = ()
+    audit_ledger: SourceAuditLedger = field(default_factory=SourceAuditLedger)
 
 
 @dataclass
@@ -787,15 +829,14 @@ def _fetch_forward_edges(
     max_pages: int,
     page_size: int = 100,
     max_ids: int = _CITING_PRIORITY_POOL_MAX,
-) -> tuple[
-    list[int], int, int, bool, bool, list[str], list[CitatorCoverageGap]
-]:
+) -> _EdgeFetch:
     """Fetch forward-citation edges and report what was actually covered.
 
-    Returns ``(citing_ids, count, pages_fetched, complete, truncated, flags,
-    gaps)``. The ids are de-duplicated in API order. ``count`` is the API's
-    full forward-citation count when available; ``complete`` is true only when
-    no page cap, count mismatch, cursor problem, or request error intervened.
+    The ids are de-duplicated in API order. ``reported_count`` is the API's
+    count for this opinion. ``page_limit_reached`` and
+    ``candidate_limit_reached`` distinguish a page boundary from a bounded
+    candidate-pool boundary; ``complete`` stays false for either, for a count
+    mismatch, a cursor problem, or a request error.
 
     ``page_size`` and ``max_ids`` adapt pagination to the citator's bounded
     review pool: the page request is clamped to the caller's share so it never
@@ -808,12 +849,15 @@ def _fetch_forward_edges(
     seen: set[int] = set()
     seen_cursors: set[str] = set()
     pages = 0
-    count = 0
+    reported_count = 0
     cursor: str | None = None
     complete = True
     truncated = False
+    page_limit_reached = False
+    candidate_limit_reached = False
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
+    candidate_pool_gaps: list[CitatorCoverageGap] = []
 
     while pages < max_pages and len(ids) < max_ids:
         try:
@@ -831,19 +875,24 @@ def _fetch_forward_edges(
             break
         pages += 1
         page_count = _safe_int(data.get("count"))
-        if page_count > count:
-            count = page_count
+        if page_count > reported_count:
+            reported_count = page_count
         rows = data.get("results")
         if isinstance(rows, list):
             for row in rows:
-                if len(ids) >= max_ids:
-                    break
                 if not isinstance(row, dict):
                     continue
                 citing_id = _positive_id(row.get("citing_opinion"))
-                if citing_id is not None and citing_id not in seen:
-                    seen.add(citing_id)
-                    ids.append(citing_id)
+                if citing_id is None or citing_id in seen:
+                    continue
+                # A full pool is only truncated when the row that would have
+                # contributed a new candidate is actually skipped. Duplicate
+                # or malformed trailing rows do not count as omitted candidates.
+                if len(ids) >= max_ids:
+                    candidate_limit_reached = True
+                    break
+                seen.add(citing_id)
+                ids.append(citing_id)
         next_url = data.get("next")
         cursor = _cursor_from_next(next_url)
         if not cursor:
@@ -867,33 +916,53 @@ def _fetch_forward_edges(
             break
         seen_cursors.add(cursor)
 
-    if count < len(ids):
-        count = len(ids)
-    if cursor and (pages >= max_pages or len(ids) >= max_ids):
-        truncated = True
-        complete = False
+    if reported_count < len(ids):
+        reported_count = len(ids)
+    if cursor:
         if pages >= max_pages:
-            boundary = f"the {max_pages}-page cap"
-        else:
-            boundary = (
-                f"the {max_ids}-candidate allocation from the priority pool"
+            page_limit_reached = True
+            truncated = True
+            complete = False
+            detail = (
+                f"Citator forward-citation coverage for opinion {opinion_id} "
+                f"stopped at the {max_pages}-page cap; more pages remain."
             )
-        detail = (
-            f"Citator forward-citation coverage for opinion {opinion_id} "
-            f"stopped at {boundary}; more pages remain."
-        )
-        flags.append(detail)
-        gaps.append(_coverage_gap("page_cap", detail))
-    if count > len(ids):
+            flags.append(detail)
+            gaps.append(_coverage_gap("page_cap", detail))
+        elif len(ids) >= max_ids:
+            candidate_limit_reached = True
+            truncated = True
+            complete = False
+            detail = (
+                f"Citator forward-citation coverage for opinion {opinion_id} "
+                f"stopped at the {max_ids}-candidate allocation from the "
+                "priority pool; more pages remain."
+            )
+            flags.append(detail)
+            gap = _coverage_gap("page_cap", detail)
+            gaps.append(gap)
+            candidate_pool_gaps.append(gap)
+    if reported_count > len(ids):
         truncated = True
         complete = False
         detail = (
             f"Citator forward-citation coverage for opinion {opinion_id} is "
-            f"incomplete: {count} reported, {len(ids)} collected."
+            f"incomplete: {reported_count} reported, {len(ids)} collected."
         )
         flags.append(detail)
         gaps.append(_coverage_gap("count_mismatch", detail))
-    return ids, count, pages, complete, truncated, flags, gaps
+    return _EdgeFetch(
+        ids=ids,
+        reported_count=reported_count,
+        pages=pages,
+        complete=complete,
+        truncated=truncated,
+        page_limit_reached=page_limit_reached,
+        candidate_limit_reached=candidate_limit_reached,
+        flags=flags,
+        gaps=gaps,
+        candidate_pool_gaps=candidate_pool_gaps,
+    )
 
 
 def _fetch_cluster_forward_edges(
@@ -902,28 +971,31 @@ def _fetch_cluster_forward_edges(
     max_pages: int,
     page_size: int = 100,
     max_ids: int = _CITING_PRIORITY_POOL_MAX,
-) -> tuple[
-    list[int], int, int, bool, bool, list[str], list[CitatorCoverageGap]
-]:
+) -> _ClusterEdgeFetch:
     """Fetch forward citations for every opinion in the target's cluster.
 
     A citing opinion is linked to one specific target opinion, so checking only
     the first sub-opinion misses citations attached to the lead, concurrence,
     or dissent. ``max_ids`` is one target-wide budget, split evenly across the
     cluster so every sub-opinion gets a chance without multiplying the pool.
-    The returned ids are de-duplicated across the cluster. A one-opinion target
-    keeps the API's reported count; a multi-opinion target reports the unique
-    count, since the same citing opinion may be linked to more than one
-    sub-opinion.
+    The returned ids are de-duplicated across the cluster. ``target_count``
+    preserves the citator's existing count semantics: one opinion keeps the
+    API's reported count; a cluster reports the unique count because the same
+    citing opinion may link to more than one sub-opinion. ``reported_count`` is
+    the raw sum of per-opinion API counts and may contain that duplication.
     """
     ids: list[int] = []
     seen: set[int] = set()
     pages = 0
-    count = 0
+    reported_count = 0
+    target_count = 0
     complete = True
     truncated = False
+    page_limit_reached = False
+    candidate_limit_reached = False
     flags: list[str] = []
     gaps: list[CitatorCoverageGap] = []
+    candidate_pool_gaps: list[CitatorCoverageGap] = []
     opinion_ids = target.opinion_ids
     # Split the target-wide pool evenly, giving the remainder to the earliest
     # sub-opinions so one lead opinion cannot consume every candidate.
@@ -937,37 +1009,53 @@ def _fetch_cluster_forward_edges(
                 "bounded by the target-wide pool."
             )
             flags.append(detail)
-            gaps.append(_coverage_gap("page_cap", detail))
+            gap = _coverage_gap("page_cap", detail)
+            gaps.append(gap)
+            candidate_pool_gaps.append(gap)
             complete = False
             truncated = True
+            candidate_limit_reached = True
             continue
-        (
-            found_ids,
-            found_count,
-            found_pages,
-            found_complete,
-            found_truncated,
-            edge_flags,
-            edge_gaps,
-        ) = _fetch_forward_edges(
+        edge = _fetch_forward_edges(
             provider,
             opinion_id,
             max_pages,
             page_size=page_size,
             max_ids=allocation,
         )
-        pages += found_pages
-        count += found_count
-        complete = complete and found_complete
-        truncated = truncated or found_truncated
-        flags.extend(edge_flags)
-        gaps.extend(edge_gaps)
-        for citing_id in found_ids:
+        pages += edge.pages
+        reported_count += edge.reported_count
+        target_count += edge.reported_count
+        complete = complete and edge.complete
+        truncated = truncated or edge.truncated
+        page_limit_reached = page_limit_reached or edge.page_limit_reached
+        candidate_limit_reached = (
+            candidate_limit_reached or edge.candidate_limit_reached
+        )
+        flags.extend(edge.flags)
+        gaps.extend(edge.gaps)
+        candidate_pool_gaps.extend(edge.candidate_pool_gaps)
+        for citing_id in edge.ids:
             if citing_id not in seen:
                 seen.add(citing_id)
                 ids.append(citing_id)
-    count = len(ids) if len(opinion_ids) > 1 else count
-    return ids, count, pages, complete, truncated, flags, gaps
+    unique_count = len(ids)
+    if len(opinion_ids) > 1:
+        target_count = unique_count
+    return _ClusterEdgeFetch(
+        ids=ids,
+        target_count=target_count,
+        reported_count=reported_count,
+        unique_count=unique_count,
+        pages=pages,
+        complete=complete,
+        truncated=truncated,
+        page_limit_reached=page_limit_reached,
+        candidate_limit_reached=candidate_limit_reached,
+        flags=flags,
+        gaps=gaps,
+        candidate_pool_gaps=candidate_pool_gaps,
+    )
 
 
 def _phrase_spans(text: str, phrase: str) -> list[tuple[int, int]]:
@@ -2292,6 +2380,126 @@ def _source_invalidator_checks(
     return unique
 
 
+def _dedupe_audit_gaps(
+    gaps: list[CitatorCoverageGap],
+) -> list[CitatorCoverageGap]:
+    """Keep audit gaps deterministic and free of exact duplicates."""
+    unique: list[CitatorCoverageGap] = []
+    seen: set[tuple[str, str]] = set()
+    for gap in gaps:
+        key = (gap.code, gap.detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(gap)
+    return unique
+
+
+def _source_audit_ledger(
+    *,
+    edge_fetch: _ClusterEdgeFetch,
+    observations: list[_SourceCandidateObservation],
+    metadata_loaded: int,
+    in_scope: int,
+    reviewed: int,
+    as_of_date: str,
+    undated_as_of: bool,
+    candidate_gaps: list[CitatorCoverageGap],
+    review_gaps: list[CitatorCoverageGap],
+    coverage_complete: bool,
+    cluster_opinion_count: int,
+) -> SourceAuditLedger:
+    """Summarize source-history coverage from already collected observations."""
+    status_ids: dict[str, set[str]] = {}
+    invalidating_ids: set[str] = set()
+    gated_ids: set[str] = set()
+    for observation in observations:
+        opinion_id = str(observation.opinion_id)
+        status_ids.setdefault(observation.review_status, set()).add(opinion_id)
+        finding = observation.finding
+        if (
+            finding is not None
+            and finding.treatment in _SOURCE_INVALIDATING_TREATMENTS
+        ):
+            invalidating_ids.add(opinion_id)
+            if observation.review_status == "gated":
+                gated_ids.add(opinion_id)
+    # The fetch keeps a page-cap detail for target-citator consumers. At the
+    # source-ledger level, replace only the candidate-allocation subset with a
+    # single normalized gap so one cap does not appear twice under two codes.
+    candidate_pool_gap_keys = {
+        (gap.code, gap.detail) for gap in edge_fetch.candidate_pool_gaps
+    }
+    gaps = [
+        gap
+        for gap in [*edge_fetch.gaps, *candidate_gaps, *review_gaps]
+        if (gap.code, gap.detail) not in candidate_pool_gap_keys
+    ]
+    if edge_fetch.candidate_limit_reached:
+        gaps.append(
+            _coverage_gap(
+                "source_candidate_pool_truncated",
+                "source-history candidate pool was bounded before all reported "
+                "forward citations could be collected.",
+            )
+        )
+    if undated_as_of:
+        gaps.append(
+            _coverage_gap(
+                "source_as_of_undated",
+                "source-history candidate had no usable decision date for the "
+                "as-of cutoff.",
+            )
+        )
+    post_as_of_ids = {
+        str(observation.opinion_id)
+        for observation in observations
+        if observation.review_status == "out_of_scope"
+        and observation.reason_code == "post_as_of"
+    }
+    undated_as_of_ids = {
+        str(observation.opinion_id)
+        for observation in observations
+        if observation.review_status == "out_of_scope"
+        and observation.reason_code == "undated_as_of"
+    }
+    return SourceAuditLedger(
+        assessed=True,
+        history_attempted=True,
+        as_of_date=as_of_date,
+        coverage_complete=(
+            coverage_complete
+            and not edge_fetch.page_limit_reached
+            and not edge_fetch.candidate_limit_reached
+        ),
+        cluster_opinion_count=cluster_opinion_count,
+        forward_citations_reported=edge_fetch.reported_count,
+        citing_ids_collected=edge_fetch.unique_count,
+        candidates_metadata_loaded=metadata_loaded,
+        candidates_in_scope=in_scope,
+        candidates_reviewed=reviewed,
+        candidates_without_invalidating_finding=max(
+            0, reviewed - len(invalidating_ids)
+        ),
+        candidates_with_invalidating_finding=len(invalidating_ids),
+        candidates_gated=len(gated_ids),
+        candidates_unreviewed=len(status_ids.get("unreviewed", set())),
+        candidates_post_as_of=len(post_as_of_ids),
+        candidates_undated_as_of=len(undated_as_of_ids),
+        metadata_fetch_failures=len(status_ids.get("metadata_failed", set())),
+        metadata_unavailable=len(
+            status_ids.get("metadata_unavailable", set())
+        ),
+        text_fetch_failures=len(status_ids.get("text_failed", set())),
+        text_empty=len(status_ids.get("text_empty", set())),
+        target_not_located=len(status_ids.get("target_not_located", set())),
+        pages_fetched=edge_fetch.pages,
+        page_limit_reached=edge_fetch.page_limit_reached,
+        candidate_pool_limit_reached=edge_fetch.candidate_limit_reached,
+        gaps=_dedupe_audit_gaps(gaps),
+    )
+
+
 def _source_history_audit(
     provider: CourtListenerProvider,
     source_target: _Target,
@@ -2302,25 +2510,22 @@ def _source_history_audit(
 ) -> _SourceAudit:
     """Review a bounded source history, including immediate invalidators."""
     max_ids = max(1, _SOURCE_HISTORY_MAX_CITING * 4)
-    (
-        citing_ids,
-        _found,
-        _pages,
-        edges_complete,
-        _truncated,
-        edge_flags,
-        edge_gaps,
-    ) = _fetch_cluster_forward_edges(
+    edge_fetch = _fetch_cluster_forward_edges(
         provider,
         source_target,
         _SOURCE_HISTORY_MAX_PAGES,
         page_size=max_ids,
         max_ids=max_ids,
     )
+    citing_ids = edge_fetch.ids
+    edges_complete = edge_fetch.complete
+    edge_flags = edge_fetch.flags
+    edge_gaps = edge_fetch.gaps
     observations: list[_SourceCandidateObservation] = []
     candidates, candidate_flags, candidate_gaps = _load_citing_candidates(
         provider, citing_ids, observer=observations.append
     )
+    metadata_loaded = len(candidates)
     undated_as_of = False
     # Policy: as-of source validation stops at the cutoff. Only source-history
     # candidates dated on or before the cutoff can invalidate or qualify the
@@ -2395,6 +2600,19 @@ def _source_history_audit(
         )
         or reviewed < len(scope_ids)
     )
+    source_ledger = _source_audit_ledger(
+        edge_fetch=edge_fetch,
+        observations=observations,
+        metadata_loaded=metadata_loaded,
+        in_scope=len(scope_ids),
+        reviewed=reviewed,
+        as_of_date=as_of_date,
+        undated_as_of=undated_as_of,
+        candidate_gaps=candidate_gaps,
+        review_gaps=review_gaps,
+        coverage_complete=not incomplete,
+        cluster_opinion_count=len(source_target.opinion_ids),
+    )
     invalidator_checks = _source_invalidator_checks(
         provider, observations, as_of_date, cache, depth
     )
@@ -2419,6 +2637,7 @@ def _source_history_audit(
         None,
     )
     if full_invalidator:
+        source_ledger.decisive_candidate_id = full_invalidator.source_opinion_id
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
@@ -2432,12 +2651,16 @@ def _source_history_audit(
             reason_code="source_invalidator_accepted_full",
             history_complete=not incomplete,
             invalidator_checks=tuple(invalidator_checks),
+            audit_ledger=source_ledger,
         )
     partial_invalidator = next(
         (check for check in accepted_checks if check.scope != "all"),
         None,
     )
     if partial_invalidator:
+        source_ledger.decisive_candidate_id = (
+            partial_invalidator.source_opinion_id
+        )
         return _SourceAudit(
             source_cluster_id=source_target.cluster_id,
             metadata=metadata,
@@ -2451,6 +2674,7 @@ def _source_history_audit(
             reason_code="source_invalidator_accepted_partial",
             history_complete=not incomplete,
             invalidator_checks=tuple(invalidator_checks),
+            audit_ledger=source_ledger,
         )
     if rejected_checks:
         first_check = rejected_checks[0]
@@ -2466,6 +2690,7 @@ def _source_history_audit(
             reason_code="source_invalidator_rejected",
             history_complete=False,
             invalidator_checks=tuple(invalidator_checks),
+            audit_ledger=source_ledger,
         )
     if gated_checks:
         first_check = gated_checks[0]
@@ -2480,6 +2705,7 @@ def _source_history_audit(
             reason_code="source_invalidator_gated",
             history_complete=not incomplete,
             invalidator_checks=tuple(invalidator_checks),
+            audit_ledger=source_ledger,
         )
     if incomplete:
         detail = (
@@ -2498,6 +2724,7 @@ def _source_history_audit(
             ),
             history_complete=False,
             invalidator_checks=tuple(invalidator_checks),
+            audit_ledger=source_ledger,
         )
     return _SourceAudit(
         source_cluster_id=source_target.cluster_id,
@@ -2507,6 +2734,7 @@ def _source_history_audit(
         reason_code="source_no_invalidating_treatment",
         history_complete=True,
         invalidator_checks=tuple(invalidator_checks),
+        audit_ledger=source_ledger,
     )
 
 
@@ -2527,6 +2755,17 @@ def _source_audit(
             validity_status="unverified",
             reason="source metadata unavailable",
             reason_code="source_metadata_unavailable",
+            audit_ledger=SourceAuditLedger(
+                assessed=True,
+                as_of_date=as_of_date,
+                gaps=[
+                    _coverage_gap(
+                        "source_metadata_unavailable",
+                        "source metadata was unavailable, so its history could "
+                        "not be reviewed.",
+                    )
+                ],
+            ),
         )
         cache.audits[key] = audit
         return audit
@@ -2540,6 +2779,18 @@ def _source_audit(
             validity_status="unverified",
             reason="source history was not reviewed because its precedence gate failed",
             reason_code="source_precedence_gate_failed",
+            audit_ledger=SourceAuditLedger(
+                assessed=True,
+                as_of_date=as_of_date,
+                cluster_opinion_count=len(metadata.get("opinion_ids") or []),
+                gaps=[
+                    _coverage_gap(
+                        "source_precedence_gate_failed",
+                        "source history was not reviewed because its precedence "
+                        "gate failed.",
+                    )
+                ],
+            ),
         )
         cache.audits[key] = audit
         return audit
@@ -2561,6 +2812,17 @@ def _source_audit(
             validity_status="unverified",
             reason="source cluster could not be resolved for history review",
             reason_code="source_cluster_unresolved",
+            audit_ledger=SourceAuditLedger(
+                assessed=True,
+                as_of_date=as_of_date,
+                gaps=[
+                    _coverage_gap(
+                        "source_cluster_unresolved",
+                        "source cluster could not be resolved, so its history "
+                        "could not be reviewed.",
+                    )
+                ],
+            ),
         )
         cache.audits[key] = audit
         return audit
@@ -2585,6 +2847,7 @@ def _apply_source_audit(
     precedence, precedence_reason = _source_precedence(
         audit.metadata, target_court
     )
+    ledger = audit.audit_ledger.model_copy(deep=True)
     if audit.source_cluster_id and not signal.source_cluster_id:
         signal.source_cluster_id = audit.source_cluster_id
     if (
@@ -2595,6 +2858,16 @@ def _apply_source_audit(
         status = "unverified"
         reason = "source cluster id did not match the fetched cluster"
         reason_code = "source_cluster_mismatch"
+        ledger.coverage_complete = False
+        ledger.gaps = _dedupe_audit_gaps(
+            [
+                *ledger.gaps,
+                _coverage_gap(
+                    "source_cluster_mismatch",
+                    "source cluster id did not match the fetched cluster.",
+                ),
+            ]
+        )
     elif audit.validity_status == "invalid":
         status = "invalid"
         reason = audit.reason
@@ -2628,6 +2901,7 @@ def _apply_source_audit(
     )
     signal.history_complete = audit.history_complete
     signal.invalidator_checks = list(audit.invalidator_checks)
+    signal.audit_ledger = ledger
     signal.checked_at = _checked_at()
 
 
@@ -2886,23 +3160,20 @@ def check_case(
     priority_pool = _citing_priority_pool_size(
         max_citing_opinions, max_pages
     )
-    (
-        citing_ids,
-        found,
-        pages,
-        edges_complete,
-        truncated,
-        edge_flags,
-        edge_gaps,
-    ) = _fetch_cluster_forward_edges(
+    edge_fetch = _fetch_cluster_forward_edges(
         provider,
         target,
         max_pages,
         page_size=priority_page_size,
         max_ids=priority_pool,
     )
-    flags.extend(edge_flags)
-    gaps.extend(edge_gaps)
+    citing_ids = edge_fetch.ids
+    found = edge_fetch.target_count
+    pages = edge_fetch.pages
+    edges_complete = edge_fetch.complete
+    truncated = edge_fetch.truncated
+    flags.extend(edge_fetch.flags)
+    gaps.extend(edge_fetch.gaps)
     post_as_of_citing: list[LaterCitingOpinion] = []
     post_as_of_findings: list[NegativeTreatment] = []
     undated_citing: list[LaterCitingOpinion] = []

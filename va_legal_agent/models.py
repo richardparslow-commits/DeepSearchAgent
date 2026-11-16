@@ -60,6 +60,28 @@ SOURCE_VALIDITY_REASON_CODES = frozenset(
         "source_as_of_undated",
     }
 )
+SOURCE_AUDIT_GAP_CODES = frozenset(
+    {
+        "source_metadata_unavailable",
+        "source_precedence_gate_failed",
+        "source_cluster_unresolved",
+        "source_cluster_mismatch",
+        "source_candidate_pool_truncated",
+        "source_as_of_undated",
+        "forward_fetch_failed",
+        "pagination_cursor_missing",
+        "pagination_cursor_repeated",
+        "page_cap",
+        "count_mismatch",
+        "citing_metadata_fetch_failed",
+        "citing_metadata_unavailable",
+        "citing_text_fetch_failed",
+        "citing_text_empty",
+        "target_not_located",
+        "citing_date_missing",
+        "citing_opinion_cap",
+    }
+)
 
 
 class ExtractionCandidate(BaseModel):
@@ -445,6 +467,51 @@ class SourceInvalidatorCheck(BaseModel):
     reason: str = ""
 
 
+class SourceAuditLedger(BaseModel):
+    """Bounded coverage accounting for one source-history audit.
+
+    The ledger describes what the audit could see, not whether the source is
+    valid. ``coverage_complete`` means the bounded review finished; a reviewed
+    but rejected or gated candidate can still have complete coverage while the
+    signal's ``history_complete`` remains false. ``forward_citations_reported``
+    is the sum of per-opinion API counts and may double-count a citing opinion
+    linked to more than one cluster opinion; ``citing_ids_collected`` is the
+    de-duplicated count actually collected within the bounded pool.
+    """
+
+    assessed: bool = False
+    history_attempted: bool = False
+    as_of_date: str = ""
+    coverage_complete: bool = False
+    cluster_opinion_count: int = 0
+    # Raw sum of API counts across the source cluster's opinions. With multiple
+    # opinions, the same citing opinion can be reported more than once.
+    forward_citations_reported: int = 0
+    # Unique citing ids actually collected within the bounded candidate pool.
+    citing_ids_collected: int = 0
+    candidates_metadata_loaded: int = 0
+    candidates_in_scope: int = 0
+    candidates_reviewed: int = 0
+    candidates_without_invalidating_finding: int = 0
+    candidates_with_invalidating_finding: int = 0
+    candidates_gated: int = 0
+    candidates_unreviewed: int = 0
+    candidates_post_as_of: int = 0
+    candidates_undated_as_of: int = 0
+    metadata_fetch_failures: int = 0
+    metadata_unavailable: int = 0
+    text_fetch_failures: int = 0
+    text_empty: int = 0
+    target_not_located: int = 0
+    pages_fetched: int = 0
+    page_limit_reached: bool = False
+    candidate_pool_limit_reached: bool = False
+    # Stable id of the accepted candidate that set invalid/qualified status.
+    decisive_candidate_id: str = ""
+    # Concrete incompleteness reasons; deduplicated in capture order.
+    gaps: list[CitatorCoverageGap] = Field(default_factory=list)
+
+
 class SourceValiditySignal(BaseModel):
     """Advisory validation of one reviewed citing opinion.
 
@@ -461,7 +528,10 @@ class SourceValiditySignal(BaseModel):
     that cutoff. ``invalidator_checks`` retains every source-history candidate
     relevant to invalidation, including gated, unreviewed, failed, and
     as-of-excluded candidates. Reviewed candidates with no invalidating
-    treatment are intentionally omitted.
+    treatment are intentionally omitted. ``audit_ledger`` describes bounded
+    execution separately: its ``coverage_complete`` may be true for a rejected
+    or gated review while ``history_complete`` remains false because the
+    source's invalidation status was not established.
     """
 
     source_opinion_id: str
@@ -487,6 +557,8 @@ class SourceValiditySignal(BaseModel):
     # Each source-history candidate relevant to invalidation, including
     # gated, unreviewed, failed, and as-of-excluded candidates.
     invalidator_checks: list[SourceInvalidatorCheck] = Field(default_factory=list)
+    # Bounded coverage accounting for the source audit.
+    audit_ledger: SourceAuditLedger = Field(default_factory=SourceAuditLedger)
     checked_at: str = ""
 
 

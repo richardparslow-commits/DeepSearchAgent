@@ -16,6 +16,7 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     SameDocketDecision,
+    SourceAuditLedger,
     SourceInvalidatorCheck,
     SourceValiditySignal,
     TreatmentTimelineEntry,
@@ -723,6 +724,61 @@ def test_citator_text_renders_source_candidate_review_reason_codes():
     assert "review gated; invalidator status not_checked; code invalidator_gated" in text
     assert "invalidator 302 (case unknown); unreviewed;" in text
     assert "review unreviewed; invalidator status not_checked; code citing_opinion_cap" in text
+
+
+def test_citator_text_renders_source_audit_ledger():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    status="invalid",
+                    reason_code="source_invalidator_accepted_full",
+                    precedence="authoritative",
+                    withheld=False,
+                    history_complete=False,
+                    audit_ledger=SourceAuditLedger(
+                        assessed=True,
+                        history_attempted=True,
+                        as_of_date="2021-01-01",
+                        coverage_complete=False,
+                        cluster_opinion_count=2,
+                        forward_citations_reported=4,
+                        citing_ids_collected=3,
+                        candidates_metadata_loaded=3,
+                        candidates_in_scope=2,
+                        candidates_reviewed=1,
+                        candidates_without_invalidating_finding=0,
+                        candidates_with_invalidating_finding=1,
+                        candidates_gated=0,
+                        candidates_unreviewed=1,
+                        candidates_post_as_of=0,
+                        candidates_undated_as_of=0,
+                        pages_fetched=1,
+                        page_limit_reached=True,
+                        candidate_pool_limit_reached=False,
+                        decisive_candidate_id="301",
+                        gaps=[
+                            CitatorCoverageGap(
+                                code="page_cap", detail="more pages remain"
+                            )
+                        ],
+                    ),
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "audit ledger: coverage incomplete; history attempted" in text
+    assert "as of 2021-01-01; cluster opinions 2" in text
+    assert "forward citations 4 reported/3 collected" in text
+    assert "candidates 3 loaded/2 in scope/1 reviewed" in text
+    assert "invalidating 1/clean 0; gated 0; unreviewed 1" in text
+    assert "pages 1; page cap yes; candidate pool cap no" in text
+    assert "decisive 301; gaps page_cap" in text
 
 
 def test_citator_text_renders_source_validity_enforcement_actions():
