@@ -447,6 +447,7 @@ class CourtListenerProvider:
     """
 
     name = "courtlistener"
+    api_version = "v4"
     # Full-text search lives on /search/ (the opinions list endpoint rejects
     # ``q``/``court`` as unknown filter params). Search results carry the
     # metadata inline (camelCase keys), so no follow-up fetches are needed.

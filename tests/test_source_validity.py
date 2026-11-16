@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from itertools import product
 import json
 import random
@@ -12,6 +13,7 @@ from hypothesis import given, settings, strategies as st
 from audit_invariants import assert_source_opinion_audit_invariants
 from va_legal_agent.adjudication import build_adjudication_queue
 from va_legal_agent.authority_queue import apply_citator_findings
+from va_legal_agent.courtlistener_cache import CourtListenerCache
 from va_legal_agent.citator import (
     _SourceAudit,
     _SourceCandidateObservation,
@@ -29,6 +31,7 @@ from va_legal_agent.citator import (
 from va_legal_agent.models import (
     _opinion_bottleneck_reasons,
     SOURCE_AUDIT_GAP_CODES,
+    SOURCE_AUDIT_PROVENANCE_VERSION,
     SOURCE_OPINION_FETCH_ERROR_KINDS,
     SOURCE_OPINION_LIMIT_REASONS,
     SOURCE_INVALIDATOR_REASON_CODES,
@@ -40,6 +43,7 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     SourceAuditLedger,
+    SourceAuditProvenance,
     SourceInvalidatorCheck,
     SourceOpinionAudit,
     SourceValiditySignal,
@@ -1898,6 +1902,73 @@ def test_source_audit_ledger_records_complete_clean_review():
     _assert_audit_vocabulary(signal)
 
 
+@pytest.mark.parametrize(
+    ("adaptive", "allocation_policy"),
+    ((False, "equal"), (True, "adaptive")),
+)
+def test_source_audit_provenance_records_reproducible_envelope(
+    tmp_path, adaptive, allocation_policy
+):
+    provider = _history_provider(
+        text="The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    )
+    provider._cache = CourtListenerCache(tmp_path / "cache", ttl_seconds=900)
+    check = _check()
+
+    _validate_source_validity(
+        provider,
+        check,
+        _SourceValidationCache(),
+        adaptive_allocation=adaptive,
+    )
+
+    ledger = check.source_validity[0].audit_ledger
+    provenance = ledger.provenance
+    assert provenance.version == SOURCE_AUDIT_PROVENANCE_VERSION
+    assert provenance.source_opinion_id == str(SOURCE_ID)
+    assert provenance.source_cluster_id == "888"
+    assert provenance.provider == "courtlistener"
+    assert provenance.provider_version == "v4"
+    assert provenance.max_pages == 1
+    assert provenance.page_size == 12
+    assert provenance.max_ids == 12
+    assert provenance.max_citing_opinions == 3
+    assert provenance.max_invalidator_depth == 1
+    assert provenance.allocation_policy == allocation_policy
+    assert provenance.cache_mode == "read-through"
+    assert provenance.cache_ttl_seconds == 900
+    assert datetime.fromisoformat(provenance.generated_at).tzinfo is not None
+    restored = SourceAuditLedger.model_validate_json(ledger.model_dump_json())
+    assert restored.provenance == provenance
+
+
+def test_source_audit_provenance_is_recorded_before_history_review():
+    provider = _provider()
+    provider.metadata[SOURCE_ID] = _source_meta(status="Unpublished")
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    ledger = check.source_validity[0].audit_ledger
+    provenance = ledger.provenance
+    assert ledger.history_attempted is False
+    assert provenance.source_opinion_id == str(SOURCE_ID)
+    assert provenance.source_cluster_id == "888"
+    assert provenance.max_pages == 1
+    assert provenance.page_size == 12
+    assert provenance.max_ids == 12
+    assert provenance.allocation_policy == "equal"
+    assert provenance.cache_mode == "disabled"
+    assert provenance.cache_ttl_seconds == 0
+
+
+def test_source_audit_provenance_rejects_unknown_execution_modes():
+    with pytest.raises(ValueError):
+        SourceAuditProvenance(allocation_policy="round-robin")
+    with pytest.raises(ValueError):
+        SourceAuditProvenance(cache_mode="write-back")
+
+
 def test_source_audit_ledger_records_decisive_invalidator():
     check = _check()
 
@@ -1956,6 +2027,10 @@ def test_source_audit_ledger_records_early_gaps():
     assert ledger.history_attempted is False
     assert ledger.coverage_complete is False
     assert [gap.code for gap in ledger.gaps] == ["source_metadata_unavailable"]
+    assert ledger.provenance.source_opinion_id == str(SOURCE_ID)
+    assert ledger.provenance.source_cluster_id == ""
+    assert ledger.provenance.max_pages == 1
+    assert ledger.provenance.page_size == 12
 
     gate_failure = _check()
     gate_provider = _provider()
@@ -1968,6 +2043,8 @@ def test_source_audit_ledger_records_early_gaps():
     assert [gap.code for gap in ledger.gaps] == [
         "source_precedence_gate_failed"
     ]
+    assert ledger.provenance.source_cluster_id == "888"
+    assert ledger.provenance.allocation_policy == "equal"
 
     unresolved = _check()
     unresolved_provider = _provider()
@@ -1980,6 +2057,8 @@ def test_source_audit_ledger_records_early_gaps():
     assert ledger.history_attempted is False
     assert ledger.coverage_complete is False
     assert [gap.code for gap in ledger.gaps] == ["source_cluster_unresolved"]
+    assert ledger.provenance.source_opinion_id == str(SOURCE_ID)
+    assert ledger.provenance.source_cluster_id == "888"
 
 
 def test_source_audit_ledger_adds_cluster_mismatch_gap():

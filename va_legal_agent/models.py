@@ -84,6 +84,9 @@ SOURCE_AUDIT_GAP_CODES = frozenset(
     }
 )
 SOURCE_OPINION_LIMIT_REASONS = frozenset({"", "row", "cursor", "allocation"})
+SOURCE_AUDIT_PROVENANCE_VERSION = 1
+SOURCE_AUDIT_ALLOCATION_POLICIES = frozenset({"", "equal", "adaptive"})
+SOURCE_AUDIT_CACHE_MODES = frozenset({"", "disabled", "read-through"})
 # Stable reasons a per-opinion forward-edge fetch can fail. An empty kind means
 # the fetch did not fail. Keep these values stable for JSON consumers.
 SOURCE_OPINION_FETCH_ERROR_KINDS = frozenset(
@@ -544,11 +547,59 @@ class SourceOpinionAudit(BaseModel):
         return value
 
 
+class SourceAuditProvenance(BaseModel):
+    """Versioned execution envelope for one source-history audit.
+
+    The envelope records the exact source-history bounds and execution mode so
+    two ledgers can be compared without guessing which caps or cache policy
+    produced them. ``provider_version`` is the provider API version, not the
+    application package version.
+    """
+
+    version: int = SOURCE_AUDIT_PROVENANCE_VERSION
+    source_opinion_id: str = ""
+    source_cluster_id: str = ""
+    provider: str = ""
+    provider_version: str = ""
+    generated_at: str = ""
+    max_pages: int = 0
+    page_size: int = 0
+    max_ids: int = 0
+    max_citing_opinions: int = 0
+    max_invalidator_depth: int = 0
+    allocation_policy: str = ""
+    cache_mode: str = ""
+    cache_ttl_seconds: int = 0
+
+    @field_validator("allocation_policy")
+    @classmethod
+    def _known_allocation_policy(cls, value: str) -> str:
+        if value not in SOURCE_AUDIT_ALLOCATION_POLICIES:
+            raise ValueError(
+                "allocation_policy must be one of "
+                f"{sorted(SOURCE_AUDIT_ALLOCATION_POLICIES)!r}"
+            )
+        return value
+
+    @field_validator("cache_mode")
+    @classmethod
+    def _known_cache_mode(cls, value: str) -> str:
+        if value not in SOURCE_AUDIT_CACHE_MODES:
+            raise ValueError(
+                "cache_mode must be one of "
+                f"{sorted(SOURCE_AUDIT_CACHE_MODES)!r}"
+            )
+        return value
+
+
 class SourceAuditLedger(BaseModel):
     """Bounded coverage accounting for one source-history audit.
 
     The ledger describes what the audit could see, not whether the source is
-    valid. ``coverage_complete`` means the bounded review finished; a reviewed
+    valid. ``provenance`` records the versioned execution envelope (identity,
+    exact bounds, allocation policy, provider version, cache mode/TTL, and
+    timestamp) for reproducibility. ``coverage_complete`` means the bounded
+    review finished; a reviewed
     but rejected or gated candidate can still have complete coverage while the
     signal's ``history_complete`` remains false. ``forward_citations_reported``
     is the sum of valid per-opinion API counts and may double-count a citing
@@ -560,6 +611,9 @@ class SourceAuditLedger(BaseModel):
 
     assessed: bool = False
     history_attempted: bool = False
+    provenance: SourceAuditProvenance = Field(
+        default_factory=SourceAuditProvenance
+    )
     as_of_date: str = ""
     coverage_complete: bool = False
     cluster_opinion_count: int = 0

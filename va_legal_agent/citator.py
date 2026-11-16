@@ -52,7 +52,9 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    SOURCE_AUDIT_PROVENANCE_VERSION,
     SourceAuditLedger,
+    SourceAuditProvenance,
     SourceInvalidatorCheck,
     SourceOpinionAudit,
     SourceValiditySignal,
@@ -2563,6 +2565,51 @@ def _dedupe_audit_gaps(
     return unique
 
 
+def _source_audit_provenance(
+    provider: CourtListenerProvider,
+    source_id: int,
+    cluster_id: str,
+    *,
+    adaptive_allocation: bool,
+) -> SourceAuditProvenance:
+    """Record the exact source-history execution envelope for one audit."""
+    max_ids = max(1, _SOURCE_HISTORY_MAX_CITING * 4)
+    # Snapshotting wraps the real provider; provenance must describe the
+    # underlying API version and cache, not the proxy.
+    source_provider = getattr(provider, "provider", provider)
+    cache = getattr(source_provider, "_cache", None)
+    cache_enabled = bool(
+        cache is not None and getattr(cache, "enabled", False)
+    )
+    cache_ttl_seconds = (
+        max(0, int(getattr(cache, "ttl_seconds", 0) or 0))
+        if cache_enabled
+        else 0
+    )
+    return SourceAuditProvenance(
+        version=SOURCE_AUDIT_PROVENANCE_VERSION,
+        source_opinion_id=str(source_id),
+        source_cluster_id=str(cluster_id or ""),
+        provider=str(
+            getattr(source_provider, "name", "") or "courtlistener"
+        ),
+        provider_version=str(
+            getattr(source_provider, "api_version", "") or "v4"
+        ),
+        generated_at=_checked_at(),
+        max_pages=_SOURCE_HISTORY_MAX_PAGES,
+        page_size=max_ids,
+        max_ids=max_ids,
+        max_citing_opinions=_SOURCE_HISTORY_MAX_CITING,
+        max_invalidator_depth=_SOURCE_INVALIDATOR_MAX_DEPTH,
+        allocation_policy=(
+            "adaptive" if adaptive_allocation else "equal"
+        ),
+        cache_mode="read-through" if cache_enabled else "disabled",
+        cache_ttl_seconds=cache_ttl_seconds,
+    )
+
+
 def _source_audit_ledger(
     *,
     edge_fetch: _ClusterEdgeFetch,
@@ -2570,6 +2617,7 @@ def _source_audit_ledger(
     metadata_loaded: int,
     in_scope: int,
     reviewed: int,
+    provenance: SourceAuditProvenance,
     as_of_date: str,
     undated_as_of: bool,
     candidate_gaps: list[CitatorCoverageGap],
@@ -2633,6 +2681,7 @@ def _source_audit_ledger(
     return SourceAuditLedger(
         assessed=True,
         history_attempted=True,
+        provenance=provenance,
         as_of_date=as_of_date,
         coverage_complete=(
             coverage_complete
@@ -2674,6 +2723,7 @@ def _source_history_audit(
     metadata: dict[str, object],
     as_of_date: str,
     cache: _SourceValidationCache,
+    provenance: SourceAuditProvenance,
     depth: int = 0,
 ) -> _SourceAudit:
     """Review a bounded source history, including immediate invalidators."""
@@ -2775,6 +2825,7 @@ def _source_history_audit(
         metadata_loaded=metadata_loaded,
         in_scope=len(scope_ids),
         reviewed=reviewed,
+        provenance=provenance,
         as_of_date=as_of_date,
         undated_as_of=undated_as_of,
         candidate_gaps=candidate_gaps,
@@ -2918,6 +2969,13 @@ def _source_audit(
     if key in cache.audits:
         return cache.audits[key]
     metadata = _source_metadata(provider, source_id)
+    cluster_id = str(metadata.get("cluster_id") or "") if metadata else ""
+    provenance = _source_audit_provenance(
+        provider,
+        source_id,
+        cluster_id,
+        adaptive_allocation=cache.adaptive_allocation,
+    )
     if not metadata:
         audit = _SourceAudit(
             validity_status="unverified",
@@ -2925,6 +2983,7 @@ def _source_audit(
             reason_code="source_metadata_unavailable",
             audit_ledger=SourceAuditLedger(
                 assessed=True,
+                provenance=provenance,
                 as_of_date=as_of_date,
                 gaps=[
                     _coverage_gap(
@@ -2937,7 +2996,6 @@ def _source_audit(
         )
         cache.audits[key] = audit
         return audit
-    cluster_id = str(metadata.get("cluster_id") or "")
     role = _opinion_role(str(metadata.get("opinion_type") or ""))
     tier = _precedential_tier(str(metadata.get("precedential_status") or ""))
     if role != "majority" or tier != "precedential":
@@ -2949,6 +3007,7 @@ def _source_audit(
             reason_code="source_precedence_gate_failed",
             audit_ledger=SourceAuditLedger(
                 assessed=True,
+                provenance=provenance,
                 as_of_date=as_of_date,
                 cluster_opinion_count=len(metadata.get("opinion_ids") or []),
                 gaps=[
@@ -2982,6 +3041,7 @@ def _source_audit(
             reason_code="source_cluster_unresolved",
             audit_ledger=SourceAuditLedger(
                 assessed=True,
+                provenance=provenance,
                 as_of_date=as_of_date,
                 gaps=[
                     _coverage_gap(
@@ -2995,7 +3055,13 @@ def _source_audit(
         cache.audits[key] = audit
         return audit
     audit = _source_history_audit(
-        provider, source_target, metadata, as_of_date, cache, depth
+        provider,
+        source_target,
+        metadata,
+        as_of_date,
+        cache,
+        provenance,
+        depth,
     )
     cache.audits[key] = audit
     return audit
