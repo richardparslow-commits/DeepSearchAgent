@@ -21,6 +21,7 @@ import re
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -28,6 +29,17 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 logger = logging.getLogger(__name__)
 
 CACHE_VERSION = 1
+
+
+@dataclass(frozen=True)
+class CacheEntry:
+    """A live cache hit together with its storage timestamps."""
+
+    response: Any
+    cached_at: float
+    expires_at: float
+    age_seconds: int
+
 
 # Query keys that could carry credentials are never written. CourtListener
 # authenticates with a header, but this guard keeps a caller mistake from
@@ -147,26 +159,46 @@ class CourtListenerCache:
             return None
         return document
 
-    def get(
+    def get_entry(
         self,
         kind: str,
         identifier: str,
         params: dict[str, object] | None = None,
-    ) -> Any | None:
+    ) -> CacheEntry | None:
+        """Return a live entry and its age, or ``None`` for any miss."""
         if not self.enabled:
             return None
         path = self._path(kind, identifier, params)
         document = self._read(path)
         if document is None:
             return None
+        now = self._now()
         try:
             expires_at = float(document.get("expires_at", 0))
         except (TypeError, ValueError):
             return None
-        if expires_at <= self._now():
+        if expires_at <= now:
             _remove(path)
             return None
-        return document.get("response")
+        try:
+            cached_at = float(document.get("cached_at", now))
+        except (TypeError, ValueError):
+            cached_at = now
+        return CacheEntry(
+            response=document.get("response"),
+            cached_at=cached_at,
+            expires_at=expires_at,
+            age_seconds=max(0, int(now - cached_at)),
+        )
+
+    def get(
+        self,
+        kind: str,
+        identifier: str,
+        params: dict[str, object] | None = None,
+    ) -> Any | None:
+        entry = self.get_entry(kind, identifier, params)
+        return entry.response if entry is not None else None
 
     def set(
         self,

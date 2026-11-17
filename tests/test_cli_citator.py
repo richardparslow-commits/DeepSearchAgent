@@ -17,6 +17,8 @@ from va_legal_agent.models import (
     NegativeTreatment,
     SameDocketDecision,
     SourceAuditLedger,
+    SourceAuditProvenance,
+    SOURCE_AUDIT_LOGIC_VERSION,
     SourceInvalidatorCheck,
     SourceOpinionAudit,
     SourceValiditySignal,
@@ -823,6 +825,174 @@ def test_citator_text_renders_source_audit_ledger():
         "incomplete; page cap no; candidate pool cap allocation; "
         "gaps source_candidate_pool_truncated"
     ) in text
+
+
+def test_citator_text_renders_source_audit_provenance():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    audit_ledger=SourceAuditLedger(
+                        assessed=True,
+                        provenance=SourceAuditProvenance(
+                            source_opinion_id="201",
+                            source_cluster_id="888",
+                            provider="courtlistener",
+                            provider_version="v4",
+                            provider_base_url=(
+                                "https://www.courtlistener.com/api/rest/v4/"
+                            ),
+                            audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+                            generated_at="2026-01-01T00:00:00+00:00",
+                            max_pages=1,
+                            page_size=12,
+                            max_ids=12,
+                            max_citing_opinions=3,
+                            max_invalidator_depth=1,
+                            allocation_policy="equal",
+                            cache_mode="read-through",
+                            cache_version=1,
+                            cache_ttl_seconds=900,
+                            cache_hits=2,
+                            cache_misses=3,
+                            cache_entry_age_seconds=77,
+                            response_digest="a" * 64,
+                        )
+                    ),
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "Source-audit provenance:" in text
+    assert "source 201/cluster 888: envelope v3; audit logic 1" in text
+    assert "provider courtlistener v4 at" in text
+    assert "cache read-through v1 TTL 900s; hits 2/misses 3" in text
+    assert "oldest hit 77s; execution fingerprint" in text
+    assert f"response digest {'a' * 64}" in text
+
+
+def test_source_audit_provenance_warnings_flag_mixed_envelopes():
+    def check_with(cap: int) -> CitatorCheck:
+        return _check().model_copy(
+            update={
+                "source_validity": [
+                    SourceValiditySignal(
+                        source_opinion_id=str(cap),
+                        source_cluster_id="888",
+                        audit_ledger=SourceAuditLedger(
+                            assessed=True,
+                            provenance=SourceAuditProvenance(
+                                source_opinion_id=str(cap),
+                                source_cluster_id="888",
+                                provider="courtlistener",
+                                provider_version="v4",
+                                provider_base_url=(
+                                    "https://www.courtlistener.com/api/rest/v4/"
+                                ),
+                                audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+                                generated_at="2026-01-01T00:00:00+00:00",
+                                max_pages=cap,
+                                page_size=12,
+                                max_ids=12,
+                                max_citing_opinions=3,
+                                max_invalidator_depth=1,
+                                allocation_policy="equal",
+                                cache_mode="disabled",
+                                cache_version=1,
+                            ),
+                        ),
+                    )
+                ]
+            }
+        )
+
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="summary",
+        how_it_affects_va_claims="effect",
+        citator_checks=[check_with(1), check_with(2)],
+    )
+
+    assert analysis.source_provenance_warnings
+    assert "non-comparable execution configurations" in (
+        analysis.source_provenance_warnings[0]
+    )
+    text = render_analysis(analysis, "text")
+    assert "Source-audit provenance warnings:" in text
+    assert "non-comparable execution configurations" in text
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["source_provenance_warnings"] == (
+        analysis.source_provenance_warnings
+    )
+
+
+def test_source_audit_provenance_does_not_warn_for_same_execution():
+    provenance = SourceAuditProvenance(
+        source_opinion_id="201",
+        source_cluster_id="888",
+        provider="courtlistener",
+        provider_version="v4",
+        provider_base_url="https://www.courtlistener.com/api/rest/v4/",
+        audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+        generated_at="2026-01-01T00:00:00+00:00",
+        max_pages=1,
+        page_size=12,
+        max_ids=12,
+        max_citing_opinions=3,
+        max_invalidator_depth=1,
+        allocation_policy="equal",
+        cache_mode="read-through",
+        cache_version=1,
+    )
+    same_execution = provenance.model_copy(
+        update={
+            "source_opinion_id": "202",
+            "generated_at": "2026-02-01T00:00:00+00:00",
+            "response_digest": "b" * 64,
+        }
+    )
+    analysis = LegalAnalysis(
+        issue="service connection",
+        summary="summary",
+        how_it_affects_va_claims="effect",
+        citator_checks=[
+            _check().model_copy(
+                update={
+                    "source_validity": [
+                        SourceValiditySignal(
+                            source_opinion_id="201",
+                            source_cluster_id="888",
+                            audit_ledger=SourceAuditLedger(
+                                assessed=True, provenance=provenance
+                            ),
+                        ),
+                        SourceValiditySignal(
+                            source_opinion_id="201",
+                            source_cluster_id="888",
+                            audit_ledger=SourceAuditLedger(
+                                assessed=True, provenance=same_execution
+                            ),
+                        ),
+                    ]
+                }
+            )
+        ],
+    )
+
+    assert (
+        provenance.configuration_fingerprint
+        == same_execution.configuration_fingerprint
+    )
+    assert (
+        provenance.execution_fingerprint
+        != same_execution.execution_fingerprint
+    )
+    assert analysis.source_provenance_warnings == []
 
 
 def test_citator_text_renders_source_validity_enforcement_actions():

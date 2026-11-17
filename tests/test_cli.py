@@ -26,6 +26,10 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     PrincipleFinding,
+    SourceAuditLedger,
+    SourceAuditProvenance,
+    SourceValiditySignal,
+    SOURCE_AUDIT_LOGIC_VERSION,
 )
 
 
@@ -3006,6 +3010,294 @@ def test_cli_output_file_writes_analysis(capsys, tmp_path, monkeypatch):
     assert capsys.readouterr().out == ""  # nothing printed to stdout
     data = json.loads(out_path.read_text())
     assert data["issue"] == "service connection for tinnitus"
+
+
+def _analysis_with_source_provenance() -> LegalAnalysis:
+    analysis = _sample_analysis()
+    analysis.citator_checks = [
+        CitatorCheck(
+            target_case="Smith v. Wilkie",
+            target_citation="30 Vet.App. 123",
+            source_validity=[
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    audit_ledger=SourceAuditLedger(
+                        assessed=True,
+                        provenance=SourceAuditProvenance(
+                            source_opinion_id="201",
+                            source_cluster_id="888",
+                            provider="courtlistener",
+                            provider_version="v4",
+                            provider_base_url=(
+                                "https://www.courtlistener.com/api/rest/v4/"
+                            ),
+                            audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+                            generated_at="2026-01-01T00:00:00+00:00",
+                            max_pages=1,
+                            page_size=12,
+                            max_ids=12,
+                            max_citing_opinions=3,
+                            max_invalidator_depth=1,
+                            allocation_policy="equal",
+                            cache_mode="disabled",
+                            cache_version=1,
+                        ),
+                    ),
+                )
+            ],
+        )
+    ]
+    return analysis
+
+
+def test_cli_writes_machine_readable_provenance_sidecar(
+    capsys, tmp_path, monkeypatch
+):
+    out_path = tmp_path / "analysis.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "tinnitus", "--output-file", str(out_path)],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _analysis_with_source_provenance(),
+    )
+
+    main()
+
+    assert capsys.readouterr().out == ""
+    sidecar = json.loads(
+        out_path.with_suffix(".provenance.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["version"] == 1
+    assert sidecar["source_audit_count"] == 1
+    assert sidecar["recorded_source_audit_count"] == 1
+    assert sidecar["unrecorded_source_audit_count"] == 0
+    assert sidecar["mixed_provenance"] is False
+    assert sidecar["warnings"] == []
+    assert sidecar["source_audits"][0]["provenance"][
+        "audit_logic_version"
+    ] == SOURCE_AUDIT_LOGIC_VERSION
+    assert sidecar["execution_groups"][0]["source_opinion_ids"] == ["201"]
+
+
+def test_cli_provenance_sidecar_flags_mixed_and_unrecorded(
+    capsys, tmp_path, monkeypatch
+):
+    analysis = _analysis_with_source_provenance()
+    first = analysis.citator_checks[0].source_validity[0].audit_ledger.provenance
+    assert first is not None
+    second = first.model_copy(
+        update={"source_opinion_id": "202", "max_pages": 2}
+    )
+    analysis.citator_checks.extend(
+        [
+            CitatorCheck(
+                target_case="Second v. Wilkie",
+                source_validity=[
+                    SourceValiditySignal(
+                        source_opinion_id="202",
+                        audit_ledger=SourceAuditLedger(
+                            assessed=True, provenance=second
+                        ),
+                    )
+                ],
+            ),
+            CitatorCheck(
+                target_case="Legacy v. Wilkie",
+                source_validity=[
+                    SourceValiditySignal(source_opinion_id="303")
+                ],
+            ),
+        ]
+    )
+    sidecar_path = tmp_path / "mixed.provenance.json"
+    out_path = tmp_path / "analysis.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-file",
+            str(out_path),
+            "--provenance-sidecar",
+            str(sidecar_path),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: analysis,
+    )
+
+    main()
+
+    capsys.readouterr().out
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar["source_audit_count"] == 3
+    assert sidecar["recorded_source_audit_count"] == 2
+    assert sidecar["unrecorded_source_audit_count"] == 1
+    assert sidecar["mixed_provenance"] is True
+    assert len(sidecar["execution_groups"]) == 2
+    assert "non-comparable execution configurations" in sidecar["warnings"][0]
+    assert "no recorded provenance" in sidecar["warnings"][0]
+    assert sidecar["source_audits"][2]["provenance"] is None
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["--show-config", "--dry-run", "--batch-dry-run", "--auto-run"],
+)
+def test_cli_provenance_sidecar_rejects_non_analysis_modes(
+    capsys, tmp_path, monkeypatch, mode
+):
+    sidecar_path = tmp_path / "provenance.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            mode,
+            "tinnitus",
+            "--provenance-sidecar",
+            str(sidecar_path),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    assert "only supported for a single-issue analysis" in capsys.readouterr().err
+    assert not sidecar_path.exists()
+
+
+def test_cli_provenance_sidecar_must_differ_from_output_file(
+    capsys, tmp_path, monkeypatch
+):
+    out_path = tmp_path / "analysis.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-file",
+            str(out_path),
+            "--provenance-sidecar",
+            str(out_path),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _analysis_with_source_provenance(),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    assert "must differ" in capsys.readouterr().err
+    assert not out_path.exists()
+
+
+def test_cli_stdout_provenance_sidecar_error_is_reported(
+    capsys, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-format",
+            "text",
+            "--provenance-sidecar",
+            str(tmp_path / "missing" / "provenance.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _analysis_with_source_provenance(),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    captured = capsys.readouterr()
+    assert "Source-audit provenance:" in captured.out
+    assert "could not write provenance sidecar" in captured.err
+
+
+def test_cli_provenance_sidecar_error_is_reported(
+    capsys, tmp_path, monkeypatch
+):
+    out_path = tmp_path / "analysis.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-file",
+            str(out_path),
+            "--provenance-sidecar",
+            str(tmp_path / "missing" / "provenance.json"),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _analysis_with_source_provenance(),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    assert "could not write provenance sidecar" in capsys.readouterr().err
+    assert out_path.exists()
+
+
+def test_cli_provenance_sidecar_can_be_explicit_or_disabled(
+    capsys, tmp_path, monkeypatch
+):
+    sidecar_path = tmp_path / "custom-provenance.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-format",
+            "text",
+            "--provenance-sidecar",
+            str(sidecar_path),
+        ],
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.__main__.analyze_cases_for_claim",
+        lambda issue, **kwargs: _analysis_with_source_provenance(),
+    )
+
+    main()
+
+    assert "Source-audit provenance:" in capsys.readouterr().out
+    assert json.loads(sidecar_path.read_text(encoding="utf-8"))[
+        "source_audit_count"
+    ] == 1
+
+    out_path = tmp_path / "analysis.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "tinnitus",
+            "--output-file",
+            str(out_path),
+            "--provenance-sidecar",
+            "off",
+        ],
+    )
+    main()
+
+    assert out_path.exists()
+    assert not out_path.with_suffix(".provenance.json").exists()
 
 
 def test_cli_output_file_error_is_reported(capsys, tmp_path, monkeypatch):

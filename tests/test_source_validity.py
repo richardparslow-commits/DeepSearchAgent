@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime
 from itertools import product
 import json
@@ -19,6 +20,7 @@ from va_legal_agent.citator import (
     _SourceCandidateObservation,
     _SourceValidationCache,
     _Target,
+    _apply_source_audit_trace,
     _citing_priority_pool_size,
     _dedupe_audit_gaps,
     _apply_source_validity_enforcement,
@@ -31,6 +33,7 @@ from va_legal_agent.citator import (
 from va_legal_agent.models import (
     _opinion_bottleneck_reasons,
     SOURCE_AUDIT_GAP_CODES,
+    SOURCE_AUDIT_LOGIC_VERSION,
     SOURCE_AUDIT_PROVENANCE_VERSION,
     SOURCE_OPINION_FETCH_ERROR_KINDS,
     SOURCE_OPINION_LIMIT_REASONS,
@@ -49,6 +52,7 @@ from va_legal_agent.models import (
     SourceValiditySignal,
     TreatmentTimelineEntry,
 )
+from va_legal_agent.providers import ProviderResponseTrace
 from va_legal_agent.search import SearchError, classify_search_error
 from va_legal_agent.topics import COURT_BVA, COURT_CAVC, COURT_UNKNOWN
 
@@ -1924,11 +1928,15 @@ def test_source_audit_provenance_records_reproducible_envelope(
 
     ledger = check.source_validity[0].audit_ledger
     provenance = ledger.provenance
+    assert ledger.provenance_recorded is True
+    assert provenance is not None
+    assert provenance.is_recorded is True
     assert provenance.version == SOURCE_AUDIT_PROVENANCE_VERSION
     assert provenance.source_opinion_id == str(SOURCE_ID)
     assert provenance.source_cluster_id == "888"
     assert provenance.provider == "courtlistener"
     assert provenance.provider_version == "v4"
+    assert provenance.audit_logic_version == SOURCE_AUDIT_LOGIC_VERSION
     assert provenance.max_pages == 1
     assert provenance.page_size == 12
     assert provenance.max_ids == 12
@@ -1940,6 +1948,47 @@ def test_source_audit_provenance_records_reproducible_envelope(
     assert datetime.fromisoformat(provenance.generated_at).tzinfo is not None
     restored = SourceAuditLedger.model_validate_json(ledger.model_dump_json())
     assert restored.provenance == provenance
+    assert restored.provenance_recorded is True
+
+
+def test_source_audit_provenance_records_observed_data_identity():
+    provider = _history_provider(
+        text="The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    )
+    provider.BASE_URL = "https://www.courtlistener.com/api/rest/v4/"
+    provider.cache_version = 1
+    trace = ProviderResponseTrace(
+        cache_hits=2,
+        cache_misses=3,
+        cache_entry_age_seconds=77,
+    )
+    trace.record_response({"payload": "same underlying response"})
+
+    @contextmanager
+    def request_trace():
+        yield trace
+
+    provider.request_trace = request_trace
+    check = _check()
+
+    _validate_source_validity(provider, check, _SourceValidationCache())
+
+    provenance = check.source_validity[0].audit_ledger.provenance
+    assert provenance is not None
+    assert provenance.provider_base_url == provider.BASE_URL
+    assert provenance.cache_version == 1
+    assert provenance.cache_hits == 2
+    assert provenance.cache_misses == 3
+    assert provenance.cache_entry_age_seconds == 77
+    assert len(provenance.response_digest) == 64
+
+
+def test_source_audit_trace_can_be_skipped_without_provenance():
+    ledger = SourceAuditLedger(assessed=True)
+
+    _apply_source_audit_trace(ledger, ProviderResponseTrace(cache_hits=1))
+
+    assert ledger.provenance is None
 
 
 def test_source_audit_provenance_is_recorded_before_history_review():
@@ -1951,6 +2000,7 @@ def test_source_audit_provenance_is_recorded_before_history_review():
 
     ledger = check.source_validity[0].audit_ledger
     provenance = ledger.provenance
+    assert provenance is not None
     assert ledger.history_attempted is False
     assert provenance.source_opinion_id == str(SOURCE_ID)
     assert provenance.source_cluster_id == "888"
@@ -1967,6 +2017,187 @@ def test_source_audit_provenance_rejects_unknown_execution_modes():
         SourceAuditProvenance(allocation_policy="round-robin")
     with pytest.raises(ValueError):
         SourceAuditProvenance(cache_mode="write-back")
+
+
+def test_old_recorded_provenance_remains_an_older_envelope_version():
+    legacy = SourceAuditProvenance(
+        version=1,
+        source_opinion_id=str(SOURCE_ID),
+        source_cluster_id="888",
+        provider="courtlistener",
+        provider_version="v4",
+        generated_at="2026-01-01T00:00:00+00:00",
+        max_pages=1,
+        page_size=12,
+        max_ids=12,
+        max_citing_opinions=3,
+        max_invalidator_depth=1,
+        allocation_policy="equal",
+        cache_mode="disabled",
+    )
+    ledger = SourceAuditLedger(assessed=True, provenance=legacy)
+
+    assert ledger.provenance is not None
+    assert ledger.provenance.version == 1
+    assert ledger.provenance.version != SOURCE_AUDIT_PROVENANCE_VERSION
+    assert ledger.provenance.audit_logic_version == ""
+    assert ledger.provenance.response_digest == ""
+    assert ledger.provenance_recorded is True
+
+
+def test_legacy_source_audit_ledgers_have_no_recorded_provenance():
+    ledger = SourceAuditLedger(assessed=True)
+    assert ledger.provenance is None
+    assert ledger.provenance_recorded is False
+    payload = json.loads(ledger.model_dump_json())
+    assert payload["provenance"] is None
+    assert payload["provenance_recorded"] is False
+    assert SourceAuditLedger.model_validate({"assessed": True}).provenance is None
+    assert (
+        SourceAuditLedger.model_validate({"assessed": True}).provenance_recorded
+        is False
+    )
+
+    placeholder = SourceAuditProvenance().model_dump()
+    migrated = SourceAuditLedger.model_validate(
+        {"assessed": True, "provenance": placeholder}
+    )
+    assert migrated.provenance is None
+    assert migrated.provenance_recorded is False
+
+    signal = SourceValiditySignal.model_validate(
+        {
+            "source_opinion_id": str(SOURCE_ID),
+            "audit_ledger": {"assessed": True, "provenance": placeholder},
+        }
+    )
+    assert signal.audit_ledger.provenance is None
+    assert signal.audit_ledger.provenance_recorded is False
+
+
+def test_source_audit_provenance_fingerprint_is_stable_and_time_free():
+    provenance = SourceAuditProvenance(
+        source_opinion_id=str(SOURCE_ID),
+        source_cluster_id="888",
+        provider="courtlistener",
+        provider_version="v4",
+        provider_base_url="https://www.courtlistener.com/api/rest/v4/",
+        audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+        generated_at="2026-01-01T00:00:00+00:00",
+        max_pages=1,
+        page_size=12,
+        max_ids=12,
+        max_citing_opinions=3,
+        max_invalidator_depth=1,
+        allocation_policy="equal",
+        cache_mode="disabled",
+        cache_version=1,
+    )
+    later = provenance.model_copy(
+        update={"generated_at": "2026-02-01T00:00:00+00:00"}
+    )
+
+    assert provenance.is_recorded is True
+    assert len(provenance.execution_fingerprint) == 64
+    assert provenance.execution_fingerprint == later.execution_fingerprint
+    restored = SourceAuditProvenance.model_validate_json(
+        provenance.model_dump_json()
+    )
+    assert restored.execution_fingerprint == provenance.execution_fingerprint
+
+    for update in (
+        {"version": SOURCE_AUDIT_PROVENANCE_VERSION + 1},
+        {"source_opinion_id": "202"},
+        {"source_cluster_id": "999"},
+        {"provider": "other"},
+        {"provider_version": "v5"},
+        {"provider_base_url": "https://other.test/api/"},
+        {"audit_logic_version": "next"},
+        {"max_pages": 2},
+        {"page_size": 13},
+        {"max_ids": 13},
+        {"max_citing_opinions": 4},
+        {"max_invalidator_depth": 2},
+        {"allocation_policy": "adaptive"},
+        {"cache_mode": "read-through"},
+        {"cache_version": 2},
+        {"cache_ttl_seconds": 900},
+    ):
+        changed = provenance.model_copy(update=update)
+        assert changed.execution_fingerprint != provenance.execution_fingerprint
+
+    for update in (
+        {"cache_hits": 2},
+        {"cache_misses": 3},
+        {"cache_entry_age_seconds": 9},
+        {"response_digest": "a" * 64},
+    ):
+        observed = provenance.model_copy(update=update)
+        assert observed.execution_fingerprint == provenance.execution_fingerprint
+
+
+def test_source_audit_provenance_comparability_checks_config_and_code():
+    provenance = SourceAuditProvenance(
+        source_opinion_id=str(SOURCE_ID),
+        source_cluster_id="888",
+        provider="courtlistener",
+        provider_version="v4",
+        provider_base_url="https://www.courtlistener.com/api/rest/v4/",
+        audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
+        generated_at="2026-01-01T00:00:00+00:00",
+        max_pages=1,
+        page_size=12,
+        max_ids=12,
+        max_citing_opinions=3,
+        max_invalidator_depth=1,
+        allocation_policy="equal",
+        cache_mode="disabled",
+        cache_version=1,
+    )
+    later_observation = provenance.model_copy(
+        update={
+            "generated_at": "2026-02-01T00:00:00+00:00",
+            "cache_hits": 2,
+            "response_digest": "a" * 64,
+        }
+    )
+
+    assert provenance.is_comparable_to(later_observation) is True
+    assert (
+        provenance.comparability_key
+        == later_observation.comparability_key
+    )
+    assert provenance.is_comparable_to(None) is False
+    assert provenance.is_comparable_to(SourceAuditProvenance()) is False
+    unknown_code = provenance.model_copy(update={"audit_logic_version": ""})
+    assert provenance.is_comparable_to(unknown_code) is False
+    assert unknown_code.is_comparable_to(unknown_code.model_copy()) is False
+    assert (
+        provenance.is_comparable_to(
+            provenance.model_copy(update={"max_pages": 2})
+        )
+        is False
+    )
+    assert (
+        provenance.is_comparable_to(
+            provenance.model_copy(update={"audit_logic_version": "next"})
+        )
+        is False
+    )
+    assert (
+        provenance.is_comparable_to(
+            provenance.model_copy(
+                update={"version": SOURCE_AUDIT_PROVENANCE_VERSION - 1}
+            )
+        )
+        is False
+    )
+
+    ledger = SourceAuditLedger(assessed=True, provenance=provenance)
+    same = SourceAuditLedger(assessed=True, provenance=later_observation)
+    assert ledger.is_comparable_to(same) is True
+    assert ledger.is_comparable_to(SourceAuditLedger(assessed=True)) is False
+    assert ledger.is_comparable_to(None) is False
 
 
 def test_source_audit_ledger_records_decisive_invalidator():
@@ -2027,6 +2258,7 @@ def test_source_audit_ledger_records_early_gaps():
     assert ledger.history_attempted is False
     assert ledger.coverage_complete is False
     assert [gap.code for gap in ledger.gaps] == ["source_metadata_unavailable"]
+    assert ledger.provenance is not None
     assert ledger.provenance.source_opinion_id == str(SOURCE_ID)
     assert ledger.provenance.source_cluster_id == ""
     assert ledger.provenance.max_pages == 1
@@ -2043,6 +2275,7 @@ def test_source_audit_ledger_records_early_gaps():
     assert [gap.code for gap in ledger.gaps] == [
         "source_precedence_gate_failed"
     ]
+    assert ledger.provenance is not None
     assert ledger.provenance.source_cluster_id == "888"
     assert ledger.provenance.allocation_policy == "equal"
 
@@ -2057,6 +2290,7 @@ def test_source_audit_ledger_records_early_gaps():
     assert ledger.history_attempted is False
     assert ledger.coverage_complete is False
     assert [gap.code for gap in ledger.gaps] == ["source_cluster_unresolved"]
+    assert ledger.provenance is not None
     assert ledger.provenance.source_opinion_id == str(SOURCE_ID)
     assert ledger.provenance.source_cluster_id == "888"
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from pydantic import BaseModel, Field, computed_field, field_validator
 
 
@@ -84,9 +87,25 @@ SOURCE_AUDIT_GAP_CODES = frozenset(
     }
 )
 SOURCE_OPINION_LIMIT_REASONS = frozenset({"", "row", "cursor", "allocation"})
-SOURCE_AUDIT_PROVENANCE_VERSION = 1
+# Bump the logic version when a source-audit change can alter results; bump
+# the envelope version when the serialized contract changes.
+SOURCE_AUDIT_PROVENANCE_VERSION = 3
+SOURCE_AUDIT_LOGIC_VERSION = "1"
 SOURCE_AUDIT_ALLOCATION_POLICIES = frozenset({"", "equal", "adaptive"})
 SOURCE_AUDIT_CACHE_MODES = frozenset({"", "disabled", "read-through"})
+
+
+def _fingerprint(payload: dict[str, object]) -> str:
+    """Hash a canonical execution-context payload."""
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 # Stable reasons a per-opinion forward-edge fetch can fail. An empty kind means
 # the fetch did not fail. Keep these values stable for JSON consumers.
 SOURCE_OPINION_FETCH_ERROR_KINDS = frozenset(
@@ -553,7 +572,12 @@ class SourceAuditProvenance(BaseModel):
     The envelope records the exact source-history bounds and execution mode so
     two ledgers can be compared without guessing which caps or cache policy
     produced them. ``provider_version`` is the provider API version, not the
-    application package version.
+    application package version. ``audit_logic_version`` identifies the
+    source-audit implementation. ``execution_fingerprint`` covers the
+    timestamp-free execution context and code version; ``configuration_fingerprint``
+    excludes source identity so reports can group multi-source audits by
+    configuration. ``response_digest`` separately identifies the unique raw
+    provider payloads the audit consumed.
     """
 
     version: int = SOURCE_AUDIT_PROVENANCE_VERSION
@@ -561,6 +585,9 @@ class SourceAuditProvenance(BaseModel):
     source_cluster_id: str = ""
     provider: str = ""
     provider_version: str = ""
+    provider_base_url: str = ""
+    # Empty means the audit-code version is unknown (legacy envelopes).
+    audit_logic_version: str = ""
     generated_at: str = ""
     max_pages: int = 0
     page_size: int = 0
@@ -569,7 +596,130 @@ class SourceAuditProvenance(BaseModel):
     max_invalidator_depth: int = 0
     allocation_policy: str = ""
     cache_mode: str = ""
+    cache_version: int = 0
     cache_ttl_seconds: int = 0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_entry_age_seconds: int = 0
+    response_digest: str = ""
+
+    @property
+    def is_recorded(self) -> bool:
+        """Whether this envelope carries more than a version placeholder."""
+        return any(
+            (
+                self.source_opinion_id,
+                self.source_cluster_id,
+                self.provider,
+                self.provider_version,
+                self.provider_base_url,
+                self.audit_logic_version,
+                self.generated_at,
+                self.max_pages,
+                self.page_size,
+                self.max_ids,
+                self.max_citing_opinions,
+                self.max_invalidator_depth,
+                self.allocation_policy,
+                self.cache_mode,
+                self.cache_version,
+                self.cache_ttl_seconds,
+                self.cache_hits,
+                self.cache_misses,
+                self.cache_entry_age_seconds,
+                self.response_digest,
+            )
+        )
+
+    @computed_field
+    @property
+    def execution_fingerprint(self) -> str:
+        """Stable SHA-256 over the execution context, excluding time/data."""
+        payload = {
+            "version": self.version,
+            "source_opinion_id": self.source_opinion_id,
+            "source_cluster_id": self.source_cluster_id,
+            "provider": self.provider,
+            "provider_version": self.provider_version,
+            "provider_base_url": self.provider_base_url,
+            "audit_logic_version": self.audit_logic_version,
+            "max_pages": self.max_pages,
+            "page_size": self.page_size,
+            "max_ids": self.max_ids,
+            "max_citing_opinions": self.max_citing_opinions,
+            "max_invalidator_depth": self.max_invalidator_depth,
+            "allocation_policy": self.allocation_policy,
+            "cache_mode": self.cache_mode,
+            "cache_version": self.cache_version,
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+        }
+        return _fingerprint(payload)
+
+    @computed_field
+    @property
+    def configuration_fingerprint(self) -> str:
+        """Stable SHA-256 over code/config, excluding source identity/time/data."""
+        payload = {
+            "version": self.version,
+            "provider": self.provider,
+            "provider_version": self.provider_version,
+            "provider_base_url": self.provider_base_url,
+            "audit_logic_version": self.audit_logic_version,
+            "max_pages": self.max_pages,
+            "page_size": self.page_size,
+            "max_ids": self.max_ids,
+            "max_citing_opinions": self.max_citing_opinions,
+            "max_invalidator_depth": self.max_invalidator_depth,
+            "allocation_policy": self.allocation_policy,
+            "cache_mode": self.cache_mode,
+            "cache_version": self.cache_version,
+            "cache_ttl_seconds": self.cache_ttl_seconds,
+        }
+        return _fingerprint(payload)
+
+    @property
+    def comparability_key(self) -> tuple[int, str, str]:
+        """Group key for envelope schema, audit logic, and execution context."""
+        return (
+            self.version,
+            self.audit_logic_version,
+            self.execution_fingerprint,
+        )
+
+    @property
+    def configuration_key(self) -> tuple[int, str, str]:
+        """Group key for schema, code, and configuration across source IDs."""
+        return (
+            self.version,
+            self.audit_logic_version,
+            self.configuration_fingerprint,
+        )
+
+    def is_comparable_to(
+        self, other: SourceAuditProvenance | None
+    ) -> bool:
+        """Whether two recorded envelopes share source, configuration, and code."""
+        return bool(
+            other is not None
+            and self.is_recorded
+            and other.is_recorded
+            and self.audit_logic_version
+            and other.audit_logic_version
+            and self.comparability_key == other.comparability_key
+        )
+
+    def is_configuration_comparable_to(
+        self, other: SourceAuditProvenance | None
+    ) -> bool:
+        """Whether config and code match even when source identities differ."""
+        return bool(
+            other is not None
+            and self.is_recorded
+            and other.is_recorded
+            and self.audit_logic_version
+            and other.audit_logic_version
+            and self.configuration_key == other.configuration_key
+        )
 
     @field_validator("allocation_policy")
     @classmethod
@@ -597,8 +747,15 @@ class SourceAuditLedger(BaseModel):
 
     The ledger describes what the audit could see, not whether the source is
     valid. ``provenance`` records the versioned execution envelope (identity,
-    exact bounds, allocation policy, provider version, cache mode/TTL, and
-    timestamp) for reproducibility. ``coverage_complete`` means the bounded
+    exact bounds, allocation policy, provider version/base URL, audit-logic
+    version, cache mode/version/TTL, observed cache hit/miss/age and response
+    digest, and timestamp) for reproducibility. ``is_comparable_to`` groups
+    ledgers that used the same source and execution context; the
+    configuration-only comparison ignores source identity. It is ``None`` for
+    legacy ledgers whose envelope was never recorded, including old
+    placeholders that serialized only the default version;
+    ``provenance_recorded`` makes that distinction explicit in serialized
+    output. ``coverage_complete`` means the bounded
     review finished; a reviewed
     but rejected or gated candidate can still have complete coverage while the
     signal's ``history_complete`` remains false. ``forward_citations_reported``
@@ -611,9 +768,7 @@ class SourceAuditLedger(BaseModel):
 
     assessed: bool = False
     history_attempted: bool = False
-    provenance: SourceAuditProvenance = Field(
-        default_factory=SourceAuditProvenance
-    )
+    provenance: SourceAuditProvenance | None = None
     as_of_date: str = ""
     coverage_complete: bool = False
     cluster_opinion_count: int = 0
@@ -641,10 +796,38 @@ class SourceAuditLedger(BaseModel):
     candidate_pool_limit_reached: bool = False
     # Stable id of the accepted candidate that set invalid/qualified status.
     decisive_candidate_id: str = ""
+
+    @field_validator("provenance", mode="before")
+    @classmethod
+    def _migrate_legacy_provenance(cls, value: object) -> object:
+        """Treat missing or empty placeholder envelopes as unrecorded."""
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            value = SourceAuditProvenance.model_validate(value)
+        if isinstance(value, SourceAuditProvenance) and not value.is_recorded:
+            return None
+        return value
     # Concrete incompleteness reasons; deduplicated in capture order.
     gaps: list[CitatorCoverageGap] = Field(default_factory=list)
     # One row per source-cluster opinion, in cluster opinion-id order.
     opinion_audits: list[SourceOpinionAudit] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def provenance_recorded(self) -> bool:
+        """Whether this ledger carries a recorded provenance envelope."""
+        return self.provenance is not None
+
+    def is_comparable_to(self, other: SourceAuditLedger | None) -> bool:
+        """Whether two ledgers used the same source and execution context."""
+        if (
+            other is None
+            or self.provenance is None
+            or other.provenance is None
+        ):
+            return False
+        return self.provenance.is_comparable_to(other.provenance)
 
     @computed_field
     @property
@@ -1039,6 +1222,56 @@ class CitatorCheck(BaseModel):
         )
 
 
+def group_source_audit_provenances(
+    provenances: list[SourceAuditProvenance],
+) -> list[list[SourceAuditProvenance]]:
+    """Group envelopes with the same configuration and code across sources."""
+    groups: list[list[SourceAuditProvenance]] = []
+    for provenance in provenances:
+        for group in groups:
+            if group[0].is_configuration_comparable_to(provenance):
+                group.append(provenance)
+                break
+        else:
+            groups.append([provenance])
+    return groups
+
+
+def source_audit_provenance_warnings(
+    citator_checks: list[CitatorCheck],
+) -> list[str]:
+    """Warn when one analysis mixes source-audit configurations or code."""
+    provenances = [
+        signal.audit_ledger.provenance
+        for check in citator_checks
+        for signal in check.source_validity
+    ]
+    recorded = [
+        provenance for provenance in provenances if provenance is not None
+    ]
+    unrecorded = len(provenances) - len(recorded)
+    if not recorded:
+        return []
+    groups = group_source_audit_provenances(recorded)
+    reasons: list[str] = []
+    if len(groups) > 1:
+        reasons.append(
+            f"{len(recorded)} recorded source audits span "
+            f"{len(groups)} non-comparable execution configurations"
+        )
+    if unrecorded:
+        reasons.append(
+            f"{unrecorded} source audit(s) have no recorded provenance"
+        )
+    if not reasons:
+        return []
+    return [
+        "Source-audit provenance is mixed: "
+        + "; ".join(reasons)
+        + "; compare only groups with the same configuration and code."
+    ]
+
+
 class AdjudicationEvidence(BaseModel):
     """Source evidence a human must inspect before accepting a proposal."""
 
@@ -1188,6 +1421,12 @@ class LegalAnalysis(BaseModel):
     # outcomes. This is the most useful single artifact for assessing the
     # strength of a legal position under a given statute across courts.
     statute_outcome_matrix: list[StatuteOutcomeRow] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def source_provenance_warnings(self) -> list[str]:
+        """Warn when source audits span non-comparable envelopes."""
+        return source_audit_provenance_warnings(self.citator_checks)
 
 
 class ImpactProfile(BaseModel):

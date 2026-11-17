@@ -11,7 +11,10 @@ from va_legal_agent.courtlistener_cache import (
     CACHE_VERSION,
     CourtListenerCache,
 )
-from va_legal_agent.providers import CourtListenerProvider
+from va_legal_agent.providers import (
+    CourtListenerProvider,
+    ProviderResponseTrace,
+)
 
 
 class _Clock:
@@ -56,6 +59,28 @@ def test_cache_persists_across_instances_and_expires_with_ttl(tmp_path):
     clock.value += 10
     assert second.get("opinion", "7", {"format": "json"}) is None
     assert _entries(second) == []
+
+
+def test_provider_exposes_data_provenance_identity_constants():
+    assert CourtListenerProvider.BASE_URL == (
+        "https://www.courtlistener.com/api/rest/v4/"
+    )
+    assert CourtListenerProvider.cache_version == CACHE_VERSION
+
+
+def test_cache_entry_reports_age_for_a_live_hit(tmp_path):
+    clock = _Clock(1_000)
+    cache = CourtListenerCache(tmp_path / "cache", ttl_seconds=60, now=clock)
+    cache.set("opinion", "7", {"id": 7})
+
+    clock.value += 12.9
+    entry = cache.get_entry("opinion", "7")
+
+    assert entry is not None
+    assert entry.response == {"id": 7}
+    assert entry.cached_at == 1_000
+    assert entry.expires_at == 1_060
+    assert entry.age_seconds == 12
 
 
 def test_cache_set_is_noop_when_ttl_is_zero(tmp_path):
@@ -167,6 +192,21 @@ def test_cache_handles_invalid_source_url(tmp_path):
     cache.set("opinion", "7", {"id": 7}, source_url="http://[::1")
 
     assert cache.get("opinion", "7") == {"id": 7}
+
+
+def test_cache_invalid_cached_at_does_not_break_a_hit(tmp_path):
+    cache = CourtListenerCache(tmp_path / "cache", ttl_seconds=60)
+    cache.set("opinion", "8", {"id": 8})
+    path = cache._path("opinion", "8")
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["cached_at"] = "not-a-number"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    entry = cache.get_entry("opinion", "8")
+
+    assert entry is not None
+    assert entry.response == {"id": 8}
+    assert entry.age_seconds == 0
 
 
 def test_cache_invalid_expiry_is_a_miss_and_prune_removes_it(tmp_path):
@@ -345,6 +385,88 @@ def test_provider_caches_citation_edges_by_opinion_and_page(tmp_path, monkeypatc
     assert len(calls) == 1
     assert calls[0]["cited_opinion"] == 7
     assert calls[0]["cursor"] == "abc"
+
+
+def test_provider_request_trace_records_cache_and_response_identity(
+    tmp_path, monkeypatch
+):
+    clock = _Clock(1_000)
+    cache = CourtListenerCache(tmp_path / "cache", ttl_seconds=60, now=clock)
+    calls = 0
+
+    def fake_get(url, params=None, headers=None, **kwargs):
+        nonlocal calls
+        calls += 1
+        return _Response({"id": 7})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    provider = CourtListenerProvider(cache=cache)
+    url = provider.API_URL + "7/"
+
+    with provider.request_trace() as trace:
+        first = provider._get_json(url)
+        second = provider._get_json(url)
+
+    assert first == second == {"id": 7}
+    assert calls == 1
+    assert trace.cache_hits == 1
+    assert trace.cache_misses == 1
+    assert trace.cache_entry_age_seconds == 0
+    assert len(trace.response_digest) == 64
+
+    clock.value += 15
+    with provider.request_trace() as aged_trace:
+        assert provider._get_json(url) == first
+
+    assert aged_trace.cache_hits == 1
+    assert aged_trace.cache_misses == 0
+    assert aged_trace.cache_entry_age_seconds == 15
+    assert aged_trace.response_digest == trace.response_digest
+
+
+def test_provider_nested_request_traces_both_observe_responses(tmp_path, monkeypatch):
+    cache = CourtListenerCache(tmp_path / "cache", ttl_seconds=60)
+
+    def fake_get(url, params=None, headers=None, **kwargs):
+        return _Response({"id": 7})
+
+    monkeypatch.setattr("va_legal_agent.providers.requests.get", fake_get)
+    provider = CourtListenerProvider(cache=cache)
+
+    with provider.request_trace() as outer:
+        with provider.request_trace() as inner:
+            provider._get_json(provider.API_URL + "7/")
+        provider._get_json(provider.API_URL + "7/")
+
+    assert outer.cache_hits == 1
+    assert outer.cache_misses == 1
+    assert inner.cache_hits == 0
+    assert inner.cache_misses == 1
+    assert outer.response_digest == inner.response_digest
+
+
+def test_provider_trace_deduplicates_responses_and_tracks_oldest_hit():
+    trace = ProviderResponseTrace()
+    assert trace.response_digest == ""
+
+    trace.record_response({"id": 7})
+    original = trace.response_digest
+    trace.record_response({"id": 7})
+    assert trace.response_digest == original
+
+    trace.record_cache_hit(5)
+    trace.record_cache_hit(12)
+    trace.record_cache_hit(3)
+    assert trace.cache_hits == 3
+    assert trace.cache_entry_age_seconds == 12
+
+    trace.record_response({"id": 8})
+    assert trace.response_digest != original
+
+    circular: dict[str, object] = {}
+    circular["self"] = circular
+    trace.record_response(circular)
+    assert len(trace.response_digest) == 64
 
 
 def test_provider_cache_target_classification(tmp_path, monkeypatch):

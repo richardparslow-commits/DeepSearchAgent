@@ -13,6 +13,7 @@ Each provider returns result dicts with the standard keys ``title``/``url``/
 from __future__ import annotations
 
 import email.utils
+import hashlib
 import html as html_module
 import json
 import logging
@@ -20,6 +21,9 @@ import os
 import re
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 from urllib.parse import parse_qsl, urlsplit
@@ -29,7 +33,7 @@ from curl_cffi import requests as cffi_requests
 from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
-from .courtlistener_cache import CourtListenerCache
+from .courtlistener_cache import CACHE_VERSION, CacheEntry, CourtListenerCache
 from .fetch import extract_holding_sentences
 from .queries import adapt_query_for_provider, derive_variants, strip_site_prefixes
 from .search import (
@@ -50,6 +54,51 @@ from .topics import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _response_digest(payload: object) -> str:
+    """Return a stable digest of one raw provider response payload."""
+    try:
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        serialized = repr(payload)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@dataclass
+class ProviderResponseTrace:
+    """Per-audit observation of cache use and raw response payloads."""
+
+    cache_hits: int = 0
+    cache_misses: int = 0
+    cache_entry_age_seconds: int = 0
+    response_digests: set[str] = field(default_factory=set)
+
+    def record_cache_hit(self, age_seconds: int) -> None:
+        self.cache_hits += 1
+        self.cache_entry_age_seconds = max(
+            self.cache_entry_age_seconds, max(0, age_seconds)
+        )
+
+    def record_cache_miss(self) -> None:
+        self.cache_misses += 1
+
+    def record_response(self, payload: object) -> None:
+        self.response_digests.add(_response_digest(payload))
+
+    @property
+    def response_digest(self) -> str:
+        """Aggregate unique response payloads into one deterministic digest."""
+        if not self.response_digests:
+            return ""
+        material = "\n".join(sorted(self.response_digests))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 class SearchProvider(Protocol):
@@ -448,6 +497,8 @@ class CourtListenerProvider:
 
     name = "courtlistener"
     api_version = "v4"
+    cache_version = CACHE_VERSION
+    BASE_URL = "https://www.courtlistener.com/api/rest/v4/"
     # Full-text search lives on /search/ (the opinions list endpoint rejects
     # ``q``/``court`` as unknown filter params). Search results carry the
     # metadata inline (camelCase keys), so no follow-up fetches are needed.
@@ -463,6 +514,7 @@ class CourtListenerProvider:
 
     def __init__(self, cache: CourtListenerCache | None = None):
         self._cache = cache
+        self._request_trace_local = threading.local()
         if cache is not None:
             return
         settings = get_settings()
@@ -545,6 +597,40 @@ class CourtListenerProvider:
             headers["Authorization"] = f"Token {settings.courtlistener_api_key}"
         return headers
 
+    def _active_traces(self) -> tuple[ProviderResponseTrace, ...]:
+        stack = getattr(self._request_trace_local, "stack", ())
+        return tuple(stack)
+
+    @contextmanager
+    def request_trace(self) -> Iterator[ProviderResponseTrace]:
+        """Collect cache and response evidence for one bounded audit."""
+        trace = ProviderResponseTrace()
+        stack = getattr(self._request_trace_local, "stack", None)
+        if stack is None:
+            stack = []
+            self._request_trace_local.stack = stack
+        stack.append(trace)
+        try:
+            yield trace
+        finally:
+            for index, active in enumerate(stack):
+                if active is trace:
+                    del stack[index]
+                    break
+
+    def _record_cache_hit(self, entry: CacheEntry) -> None:
+        for trace in self._active_traces():
+            trace.record_cache_hit(entry.age_seconds)
+            trace.record_response(entry.response)
+
+    def _record_cache_miss(self) -> None:
+        for trace in self._active_traces():
+            trace.record_cache_miss()
+
+    def _record_response(self, payload: object) -> None:
+        for trace in self._active_traces():
+            trace.record_response(payload)
+
     def _get_json(self, url: str, params: dict[str, object] | None = None) -> dict:
         """GET *url* with pacing and throttle-aware retries; return parsed JSON.
 
@@ -559,9 +645,11 @@ class CourtListenerProvider:
         """
         cache_target = self._cache_target(url, params)
         if cache_target is not None and self._cache is not None:
-            cached = self._cache.get(*cache_target)
-            if cached is not None:
-                return cached
+            entry = self._cache.get_entry(*cache_target)
+            if entry is not None:
+                self._record_cache_hit(entry)
+                return entry.response
+            self._record_cache_miss()
         settings = get_settings()
         retries = settings.search_retry_attempts
         last_error: requests.RequestException | None = None
@@ -612,6 +700,7 @@ class CourtListenerProvider:
                     kind="malformed_response",
                     retryable=False,
                 ) from exc
+            self._record_response(data)
             if cache_target is not None and self._cache is not None:
                 try:
                     kind, identifier, cache_params = cache_target
@@ -691,13 +780,15 @@ class CourtListenerProvider:
                 last_error = exc
                 continue
             try:
-                return response.json()
+                data = response.json()
             except ValueError as exc:
                 raise SearchError(
                     f"CourtListener returned invalid JSON for {url}: {exc}",
                     kind="malformed_response",
                     retryable=False,
                 ) from exc
+            self._record_response(data)
+            return data
         kind, retryable = (
             classify_search_error(last_error)
             if last_error is not None

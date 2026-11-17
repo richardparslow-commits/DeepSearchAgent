@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime, timezone
 import io
 import json
 import logging
@@ -29,8 +30,10 @@ from .models import (
     Contradiction,
     LegalAnalysis,
     PrincipleFinding,
+    SourceAuditProvenance,
     StatuteOutcomeRow,
     StatutorySupersessionSignal,
+    group_source_audit_provenances,
 )
 from .planning import decompose_issue, plan_queries
 from .providers import (
@@ -422,6 +425,36 @@ def _authority_queue_lines(queue: list[AuthorityQueueEntry]) -> list[str]:
     return lines
 
 
+def _source_provenance_lines(check: CitatorCheck) -> list[str]:
+    """Render each source audit's execution and observed-data envelope."""
+    lines = ["  Source-audit provenance:"]
+    for signal in check.source_validity:
+        provenance = signal.audit_ledger.provenance
+        label = (
+            f"source {signal.source_opinion_id or 'unknown'}/cluster "
+            f"{signal.source_cluster_id or 'unknown'}"
+        )
+        if provenance is None:
+            lines.append(f"    {label}: not recorded")
+            continue
+        lines.append(
+            f"    {label}: envelope v{provenance.version}; audit logic "
+            f"{provenance.audit_logic_version or 'unknown'}; provider "
+            f"{provenance.provider or 'unknown'} "
+            f"{provenance.provider_version or 'unknown'} at "
+            f"{provenance.provider_base_url or 'base unknown'}; cache "
+            f"{provenance.cache_mode or 'unknown'} v{provenance.cache_version} "
+            f"TTL {provenance.cache_ttl_seconds}s; hits "
+            f"{provenance.cache_hits}/misses {provenance.cache_misses}; "
+            f"oldest hit {provenance.cache_entry_age_seconds}s; execution "
+            f"fingerprint {provenance.execution_fingerprint}; configuration "
+            f"fingerprint {provenance.configuration_fingerprint}; response "
+            f"digest {provenance.response_digest or 'none'}; generated "
+            f"{provenance.generated_at or 'unknown'}"
+        )
+    return lines
+
+
 def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
     """Render citator results with explicit scope and separate advisory signals."""
     lines: list[str] = [
@@ -773,6 +806,7 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
                         f"{invalidator.invalidator_status}; "
                         f"code {invalidator.reason_code}; {invalidator.reason}"
                     )
+            lines.extend(_source_provenance_lines(check))
             if check.source_validity_actions:
                 lines.append("  Source-validity enforcement actions:")
                 for action in check.source_validity_actions:
@@ -855,6 +889,7 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
+    provenance_warnings = analysis.source_provenance_warnings
     blocks = [
         [f"Issue: {analysis.issue}"],
         [f"Run id: {analysis.run_id or '(none)'}"],
@@ -900,6 +935,9 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         else [],
         _bullets("Citator flags", analysis.citator_flags)
         if analysis.citator_flags
+        else [],
+        _bullets("Source-audit provenance warnings", provenance_warnings)
+        if provenance_warnings
         else [],
         ([_matrix_header()] + _matrix_rows(analysis.statute_outcome_matrix))
         if analysis.statute_outcome_matrix else [],
@@ -993,6 +1031,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "authority_queue", "citator_checks", "citator_flags",
         "detected_elements", "principle_findings", "statute_outcome_matrix",
         "search_telemetry", "courtlistener_quota",
+        "source_provenance_warnings",
     ]
     row = [
         analysis.run_id,
@@ -1049,6 +1088,7 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         ),
         json.dumps(analysis.search_telemetry, sort_keys=True),
         json.dumps(analysis.courtlistener_quota, sort_keys=True),
+        " | ".join(analysis.source_provenance_warnings),
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
@@ -1064,6 +1104,105 @@ def render_analysis(analysis: LegalAnalysis, output_format: str) -> str:
     if output_format == "csv":
         return _analysis_to_csv(analysis)
     return analysis.model_dump_json(indent=2)
+
+
+def _provenance_sidecar_payload(analysis: LegalAnalysis) -> dict[str, object]:
+    """Build the machine-readable source-audit provenance sidecar."""
+    source_audits: list[dict[str, object]] = []
+    recorded: list[tuple[dict[str, object], SourceAuditProvenance]] = []
+    for check in analysis.citator_checks:
+        for signal in check.source_validity:
+            provenance = signal.audit_ledger.provenance
+            record: dict[str, object] = {
+                "target_case": check.target_case,
+                "target_citation": check.target_citation,
+                "source_opinion_id": signal.source_opinion_id,
+                "source_cluster_id": signal.source_cluster_id,
+                "provenance_recorded": provenance is not None,
+                "provenance": (
+                    provenance.model_dump(mode="json")
+                    if provenance is not None
+                    else None
+                ),
+            }
+            source_audits.append(record)
+            if provenance is not None:
+                recorded.append((record, provenance))
+
+    groups = group_source_audit_provenances(
+        [provenance for _record, provenance in recorded]
+    )
+    execution_groups: list[dict[str, object]] = []
+    for group in groups:
+        group_ids = {id(provenance) for provenance in group}
+        members = [
+            record
+            for record, provenance in recorded
+            if id(provenance) in group_ids
+        ]
+        representative = group[0]
+        execution_groups.append(
+            {
+                "provenance_version": representative.version,
+                "audit_logic_version": representative.audit_logic_version,
+                "configuration_fingerprint": (
+                    representative.configuration_fingerprint
+                ),
+                "source_audit_count": len(group),
+                "source_opinion_ids": [
+                    member["source_opinion_id"] for member in members
+                ],
+            }
+        )
+
+    warnings = list(analysis.source_provenance_warnings)
+    return {
+        "version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "run_id": analysis.run_id,
+        "issue": analysis.issue,
+        "source_audit_count": len(source_audits),
+        "recorded_source_audit_count": len(recorded),
+        "unrecorded_source_audit_count": len(source_audits) - len(recorded),
+        "source_audits": source_audits,
+        "execution_groups": execution_groups,
+        "mixed_provenance": bool(warnings),
+        "warnings": warnings,
+    }
+
+
+def _sidecar_requested(explicit: str | None) -> bool:
+    """Whether an explicit sidecar value requests a file."""
+    return bool(
+        explicit is not None
+        and explicit.strip().lower() not in {"", "off", "none"}
+    )
+
+
+def _resolve_provenance_sidecar_path(
+    explicit: str | None, output_file: str | None
+) -> Path | None:
+    """Resolve an explicit sidecar path or derive one beside report output."""
+    if explicit is not None:
+        return Path(explicit) if _sidecar_requested(explicit) else None
+    if output_file:
+        return Path(output_file).with_suffix(".provenance.json")
+    return None
+
+
+def _write_provenance_sidecar(
+    analysis: LegalAnalysis, path: Path
+) -> None:
+    """Write the provenance sidecar as stable, machine-readable JSON."""
+    path.write_text(
+        json.dumps(
+            _provenance_sidecar_payload(analysis),
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1883,6 +2022,19 @@ def main() -> None:
         help="Write the analysis to this file instead of stdout.",
     )
     parser.add_argument(
+        "--provenance-sidecar",
+        dest="provenance_sidecar",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Write source-audit provenance as a machine-readable JSON sidecar "
+            "for a single-issue analysis. When omitted with --output-file, "
+            "defaults to '<output>.provenance.json'; pass 'off' to disable. "
+            "Rejected with --show-config, --dry-run, --batch-dry-run, or "
+            "--auto-run."
+        ),
+    )
+    parser.add_argument(
         "--adjudication-queue",
         dest="adjudication_queue",
         default=None,
@@ -2059,6 +2211,18 @@ def main() -> None:
     # Surface misconfigured SEARCH_PROVIDERS early — including --show-config
     # runs — so typos are visible before any search happens.
     validate_search_providers()
+
+    if _sidecar_requested(args.provenance_sidecar) and (
+        args.show_config
+        or args.dry_run
+        or args.batch_dry_run
+        or args.auto_run
+    ):
+        parser.error(
+            "--provenance-sidecar is only supported for a single-issue analysis; "
+            "it cannot be used with --show-config, --dry-run, "
+            "--batch-dry-run, or --auto-run. Pass 'off' to disable it."
+        )
 
     if args.show_config:
         print_settings()
@@ -2295,13 +2459,32 @@ def main() -> None:
         )
         _maybe_emit_batch_summary(tracker, args.batch_size)
     output = render_analysis(analysis, args.output_format)
+    sidecar_path = _resolve_provenance_sidecar_path(
+        args.provenance_sidecar, args.output_file
+    )
+    if (
+        sidecar_path is not None
+        and args.output_file
+        and sidecar_path.resolve() == Path(args.output_file).resolve()
+    ):
+        parser.error("--provenance-sidecar must differ from --output-file")
     if args.output_file:
         try:
             Path(args.output_file).write_text(output + "\n", encoding="utf-8")
         except OSError as exc:
             parser.error(f"could not write output file: {exc}")
+        if sidecar_path is not None:
+            try:
+                _write_provenance_sidecar(analysis, sidecar_path)
+            except OSError as exc:
+                parser.error(f"could not write provenance sidecar: {exc}")
         return
     print(output)
+    if sidecar_path is not None:
+        try:
+            _write_provenance_sidecar(analysis, sidecar_path)
+        except OSError as exc:
+            parser.error(f"could not write provenance sidecar: {exc}")
 
 
 if __name__ == "__main__":

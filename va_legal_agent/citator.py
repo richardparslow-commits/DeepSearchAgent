@@ -52,6 +52,7 @@ from .models import (
     LaterCitingOpinion,
     NegativeTreatment,
     SameDocketDecision,
+    SOURCE_AUDIT_LOGIC_VERSION,
     SOURCE_AUDIT_PROVENANCE_VERSION,
     SourceAuditLedger,
     SourceAuditProvenance,
@@ -62,6 +63,7 @@ from .models import (
 )
 from .providers import (
     CourtListenerProvider,
+    ProviderResponseTrace,
     _cluster_citation_values,
     _cluster_identifier,
     _cluster_opinion_ids,
@@ -2565,6 +2567,11 @@ def _dedupe_audit_gaps(
     return unique
 
 
+def _underlying_provider(provider: CourtListenerProvider) -> CourtListenerProvider:
+    """Return the real provider behind snapshotting proxies."""
+    return getattr(provider, "provider", provider)
+
+
 def _source_audit_provenance(
     provider: CourtListenerProvider,
     source_id: int,
@@ -2575,8 +2582,8 @@ def _source_audit_provenance(
     """Record the exact source-history execution envelope for one audit."""
     max_ids = max(1, _SOURCE_HISTORY_MAX_CITING * 4)
     # Snapshotting wraps the real provider; provenance must describe the
-    # underlying API version and cache, not the proxy.
-    source_provider = getattr(provider, "provider", provider)
+    # underlying API version, base URL, and cache, not the proxy.
+    source_provider = _underlying_provider(provider)
     cache = getattr(source_provider, "_cache", None)
     cache_enabled = bool(
         cache is not None and getattr(cache, "enabled", False)
@@ -2596,6 +2603,11 @@ def _source_audit_provenance(
         provider_version=str(
             getattr(source_provider, "api_version", "") or "v4"
         ),
+        provider_base_url=str(
+            getattr(source_provider, "BASE_URL", "")
+            or CourtListenerProvider.BASE_URL
+        ),
+        audit_logic_version=SOURCE_AUDIT_LOGIC_VERSION,
         generated_at=_checked_at(),
         max_pages=_SOURCE_HISTORY_MAX_PAGES,
         page_size=max_ids,
@@ -2606,7 +2618,28 @@ def _source_audit_provenance(
             "adaptive" if adaptive_allocation else "equal"
         ),
         cache_mode="read-through" if cache_enabled else "disabled",
+        cache_version=int(
+            getattr(source_provider, "cache_version", 0)
+            or CourtListenerProvider.cache_version
+        ),
         cache_ttl_seconds=cache_ttl_seconds,
+    )
+
+
+def _apply_source_audit_trace(
+    ledger: SourceAuditLedger, trace: ProviderResponseTrace
+) -> None:
+    """Attach observed cache and response evidence to a completed audit."""
+    provenance = ledger.provenance
+    if provenance is None:
+        return
+    ledger.provenance = provenance.model_copy(
+        update={
+            "cache_hits": trace.cache_hits,
+            "cache_misses": trace.cache_misses,
+            "cache_entry_age_seconds": trace.cache_entry_age_seconds,
+            "response_digest": trace.response_digest,
+        }
     )
 
 
@@ -2964,10 +2997,34 @@ def _source_audit(
     cache: _SourceValidationCache,
     depth: int = 0,
 ) -> _SourceAudit:
-    """Return a cached source audit, fetching current metadata and history once."""
+    """Return a cached source audit and record the data used to build it."""
     key = (source_id, as_of_date, depth)
     if key in cache.audits:
         return cache.audits[key]
+    source_provider = _underlying_provider(provider)
+    trace_factory = getattr(source_provider, "request_trace", None)
+    if trace_factory is None:
+        audit = _source_audit_untraced(
+            provider, source_id, as_of_date, cache, depth
+        )
+    else:
+        with trace_factory() as trace:
+            audit = _source_audit_untraced(
+                provider, source_id, as_of_date, cache, depth
+            )
+        _apply_source_audit_trace(audit.audit_ledger, trace)
+    cache.audits[key] = audit
+    return audit
+
+
+def _source_audit_untraced(
+    provider: CourtListenerProvider,
+    source_id: int,
+    as_of_date: str,
+    cache: _SourceValidationCache,
+    depth: int = 0,
+) -> _SourceAudit:
+    """Fetch and build one source audit without using the run cache."""
     metadata = _source_metadata(provider, source_id)
     cluster_id = str(metadata.get("cluster_id") or "") if metadata else ""
     provenance = _source_audit_provenance(
@@ -2994,7 +3051,6 @@ def _source_audit(
                 ],
             ),
         )
-        cache.audits[key] = audit
         return audit
     role = _opinion_role(str(metadata.get("opinion_type") or ""))
     tier = _precedential_tier(str(metadata.get("precedential_status") or ""))
@@ -3019,7 +3075,6 @@ def _source_audit(
                 ],
             ),
         )
-        cache.audits[key] = audit
         return audit
     source_case = CaseRecord(
         title=str(metadata.get("title") or f"Opinion {source_id}"),
@@ -3052,7 +3107,6 @@ def _source_audit(
                 ],
             ),
         )
-        cache.audits[key] = audit
         return audit
     audit = _source_history_audit(
         provider,
@@ -3063,7 +3117,6 @@ def _source_audit(
         provenance,
         depth,
     )
-    cache.audits[key] = audit
     return audit
 
 
