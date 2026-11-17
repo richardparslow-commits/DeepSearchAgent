@@ -25,9 +25,15 @@ os.environ.pop("PORT", None)
 import webapp  # noqa: E402
 
 from va_legal_agent.models import (  # noqa: E402
+    AdjudicationRoleGuidance,
+    AuthorityReliabilitySummary,
     CaseAbstract,
+    ImpactProfile,
     LegalAnalysis,
     ProvisionImpact,
+    QrsAuditWorkflow,
+    RvsrAdjudicationWorkflow,
+    SeniorRaterDroWorkflow,
     SurfacedCaseRecord,
 )
 
@@ -368,6 +374,9 @@ def test_webapp_job_persists_structured_d1_payload(
                 transcript_source_type="official_court_opinion",
                 provenance_verified=True,
                 retrieved_url="https://uscourts.cavc.gov/opinions/smith",
+                source_reliability="official",
+                authority_tier="official_primary_binding",
+                is_official_authority=True,
             )
         ],
         case_abstracts=[
@@ -389,6 +398,66 @@ def test_webapp_job_persists_structured_d1_payload(
                 m21_1_citations=["M21-1, Part V, Subpart ii"],
             )
         ],
+        impact_profile=ImpactProfile(
+            issue_tags=["rating"],
+            outcome="remanded",
+            statutes=["38 C.F.R. § 4.130"],
+            authority_note="Binding on the Board.",
+            provision_impacts=[
+                ProvisionImpact(
+                    citation="38 C.F.R. § 4.130",
+                    stage="rating_dc_evaluation",
+                    legal_effect="clarifying",
+                    provenance_anchor="The Board must apply 38 C.F.R. § 4.130.",
+                    m21_1_citations=["M21-1, Part V, Subpart ii"],
+                )
+            ],
+            nuance="This ruling is relevant to rating in VA compensation claims.",
+        ),
+        impact_profiles=[
+            ImpactProfile(
+                issue_tags=["rating"],
+                outcome="remanded",
+                statutes=["38 C.F.R. § 4.130"],
+                authority_note="Binding on the Board.",
+                provision_impacts=[
+                    ProvisionImpact(
+                        citation="38 C.F.R. § 4.130",
+                        stage="rating_dc_evaluation",
+                        legal_effect="clarifying",
+                        provenance_anchor="The Board must apply 38 C.F.R. § 4.130.",
+                        m21_1_citations=["M21-1, Part V, Subpart ii"],
+                    )
+                ],
+                nuance="This ruling is relevant to rating in VA compensation claims.",
+            )
+        ],
+        adjudication_guidance=AdjudicationRoleGuidance(
+            issue="PTSD rating",
+            rvsr=RvsrAdjudicationWorkflow(
+                evidence_review_checklist=["Review the claims file."],
+                lay_evidence_competence=["Apply 38 U.S.C. § 5107(b)."],
+                duty_to_assist_exam_actions=["Request an adequate opinion."],
+                rating_codesheet_actions=["Apply Diagnostic Code 9411."],
+                effective_date_actions=["Apply 38 C.F.R. § 3.400."],
+                reasons_for_decision_requirements=["Address 38 U.S.C. § 5104(b)."],
+            ),
+            senior_rater_dro=SeniorRaterDroWorkflow(
+                hlr_de_novo_actions=["Conduct de novo review under 38 C.F.R. § 3.2601."],
+                dta_error_returns=["Return for the missing examination."],
+                cue_analysis=["Apply 38 C.F.R. § 3.105(a) and George v. McDonough."],
+                precedent_m21_conflict_resolution=["Binding precedent controls M21-1."],
+                dro_disposition_actions=["Issue a new decision."],
+            ),
+            qrs=QrsAuditWorkflow(
+                second_signature_checkpoints=["Verify the diagnostic code."],
+                nqr_qrt_error_calls=["Call a duty-to-assist error."],
+                sample_review_focus=["Sample rating and HLR decisions."],
+            ),
+        ),
+        source_reliability_summary=AuthorityReliabilitySummary(
+            official_count=1, official_primary_binding_count=1
+        ),
     )
     monkeypatch.setattr(webapp, "analyze_cases_for_claim", lambda *a, **k: analysis)
     monkeypatch.setattr(webapp, "_save_job", lambda job: None)
@@ -416,3 +485,13 @@ def test_webapp_job_persists_structured_d1_payload(
     assert job["result_json"]["surfaced_cases"][0]["docket_number"] == "21-1234"
     assert job["result_json"]["case_abstracts"][0]["abstract_complete"] is True
     assert job["result_json"]["provision_impacts"][0]["m21_1_citations"]
+    assert "Full impact profiles (beyond nuance):" in job["result"]
+    assert "VA Rater (RVSR) Application:" in job["result"]
+    assert "Senior VA Rater / DRO Application (HLR & CUE):" in job["result"]
+    assert "Quality Review (QRS) Checkpoints:" in job["result"]
+    assert "Official Court Transcript / Primary Authority" in job["result"]
+    assert job["result_json"]["impact_profile"]["nuance"]
+    assert job["result_json"]["adjudication_guidance"]["qrs"]["nqr_qrt_error_calls"]
+    assert job["result_json"]["source_reliability_summary"]["official_count"] == 1
+    assert "Official Court Transcript / Primary Authority" in webapp._INDEX_HTML
+    assert "Secondary Summary / Non-Binding Source" in webapp._INDEX_HTML

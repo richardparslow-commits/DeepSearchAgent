@@ -912,8 +912,8 @@ def test_build_analysis_reasoning_without_synthesis_uses_narrative(monkeypatch):
 
 def test_build_analysis_reasoning_falls_back_to_template_principles(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    # The LLM returns only a synthesis (no reconciled principles): the
-    # deterministic principle findings still back the report.
+    # The LLM returns only an unanchored synthesis: the provenance gate
+    # rejects it and the deterministic principle findings still back the report.
     reasoning = ReasoningResult(reconciled_principles=[], synthesis="Only a synthesis.")
     monkeypatch.setattr(
         "va_legal_agent.interpretation.reason_cases",
@@ -926,9 +926,50 @@ def test_build_analysis_reasoning_falls_back_to_template_principles(monkeypatch)
         [_case("Smith v. Wilkie", snippet="service connection requires competent evidence")],
     )
 
-    assert result.how_it_affects_va_claims == "Only a synthesis."
+    # An unanchored synthesis is rejected by the provenance gate and the
+    # deterministic template is used instead.
+    assert result.how_it_affects_va_claims != "Only a synthesis."
+    assert any("rejected synthesis" in warning for warning in result.llm_provenance_warnings)
+    assert result.llm_provenance_validated is True
     assert result.likely_applicable_principles  # deterministic findings kept
     assert any("(see: Smith v. Wilkie)" in p for p in result.likely_applicable_principles)
+
+
+def test_aud4_interpretation_rejects_mocked_fabricated_llm_citation(monkeypatch):
+    """A mocked LLM JSON citation not in the corpus never reaches the report."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    reasoning = ReasoningResult(
+        reconciled_principles=[
+            "The veteran prevails under a fabricated rule (999 Vet. App. 999).",
+            "Service connection requires competent evidence (Smith v. Wilkie).",
+        ],
+        synthesis="The court adopted the fabricated rule in 999 Vet. App. 999.",
+        schema_validated=True,
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.reason_cases",
+        lambda issue, claim_type, cases: reasoning,
+    )
+
+    def unexpected_narrative(*args, **kwargs):
+        raise AssertionError("rejected synthesis must not fall back to raw LLM prose")
+
+    monkeypatch.setattr(
+        "va_legal_agent.interpretation.interpret_cases", unexpected_narrative
+    )
+
+    result = build_interpretive_analysis(
+        "service connection",
+        "Compensation",
+        [_case("Smith v. Wilkie", snippet="service connection requires competent evidence")],
+    )
+
+    assert "999 Vet. App. 999" not in " ".join(result.likely_applicable_principles)
+    assert "999 Vet. App. 999" not in result.how_it_affects_va_claims
+    assert result.llm_provenance_validated is True
+    assert any("fabricated case citation" in warning for warning in result.llm_provenance_warnings)
+    assert any("rejected synthesis" in warning for warning in result.llm_provenance_warnings)
+    assert any("Smith v. Wilkie" in principle for principle in result.likely_applicable_principles)
 
 
 # ── Weighted coverage score ──────────────────────────────────────────────────

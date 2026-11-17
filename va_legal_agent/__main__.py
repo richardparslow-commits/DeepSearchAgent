@@ -22,8 +22,10 @@ from .batch import BatchTracker
 from .config import get_settings
 from .interpretation import detect_claim_elements
 from .models import (
+    AdjudicationRoleGuidance,
     AuthorityCheck,
     AuthorityQueueEntry,
+    AuthorityReliabilitySummary,
     CRSReport,
     CaseAbstract,
     CaseExtractionCandidates,
@@ -31,6 +33,7 @@ from .models import (
     ClaimElement,
     CongressLink,
     Contradiction,
+    ImpactProfile,
     LegalAnalysis,
     PrincipleFinding,
     ProvisionImpact,
@@ -43,6 +46,7 @@ from .models import (
     StatutorySupersessionSignal,
     group_source_audit_provenances,
 )
+from .reliability import authority_label
 from .planning import decompose_issue, plan_queries
 from .redaction import redact_secrets, sanitize_exception
 from .provenance_compare import (
@@ -1061,7 +1065,10 @@ def _surfaced_case_lines(records: list[SurfacedCaseRecord]) -> list[str]:
             f"{record.docket_number or '(none)'} | citation: "
             f"{record.reporter_citation or '(none)'} | decided: "
             f"{record.decision_date or '(unknown)'} | status: "
-            f"{record.precedential_status} | panel: "
+            f"{record.precedential_status} | source: "
+            f"{record.source_reliability or 'unknown'} "
+            f"[{record.authority_tier}; official: "
+            f"{record.is_official_authority}] | panel: "
             f"{record.panel or '(names unavailable)'} ({record.panel_status}) "
             f"| citator: {record.citator_status} "
             f"(confidence: {record.citator_confidence}; as of: "
@@ -1106,6 +1113,88 @@ def _provision_impact_lines(impacts: list[ProvisionImpact]) -> list[str]:
     ]
 
 
+def _impact_profile_lines(profiles: list[ImpactProfile]) -> list[str]:
+    """Render every field of each full ImpactProfile, not only its nuance."""
+    lines: list[str] = []
+    for profile in profiles:
+        lines.append(
+            "issue tags: "
+            + (", ".join(profile.issue_tags) or "(none)")
+            + f" | outcome: {profile.outcome or '(unknown)'}"
+            + f" | outcome note: {profile.outcome_note or '(none)'}"
+            + f" | statutes: {', '.join(profile.statutes) or '(none)'}"
+            + f" | statute note: {profile.statute_note or '(none)'}"
+            + f" | authority: {profile.authority_note or '(none)'}"
+            + f" | nuance: {profile.nuance or '(none)'}"
+        )
+        lines.extend(
+            "  impact: " + item
+            for item in _provision_impact_lines(profile.provision_impacts)
+        )
+    return lines
+
+
+def _source_reliability_lines(
+    summary: AuthorityReliabilitySummary,
+    records: list[SurfacedCaseRecord],
+) -> list[str]:
+    """Render aggregate and per-authority Official vs. Secondary labels."""
+    lines = [
+        f"Official primary: {summary.official_count}; secondary: "
+        f"{summary.secondary_count}; unverified: {summary.unknown_count}; "
+        f"tiers: {json.dumps(summary.tier_counts, sort_keys=True)}"
+    ]
+    for record in records:
+        lines.append(
+            f"{record.case_title} — "
+            f"{authority_label(record.authority_tier, record.is_official_authority)} "
+            f"[tier: {record.authority_tier}; source: "
+            f"{record.source_reliability or 'unknown'}]"
+        )
+    return lines
+
+
+def _rvsr_workflow_lines(guidance: AdjudicationRoleGuidance) -> list[str]:
+    workflow = guidance.rvsr
+    lines: list[str] = []
+    for title, items in (
+        ("Evidence review", workflow.evidence_review_checklist),
+        ("Lay competence / benefit of the doubt", workflow.lay_evidence_competence),
+        ("Duty to assist / exam adequacy", workflow.duty_to_assist_exam_actions),
+        ("Rating codesheet", workflow.rating_codesheet_actions),
+        ("Effective dates", workflow.effective_date_actions),
+        ("Reasons for decision", workflow.reasons_for_decision_requirements),
+    ):
+        lines.extend(f"{title}: {item}" for item in items)
+    return lines
+
+
+def _senior_workflow_lines(guidance: AdjudicationRoleGuidance) -> list[str]:
+    workflow = guidance.senior_rater_dro
+    lines: list[str] = []
+    for title, items in (
+        ("HLR de novo (38 C.F.R. § 3.2601)", workflow.hlr_de_novo_actions),
+        ("Duty-to-assist error returns", workflow.dta_error_returns),
+        ("CUE (38 C.F.R. § 3.105(a))", workflow.cue_analysis),
+        ("Precedent vs. M21-1", workflow.precedent_m21_conflict_resolution),
+        ("DRO disposition", workflow.dro_disposition_actions),
+    ):
+        lines.extend(f"{title}: {item}" for item in items)
+    return lines
+
+
+def _qrs_workflow_lines(guidance: AdjudicationRoleGuidance) -> list[str]:
+    workflow = guidance.qrs
+    lines: list[str] = []
+    for title, items in (
+        ("Second-signature checkpoints", workflow.second_signature_checkpoints),
+        ("NQR/QRT error calls", workflow.nqr_qrt_error_calls),
+        ("Sample review focus", workflow.sample_review_focus),
+    ):
+        lines.extend(f"{title}: {item}" for item in items)
+    return lines
+
+
 def _rvsr_lines(guidance: RvsrGuidance) -> list[str]:
     lines: list[str] = []
     for title, items in (
@@ -1145,6 +1234,14 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         )
         if analysis.surfaced_cases
         else [],
+        _bullets(
+            "Source reliability (Official vs. Secondary)",
+            _source_reliability_lines(
+                analysis.source_reliability_summary, analysis.surfaced_cases
+            ),
+        )
+        if analysis.surfaced_cases
+        else [],
         [f"Summary:\n{analysis.summary or '(none)'}"],
         _bullets("Structured case abstracts", _abstract_lines(analysis.case_abstracts))
         if analysis.case_abstracts
@@ -1155,6 +1252,32 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         )
         if analysis.provision_impacts
         else [],
+        _bullets(
+            "Full impact profiles (beyond nuance)",
+            _impact_profile_lines(analysis.impact_profiles),
+        )
+        if analysis.impact_profiles
+        else [],
+        _bullets(
+            "VA Rater (RVSR) Application",
+            _rvsr_workflow_lines(analysis.adjudication_guidance),
+        )
+        if analysis.adjudication_guidance.rvsr.evidence_review_checklist
+        else [],
+        _bullets(
+            "Senior VA Rater / DRO Application (HLR & CUE)",
+            _senior_workflow_lines(analysis.adjudication_guidance),
+        )
+        if analysis.adjudication_guidance.senior_rater_dro.hlr_de_novo_actions
+        else [],
+        _bullets(
+            "Quality Review (QRS) Checkpoints",
+            _qrs_workflow_lines(analysis.adjudication_guidance),
+        )
+        if analysis.adjudication_guidance.qrs.nqr_qrt_error_calls
+        else [],
+        # Backward-compatible headings for callers that parsed the pre-AUD4-007
+        # report. The workflow sections above are the authoritative structures.
         _bullets("RVSR operational playbook", _rvsr_lines(analysis.rvsr_guidance))
         if analysis.rvsr_guidance.evidence_review_checklist
         else [],
@@ -1163,6 +1286,9 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
             _senior_lines(analysis.senior_rater_guidance),
         )
         if analysis.senior_rater_guidance.hlr_de_novo_focus
+        else [],
+        _bullets("LLM provenance warnings", analysis.llm_provenance_warnings)
+        if analysis.llm_provenance_warnings
         else [],
         _bullets("Deep summaries", deep_blocks) if deep_blocks else [],
         [f"How this affects VA claims:\n{analysis.how_it_affects_va_claims or '(none)'}"],
@@ -1324,7 +1450,10 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "detected_elements", "principle_findings", "statute_outcome_matrix",
         "search_telemetry", "courtlistener_quota",
         "source_provenance_warnings", "surfaced_cases", "case_abstracts",
-        "provision_impacts", "rvsr_guidance", "senior_rater_guidance",
+        "provision_impacts", "impact_profile", "impact_profiles",
+        "rvsr_guidance", "senior_rater_guidance", "adjudication_guidance",
+        "source_reliability_summary", "llm_provenance_warnings",
+        "llm_provenance_validated",
     ]
     row = [
         analysis.run_id,
@@ -1408,8 +1537,22 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
             [impact.model_dump() for impact in analysis.provision_impacts],
             sort_keys=True,
         ),
+        json.dumps(
+            analysis.impact_profile.model_dump()
+            if analysis.impact_profile is not None
+            else None,
+            sort_keys=True,
+        ),
+        json.dumps(
+            [profile.model_dump() for profile in analysis.impact_profiles],
+            sort_keys=True,
+        ),
         json.dumps(analysis.rvsr_guidance.model_dump(), sort_keys=True),
         json.dumps(analysis.senior_rater_guidance.model_dump(), sort_keys=True),
+        json.dumps(analysis.adjudication_guidance.model_dump(), sort_keys=True),
+        json.dumps(analysis.source_reliability_summary.model_dump(), sort_keys=True),
+        " | ".join(analysis.llm_provenance_warnings),
+        analysis.llm_provenance_validated,
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")

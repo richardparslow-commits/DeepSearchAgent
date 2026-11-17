@@ -29,7 +29,12 @@ from .models import (
     SeniorRaterGuidance,
     SurfacedCaseRecord,
 )
-from .reliability import RELIABILITY_OFFICIAL, OFFICIAL_DOMAINS, classify_source
+from .reliability import (
+    RELIABILITY_OFFICIAL,
+    OFFICIAL_DOMAINS,
+    classify_authority_tier,
+    classify_source,
+)
 from .topics import BINDING_COURTS, BOARD_COURT, COURT_CAVC
 
 REGISTRY_VERSION = "2026.11"
@@ -1164,6 +1169,9 @@ def build_surfaced_case(case: CaseRecord) -> SurfacedCaseRecord:
         warnings.append("Appellate history has not been assessed by the citator.")
     abstract = case.case_abstract or build_case_abstract("", case)
     impacts = case.provision_impacts or extract_provision_impacts(_case_text(case), case)
+    tier, official = classify_authority_tier(
+        case.url, case.court, case.precedential
+    )
     return SurfacedCaseRecord(
         case_title=case.title,
         court=case.court,
@@ -1180,6 +1188,8 @@ def build_surfaced_case(case: CaseRecord) -> SurfacedCaseRecord:
         transcript_source_type=source_type,
         provenance_verified=verified,
         source_reliability=case.source_reliability or classify_source(case.url),
+        authority_tier=tier,
+        is_official_authority=official,
         warnings=warnings,
         case_abstract=abstract,
         provision_impacts=impacts,

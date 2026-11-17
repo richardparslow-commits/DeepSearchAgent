@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from html import escape
 from typing import TYPE_CHECKING
@@ -96,6 +97,14 @@ class ReasoningResult:
     reconciled_principles: list[str] = field(default_factory=list)
     contradictions: list[Contradiction] = field(default_factory=list)
     synthesis: str = ""
+    # Provenance is separate from schema validity. A parsed response starts
+    # unverified; interpretation calls the deterministic gate below before it
+    # may adopt any principle or synthesis.
+    schema_validated: bool = False
+    provenance_validated: bool = False
+    provenance_warnings: list[str] = field(default_factory=list)
+    rejected_principle_count: int = 0
+    rejected_synthesis: bool = False
 
 
 def _reasoning_case_block(index: int, case: "CaseRecord") -> str:
@@ -177,6 +186,28 @@ def _build_reasoning_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _reasoning_schema_error(data: dict[str, object]) -> str | None:
+    """Return a schema error for an LLM reasoning object, or ``None``.
+
+    The parser still tolerates omitted optional keys for backward
+    compatibility, but a present key must have the documented shape. This
+    stops a string from being iterated as a list of principle characters, or
+    a scalar from being rendered as a synthesis.
+    """
+    if "reconciled_principles" in data and not isinstance(
+        data.get("reconciled_principles"), list
+    ):
+        return "reconciled_principles must be a list"
+    if "contradictions" in data and not isinstance(data.get("contradictions"), list):
+        return "contradictions must be a list"
+    if "synthesis" in data and not isinstance(data.get("synthesis"), str):
+        return "synthesis must be a string"
+    expected = {"reconciled_principles", "contradictions", "synthesis"}
+    if not expected.intersection(data):
+        return "response has no reasoning keys"
+    return None
+
+
 def _parse_reasoning_response(text: str) -> ReasoningResult | None:
     """Parse the LLM's JSON reasoning response into a :class:`ReasoningResult`.
 
@@ -207,6 +238,8 @@ def _parse_reasoning_response(text: str) -> ReasoningResult | None:
                 data = None
     if not isinstance(data, dict):
         return None
+    if _reasoning_schema_error(data) is not None:
+        return None
 
     principles = [
         str(item).strip()
@@ -230,7 +263,185 @@ def _parse_reasoning_response(text: str) -> ReasoningResult | None:
         reconciled_principles=principles,
         contradictions=contradictions,
         synthesis=synthesis,
+        schema_validated=True,
     )
+
+
+# Deterministic provenance patterns. These deliberately cover the citation
+# forms a veterans-law synthesis is likely to invent; the validator compares
+# every hit with the retrieved case corpus, never with another LLM response.
+_CASE_CITATION_RE = re.compile(
+    r"\b\d{1,4}\s+(?:Vet\.?\s*App\.?|F\.\s*(?:2d|3d|4th)|U\.\s*S\.|S\.\s*Ct\.)\s*\d{1,5}\b",
+    re.IGNORECASE,
+)
+_CASE_TITLE_RE = re.compile(
+    r"\b[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+)*\s+v\.\s+"
+    r"[A-Z][A-Za-z'’.-]+(?:\s+[A-Z][A-Za-z'’.-]+)*"
+)
+_DOCKET_RE = re.compile(
+    r"\b(?:No\.|Docket(?:\s+No\.)?)\s*([0-9]{2}-[0-9]{3,5})\b",
+    re.IGNORECASE,
+)
+_LEGAL_REFERENCE_RE = re.compile(
+    r"\b(?:38\s+U\.S\.C\.|38\s+C\.F\.R\.)\s*§*\s*"
+    r"[0-9A-Za-z().-]+(?:\s*\([^)]+\))?|\bM21-1[^,;)]*",
+    re.IGNORECASE,
+)
+_QUOTE_RE = re.compile(r"[\"“]([^\"”]{12,})[\"”]")
+_STOPWORDS = frozenset(
+    {
+        "about", "after", "also", "because", "before", "being", "between",
+        "could", "does", "from", "have", "into", "must", "only", "shall",
+        "should", "such", "than", "that", "their", "there", "these", "they",
+        "this", "those", "under", "upon", "when", "where", "which", "while",
+        "with", "would", "your", "case", "cases", "court", "decision",
+        "federal", "veteran", "veterans",
+    }
+)
+
+
+def _normal_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").replace("’", "'").lower()).strip()
+
+
+def _compact_text(text: str) -> str:
+    return re.sub(r"\s+", "", _normal_text(text).replace("§", ""))
+
+
+def _source_corpus(cases: "list[CaseRecord]") -> tuple[str, str, set[str]]:
+    """Return normalized corpus text, compact text, and known case titles."""
+    parts: list[str] = []
+    titles: set[str] = set()
+    for case in cases:
+        titles.add(_normal_text(case.title))
+        parts.extend(
+            [
+                case.title,
+                case.court,
+                case.citation,
+                case.docket,
+                case.url,
+                case.snippet,
+                case.holding,
+                " ".join(case.statutes),
+            ]
+        )
+        abstract = case.case_abstract
+        if abstract is not None:
+            parts.extend(
+                [
+                    abstract.claimant_and_conditions,
+                    abstract.procedural_history,
+                    abstract.issues_presented,
+                    abstract.holding_and_legal_rule,
+                    abstract.reasoning_summary,
+                    abstract.disposition,
+                    abstract.remand_instructions,
+                ]
+            )
+        for impact in case.provision_impacts:
+            parts.extend(
+                [
+                    impact.citation,
+                    impact.provenance_anchor,
+                    " ".join(impact.m21_1_citations),
+                ]
+            )
+    corpus = _normal_text(" ".join(parts))
+    return corpus, _compact_text(corpus), titles
+
+
+def _provenance_failures(text: str, corpus: str, compact: str, titles: set[str]) -> list[str]:
+    """Return concrete reasons *text* is not anchored in the retrieved corpus."""
+    failures: list[str] = []
+    normalized = _normal_text(text)
+
+    for citation in _CASE_CITATION_RE.findall(text):
+        if _compact_text(citation) not in compact:
+            failures.append(f"fabricated case citation {citation!r}")
+    for title in _CASE_TITLE_RE.findall(text):
+        if _normal_text(title) not in titles and _normal_text(title) not in corpus:
+            failures.append(f"fabricated case name {title!r}")
+    for docket in _DOCKET_RE.findall(text):
+        if _compact_text(docket) not in compact:
+            failures.append(f"fabricated docket number {docket!r}")
+    for reference in _LEGAL_REFERENCE_RE.findall(text):
+        cleaned_reference = reference.strip().rstrip(".,;:")
+        if _compact_text(cleaned_reference) not in compact:
+            failures.append(
+                f"uncorroborated legal reference {cleaned_reference!r}"
+            )
+    for quote in _QUOTE_RE.findall(text):
+        if _normal_text(quote) not in corpus:
+            failures.append(f"uncorroborated quotation {quote[:60]!r}")
+
+    words = {
+        word
+        for word in re.findall(r"[a-z][a-z'-]{3,}", normalized)
+        if word not in _STOPWORDS
+    }
+    corpus_words = set(re.findall(r"[a-z][a-z'-]{3,}", corpus))
+    if words and not (words & corpus_words):
+        failures.append("no lexical overlap with the retrieved authorities")
+    return failures
+
+
+def validate_llm_synthesis_provenance(
+    result: ReasoningResult, cases: "list[CaseRecord]"
+) -> tuple[ReasoningResult, list[str]]:
+    """Filter an LLM reasoning result against the retrieved source corpus.
+
+    Every adopted principle and the synthesis must either name a retrieved
+    case, cite a retrieved reporter citation/docket/statute/regulation/M21-1
+    provision, quote the source, or share substantive vocabulary with it.
+    Rejected principles are removed individually; a rejected synthesis is
+    cleared so the caller can use its deterministic template. Contradictions
+    are preserved because they are already case-pair labels, but neither
+    principles nor synthesis are ever adopted merely because the JSON parsed.
+    """
+    corpus, compact, titles = _source_corpus(cases)
+    warnings: list[str] = []
+    accepted: list[str] = []
+    rejected = 0
+    for index, principle in enumerate(result.reconciled_principles, start=1):
+        failures = _provenance_failures(principle, corpus, compact, titles)
+        if failures:
+            rejected += 1
+            warnings.append(
+                f"LLM provenance rejected principle {index}: {failures[0]}."
+            )
+        else:
+            accepted.append(principle)
+
+    synthesis = result.synthesis
+    rejected_synthesis = False
+    if synthesis:
+        failures = _provenance_failures(synthesis, corpus, compact, titles)
+        if failures:
+            rejected_synthesis = True
+            warnings.append(
+                "LLM provenance rejected synthesis: " + "; ".join(failures) + "."
+            )
+            synthesis = ""
+
+    if rejected or rejected_synthesis:
+        warnings.append(
+            f"Provenance gate applied: {len(accepted)} principle(s) accepted, "
+            f"{rejected} rejected; synthesis "
+            f"{'rejected' if rejected_synthesis else 'accepted'}."
+        )
+
+    sanitized = ReasoningResult(
+        reconciled_principles=accepted,
+        contradictions=list(result.contradictions),
+        synthesis=synthesis,
+        schema_validated=result.schema_validated,
+        provenance_validated=True,
+        provenance_warnings=warnings,
+        rejected_principle_count=rejected,
+        rejected_synthesis=rejected_synthesis,
+    )
+    return sanitized, warnings
 
 
 def reason_cases(

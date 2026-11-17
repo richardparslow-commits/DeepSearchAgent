@@ -4801,3 +4801,32 @@ def test_aud4_d1_preserves_panel_status_and_citator_history():
         "Appellate history has not been assessed" in warning
         for warning in record.warnings
     )
+
+
+def test_aud4_005_008_agent_preserves_full_impact_and_role_workflows():
+    """AUD4-005/007/008: the report keeps the full profile, workflows, and tier."""
+    case = _fixture_case(
+        "cavc-westervelt-23-0024.txt", date="2025-04-08", docket="23-0024"
+    )
+    analysis = _build_analysis("PTSD rating and CUE", "Compensation", [case], [])
+
+    assert analysis.impact_profile is not None
+    assert analysis.impact_profile.statutes
+    assert analysis.impact_profile.authority_note
+    assert analysis.impact_profile.nuance
+    assert analysis.impact_profiles == [analysis.impact_profile]
+
+    guidance = analysis.adjudication_guidance
+    assert guidance.rvsr.lay_evidence_competence
+    assert guidance.rvsr.effective_date_actions
+    assert guidance.senior_rater_dro.hlr_de_novo_actions
+    assert any("3.2601" in item for item in guidance.senior_rater_dro.hlr_de_novo_actions)
+    assert any("3.105(a)" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert any("20.1403" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert guidance.qrs.nqr_qrt_error_calls
+
+    record = analysis.surfaced_cases[0]
+    assert record.authority_tier == "official_primary_binding"
+    assert record.is_official_authority is True
+    assert analysis.source_reliability_summary.official_count == 1
+    assert analysis.source_reliability_summary.total == len(analysis.surfaced_cases)

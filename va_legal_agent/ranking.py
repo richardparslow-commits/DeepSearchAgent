@@ -113,11 +113,26 @@ def rank_cases(cases: list[CaseRecord], current_year: int | None = None) -> list
     for case in cases:
         tier_score, explanation = score_case(case, max_relevance, current_year=current_year)
         case.composite_score = case.authority_weight + tier_score
-        case.ranking_explanation = f"authority tier {case.authority_weight}; {explanation}"
+        reliability = (
+            "official primary source" if case.is_official_authority else "secondary/unverified source"
+        )
+        case.ranking_explanation = (
+            f"authority tier {case.authority_weight}; {explanation}; {reliability}"
+        )
 
+    # Court authority remains strictly dominant. The official-source flag is
+    # only a same-score tie-breaker: an official copy of a decision wins over
+    # a secondary mirror without promoting a secondary source above a higher
+    # court tier.
     ordered = sorted(
         cases,
-        key=lambda c: (-c.authority_weight, -c.composite_score, c.title, c.url),
+        key=lambda c: (
+            -c.authority_weight,
+            -c.composite_score,
+            -int(c.is_official_authority),
+            c.title,
+            c.url,
+        ),
     )
     for index, case in enumerate(ordered, start=1):
         case.authority_rank = index

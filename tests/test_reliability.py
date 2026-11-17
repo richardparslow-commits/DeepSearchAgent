@@ -1,10 +1,18 @@
 """Tests for source-reliability classification (va_legal_agent.reliability)."""
 
 from va_legal_agent.reliability import (
+    AUTHORITY_AGENCY_GUIDANCE,
+    AUTHORITY_BINDING,
+    AUTHORITY_PERSUASIVE,
+    AUTHORITY_SECONDARY,
+    AUTHORITY_UNVERIFIED,
     RELIABILITY_OFFICIAL,
     RELIABILITY_SECONDARY,
     RELIABILITY_UNKNOWN,
+    authority_label,
+    classify_authority_tier,
     classify_source,
+    summarize_authority_reliability,
 )
 
 
@@ -75,3 +83,52 @@ def test_classify_source_strips_userinfo():
     # the host comparison.
     assert classify_source("https://user:pass@va.gov/x") == RELIABILITY_OFFICIAL
     assert classify_source("https://user@example.com/x") == RELIABILITY_SECONDARY
+
+
+def test_authority_tier_requires_official_source_for_binding_status():
+    assert classify_authority_tier(
+        "https://uscourts.cavc.gov/opinions/1",
+        "Court of Appeals for Veterans Claims",
+        True,
+    ) == (AUTHORITY_BINDING, True)
+    # The same court label on a secondary host is never binding.
+    assert classify_authority_tier(
+        "https://example.com/summary",
+        "Court of Appeals for Veterans Claims",
+        True,
+    ) == (AUTHORITY_SECONDARY, False)
+    assert classify_authority_tier(
+        "", "Court of Appeals for Veterans Claims", True
+    ) == (AUTHORITY_UNVERIFIED, False)
+
+
+def test_authority_tier_distinguishes_persuasive_and_agency_material():
+    assert classify_authority_tier(
+        "https://www.courtlistener.com/opinion/1",
+        "Board of Veterans' Appeals",
+        None,
+    ) == (AUTHORITY_PERSUASIVE, True)
+    assert classify_authority_tier(
+        "https://www.courtlistener.com/opinion/2",
+        "Court of Appeals for Veterans Claims",
+        None,
+    ) == (AUTHORITY_PERSUASIVE, True)
+    assert classify_authority_tier(
+        "https://www.va.gov/vetapp25/Files6/A1.txt",
+        "Veterans law research result",
+        None,
+    ) == (AUTHORITY_AGENCY_GUIDANCE, True)
+
+
+def test_authority_labels_and_summary_cover_official_secondary_and_unknown():
+    assert "Official Court Transcript" in authority_label(AUTHORITY_BINDING, True)
+    assert "Secondary Summary" in authority_label(AUTHORITY_SECONDARY, False)
+    summary = summarize_authority_reliability(
+        [AUTHORITY_BINDING, AUTHORITY_PERSUASIVE, AUTHORITY_SECONDARY, AUTHORITY_UNVERIFIED]
+    )
+    assert summary.total == 4
+    assert summary.official_count == 2
+    assert summary.secondary_count == 1
+    assert summary.unknown_count == 1
+    assert summary.official_primary_binding_count == 1
+    assert summary.official_primary_persuasive_count == 1
