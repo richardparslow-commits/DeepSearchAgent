@@ -372,14 +372,51 @@ def _contradiction_label(contradiction: Contradiction) -> str:
     return f"{contradiction.statement} ({contradiction.case_a} vs {contradiction.case_b})"
 
 
-def _deep_summary_blocks(summaries: list[dict[str, str]]) -> list[str]:
-    """Render deep-read summaries as a labeled block per case with content."""
+def _deep_summary_source_label(entry: dict[str, object]) -> str:
+    """Label model text separately from verified holdings (AUD4-011)."""
+    source = str(entry.get("summary_source") or "")
+    verified = entry.get("provenance_verified") is True
+    if source == "llm_synthesized":
+        if verified:
+            return "[LLM-Synthesized Summary — Provenance Checked]"
+        return (
+            "[LLM-Synthesized Summary — Unverified Model Text; "
+            "Confirm Against Official Transcript]"
+        )
+    if source == "extractive_fallback":
+        return (
+            "[Extractive Source Summary — Verified Excerpts; "
+            "Unverified LLM Claims Rejected]"
+        )
+    if source == "extractive":
+        return "[Extractive Source Summary — Verified Excerpts]"
+    return "[Deep Summary — Source-Derived Text; Confirm Against Official Transcript]"
+
+
+def _deep_summary_blocks(summaries: list[dict[str, object]]) -> list[str]:
+    """Render deep-read summaries with explicit source/provenance labels."""
     blocks: list[str] = []
     for entry in summaries:
-        label = entry.get("case") or "(unknown case)"
-        summary = (entry.get("summary") or "").strip()
-        if summary:
+        label = str(entry.get("case") or "(unknown case)")
+        summary = str(entry.get("summary") or "").strip()
+        if not summary:
+            continue
+        source = str(entry.get("summary_source") or "")
+        if not source:
+            # Legacy callers that construct the dict manually keep the old
+            # compact shape; real deep-read entries always carry metadata.
             blocks.append(f"{label}:\n{summary}")
+            continue
+        lines = [f"{label}:"]
+        holding = str(entry.get("verified_holding") or "").strip()
+        if holding:
+            lines.append(f"[Verified Source Holding] {holding}")
+        lines.append(_deep_summary_source_label(entry))
+        notes = entry.get("verification_notes")
+        if isinstance(notes, list):
+            lines.extend(f"- {note}" for note in notes if str(note).strip())
+        lines.append(summary)
+        blocks.append("\n".join(lines))
     return blocks
 
 

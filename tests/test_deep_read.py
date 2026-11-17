@@ -516,6 +516,73 @@ def test_deep_read_case_synthesizes_full_text(monkeypatch):
     assert "Outcome: vacated and remanded" in result
 
 
+def test_deep_read_case_marks_extractive_summary_as_verified(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    body = "The Court holds that the Board erred in weighing the evidence."
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text", lambda url, max_pages=0: body
+    )
+    case = _case()
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert result
+    assert case.deep_summary_source == "extractive"
+    assert case.deep_summary_provenance_verified is True
+    assert any("extractive" in note.lower() for note in case.deep_summary_verification_notes)
+
+
+def test_deep_read_case_marks_verified_llm_summary(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    body = (
+        "The Court holds that the Board erred in weighing the evidence. "
+        "The decision is vacated and remanded."
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.call_openai",
+        lambda messages: "The Court holds that the Board erred in weighing the evidence.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text", lambda url, max_pages=0: body
+    )
+    case = _case()
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert result == "The Court holds that the Board erred in weighing the evidence."
+    assert case.deep_summary_source == "llm_synthesized"
+    assert case.deep_summary_provenance_verified is True
+    assert any("provenance" in note.lower() for note in case.deep_summary_verification_notes)
+
+
+def test_deep_read_case_rejects_fabricated_llm_citation(monkeypatch):
+    """Fabricated model citations are replaced by source-derived excerpts."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    body = "The Court holds that the Board erred in weighing the evidence."
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.call_openai",
+        lambda messages: (
+            "The Court holds that the Board erred in weighing the evidence, "
+            "but relies on 999 Vet. App. 999."
+        ),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text", lambda url, max_pages=0: body
+    )
+    case = _case()
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert "999 Vet. App. 999" not in result
+    assert "Holdings: The Court holds that the Board erred" in result
+    assert case.deep_summary_source == "extractive_fallback"
+    assert case.deep_summary_provenance_verified is True
+    assert any(
+        "rejected" in note.lower() and "999 Vet. App. 999" in note
+        for note in case.deep_summary_verification_notes
+    )
+
+
 def test_deep_read_case_synthesis_carries_title_and_issue(monkeypatch):
     """The LLM reduce prompt receives the case title and issue (None mutants)."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")

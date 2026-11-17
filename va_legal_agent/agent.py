@@ -33,6 +33,7 @@ from .models import (
     CaseRecord,
     CitationTreatment,
     LegalAnalysis,
+    TopCaseRecord,
 )
 from .planning import decompose_issue, plan_queries, refine_plan
 from .providers import (
@@ -1237,6 +1238,45 @@ def check_analysis_citations(
     return _citation_flags_from_lookup(results)
 
 
+def _top_case_status_and_note(case: CaseRecord) -> tuple[str, str]:
+    """Return the precedential status and exact summary note for one case.
+
+    AUD4-012: the human-readable summary and structured top cases must not
+    drift. This is the single source of truth for both. A case can carry both
+    a non-precedential note and a supersession note, so the note is the
+    ordered concatenation used by the summary.
+    """
+    notes: list[str] = []
+    if case.precedential is False:
+        notes.append("[non-precedential]")
+    elif case.precedential is None:
+        notes.append("[precedential status unknown]")
+    if case.superseded_by:
+        notes.append(f"[superseded by {case.superseded_by}]")
+
+    if case.superseded_by:
+        status = "superseded"
+    elif case.precedential is False:
+        status = "non-precedential"
+    elif case.precedential is None:
+        status = "unknown"
+    else:
+        status = "precedential"
+    return status, " ".join(notes)
+
+
+def _top_case_record(case: CaseRecord) -> TopCaseRecord:
+    """Build the structured record from the same note used by the summary."""
+    status, note = _top_case_status_and_note(case)
+    return TopCaseRecord(
+        case_title=case.title,
+        court=case.court,
+        precedential_status=status,
+        precedential_note=note,
+        display_label=f"{case.title} ({case.court})" + (f" {note}" if note else ""),
+    )
+
+
 def _build_analysis(
     claim_issue: str,
     claim_type: str,
@@ -1263,19 +1303,18 @@ def _build_analysis(
                 case.provision_impacts = profile.provision_impacts
             case.impact_profile = profile
 
+    top_case_records = [_top_case_record(case) for case in cases[:5]]
+    top_cases = [record.display_label for record in top_case_records]
     summary = "\n".join(
         f"- {case.title} ({case.court}) "
         f"[score: {case.composite_score:.2f}, authority: {case.authority_weight}, relevance: {case.relevance_score}]"
-        + (" [non-precedential]" if case.precedential is False else "")
-        + (" [precedential status unknown]" if case.precedential is None else "")
-        + (f" [superseded by {case.superseded_by}]" if case.superseded_by else "")
-        for case in cases[:5]
+        + (f" {record.precedential_note}" if record.precedential_note else "")
+        for case, record in zip(cases[:5], top_case_records)
     )
 
     # The interpretive analysis layer derives principles, strengths, gaps, and
     # next steps from the cases (optionally enhanced by the LLM).
     interpretive = build_interpretive_analysis(claim_issue, claim_type, cases)
-    top_cases = [f"{case.title} ({case.court})" for case in cases[:5]]
     # D1 metadata is preserved in parallel to the legacy display strings.  The
     # legacy list remains for callers that expect strings; every renderer that
     # can carry structure consumes ``surfaced_cases`` instead.
@@ -1300,10 +1339,21 @@ def _build_analysis(
     # Deep-read summaries ride along with the top cases so the output shows what
     # full-text ingestion produced per case (empty when deep-read was off or a
     # body could not be fetched).
-    deep_summaries = [
-        {"case": label, "summary": case.deep_summary}
-        for label, case in zip(top_cases, cases[:5])
-    ]
+    deep_summaries: list[dict[str, object]] = []
+    for label, case in zip(top_cases, cases[:5]):
+        entry: dict[str, object] = {"case": label, "summary": case.deep_summary}
+        if case.deep_summary_source:
+            entry.update(
+                {
+                    "summary_source": case.deep_summary_source,
+                    "provenance_verified": case.deep_summary_provenance_verified,
+                    "verification_notes": list(
+                        case.deep_summary_verification_notes
+                    ),
+                    "verified_holding": case.holding or case.snippet,
+                }
+            )
+        deep_summaries.append(entry)
     # Quote-backed extraction proposals ride along with the surfaced cases so
     # reviewers can inspect them. They are deliberately not merged into any
     # authoritative field or interpretive input.
@@ -1325,6 +1375,7 @@ def _build_analysis(
         how_it_affects_va_claims=interpretive.how_it_affects_va_claims,
         next_steps=interpretive.next_steps,
         top_cases=top_cases,
+        top_case_records=top_case_records,
         surfaced_cases=surfaced_cases,
         case_abstracts=case_abstracts,
         provision_impacts=provision_impacts,

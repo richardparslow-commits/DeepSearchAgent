@@ -336,6 +336,14 @@ class CaseRecord(BaseModel):
     # instead of the WAF-challenged frontend page.
     courtlistener_opinion_id: str = ""
     deep_summary: str = ""
+    # AUD4-011: provenance for the deep summary. ``deep_summary`` remains the
+    # display text for compatibility; these fields say whether that text is
+    # LLM-synthesized or extractive and whether its legal claims were checked
+    # against the retrieved source. An LLM summary that fails the check is
+    # replaced by an extractive fallback whenever source digests are available.
+    deep_summary_source: str = ""
+    deep_summary_provenance_verified: bool = False
+    deep_summary_verification_notes: list[str] = Field(default_factory=list)
     # Quote-first LLM proposals for fields the deterministic extractor may
     # have missed or misread. Candidate values are review material only; the
     # authoritative fields above are never replaced by them.
@@ -1797,6 +1805,24 @@ class SurfacedCaseRecord(BaseModel):
         return f"{self.case_title} ({self.court})"
 
 
+class TopCaseRecord(BaseModel):
+    """Structured companion to the legacy ``top_cases`` display strings.
+
+    AUD4-012: the human-readable summary carries bracketed precedential notes,
+    but callers that consumed only ``top_cases`` lost them. Every record here
+    carries the same note and status used by the summary, so text, JSON, CSV,
+    and D1 consumers share one source of truth.
+    """
+
+    case_title: str
+    court: str
+    precedential_status: str = "unknown"
+    # Exact bracketed note appended to the human-readable summary; empty for a
+    # precedential decision (the summary adds no note in that case).
+    precedential_note: str = ""
+    display_label: str
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -1805,6 +1831,10 @@ class LegalAnalysis(BaseModel):
     how_it_affects_va_claims: str
     next_steps: list[str] = Field(default_factory=list)
     top_cases: list[str] = Field(default_factory=list)
+    # Structured top-case records carrying the same precedential status and
+    # exact bracketed note as the human-readable summary (AUD4-012). The
+    # legacy string list remains the display compatibility layer.
+    top_case_records: list[TopCaseRecord] = Field(default_factory=list)
     # Lossless D1 case records aligned with ``top_cases``. ``top_cases`` is
     # retained only as a display compatibility layer.
     surfaced_cases: list[SurfacedCaseRecord] = Field(default_factory=list)
@@ -1827,10 +1857,12 @@ class LegalAnalysis(BaseModel):
     )
     llm_provenance_warnings: list[str] = Field(default_factory=list)
     llm_provenance_validated: bool = False
-    # Per-case full-text summaries from deep-read mode, aligned with top_cases:
-    # each entry is {"case": "Title (court)", "summary": "..."} (empty summary
-    # when deep-read was off or a body could not be fetched).
-    deep_summaries: list[dict[str, str]] = Field(default_factory=list)
+    # Per-case full-text summaries from deep-read mode, aligned with top_cases.
+    # Entries always carry ``case``/``summary``; when deep-read actually ran
+    # they also carry ``summary_source``, ``provenance_verified``,
+    # ``verification_notes``, and ``verified_holding`` (AUD4-011). An empty
+    # summary means deep-read was off or a body could not be fetched.
+    deep_summaries: list[dict[str, object]] = Field(default_factory=list)
     # Per-case quote-first extraction candidates. Each candidate carries its
     # verbatim source quote and stays advisory; these entries never replace a
     # case's authoritative fields and never feed ranking or interpretation.
@@ -1897,6 +1929,16 @@ class LegalAnalysis(BaseModel):
     # outcomes. This is the most useful single artifact for assessing the
     # strength of a legal position under a given statute across courts.
     statute_outcome_matrix: list[StatuteOutcomeRow] = Field(default_factory=list)
+
+    @property
+    def top_cases_structured(self) -> list[TopCaseRecord]:
+        """Backward-friendly alias for callers expecting a named structure."""
+        return self.top_case_records
+
+    @property
+    def structured_top_cases(self) -> list[TopCaseRecord]:
+        """Alias used by newer callers for the structured top-case records."""
+        return self.top_case_records
 
     @computed_field
     @property

@@ -23,7 +23,7 @@ from .fetch import (
     extract_statutes,
     fetch_full_text,
 )
-from .llm import call_openai, llm_enabled
+from .llm import call_openai, llm_enabled, validate_text_provenance
 from .models import CaseRecord
 from .providers import CourtListenerProvider, SearchError
 from .va_domain import build_case_abstract
@@ -160,23 +160,49 @@ def _build_reduce_prompt(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def _synthesize_case(case_title: str, issue: str, digests: list[str]) -> str:
-    """Reduce step: combine chunk digests into one per-case deep summary."""
+def _extractive_digest_summary(digests: list[str]) -> str:
+    """Join useful deterministic digests without any model text."""
+    useful = [digest for digest in digests if digest != _EMPTY_DIGEST]
+    return "\n".join(f"- {digest}" for digest in useful)
+
+
+def _synthesize_case_result(
+    case_title: str, issue: str, digests: list[str]
+) -> tuple[str, str]:
+    """Reduce step returning ``(summary, source)``.
+
+    ``source`` is ``llm_synthesized`` only when model text was actually used;
+    the deterministic digest join is ``extractive``. The distinction is
+    preserved so the caller can apply provenance checks to model text without
+    treating source-derived digests as unverified.
+    """
     # A chunk with nothing salient carries a sentinel so the map step can
     # distinguish "no content" from an empty string. It is not real digest
     # content, so keep it out of both the reduce prompt and the final summary;
     # an all-sentinel case falls back to the caller's snippet path.
     useful = [digest for digest in digests if digest != _EMPTY_DIGEST]
     if not useful:
-        return ""
+        return "", ""
     if llm_enabled():
         try:
             text = call_openai(_build_reduce_prompt(case_title, issue, useful))
             if text and text.strip():
-                return text.strip()
+                return text.strip(), "llm_synthesized"
         except Exception as exc:  # noqa: BLE001 - LLM is an optional enhancement
             logger.warning("Deep-read synthesis failed; joining digests: %s", exc)
-    return "\n".join(f"- {digest}" for digest in useful)
+    return _extractive_digest_summary(digests), "extractive"
+
+
+def _synthesize_case(case_title: str, issue: str, digests: list[str]) -> str:
+    """Reduce step: combine chunk digests into one per-case deep summary."""
+    return _synthesize_case_result(case_title, issue, digests)[0]
+
+
+def _reset_deep_summary_metadata(case: CaseRecord) -> None:
+    """Clear stale provenance when a case is re-read or its fetch fails."""
+    case.deep_summary_source = ""
+    case.deep_summary_provenance_verified = False
+    case.deep_summary_verification_notes = []
 
 
 def _fetch_case_text(case: CaseRecord) -> str:
@@ -207,8 +233,11 @@ def deep_read_case(case: CaseRecord, issue: str) -> str:
 
     Returns ``''`` when the body cannot be fetched (network failure, size cap)
     or contains nothing to summarize; the caller then keeps the snippet-based
-    path.
+    path. LLM reduce text is checked against the retrieved source; fabricated
+    citations, dockets, references, quotations, or unanchored prose are
+    rejected in favor of deterministic extractive digests.
     """
+    _reset_deep_summary_metadata(case)
     settings = get_settings()
     try:
         text = _fetch_case_text(case)
@@ -220,7 +249,44 @@ def deep_read_case(case: CaseRecord, issue: str) -> str:
     case.case_abstract = build_case_abstract(text, case)
     chunks = chunk_text(text, settings.deep_chunk_chars)
     digests = [_digest_chunk(chunk) for chunk in chunks]
-    return _synthesize_case(case.title, issue, digests)
+    summary, source = _synthesize_case_result(case.title, issue, digests)
+    if not summary:
+        return ""
+
+    notes: list[str] = []
+    verified = True
+    if source == "llm_synthesized":
+        failures = validate_text_provenance(summary, [case])
+        if failures:
+            notes.append("LLM deep summary rejected: " + "; ".join(failures) + ".")
+            fallback = _extractive_digest_summary(digests)
+            if fallback:
+                summary = fallback
+                source = "extractive_fallback"
+                notes.append(
+                    "Displaying deterministic extractive excerpts from the "
+                    "retrieved source instead."
+                )
+            else:
+                verified = False
+                notes.append(
+                    "No extractive fallback was available; do not treat this "
+                    "model text as a holding."
+                )
+        else:
+            notes.append(
+                "LLM synthesis passed deterministic source-provenance checks."
+            )
+    else:
+        notes.append(
+            "Deterministic extractive summary derived from the retrieved source text."
+        )
+
+    case.deep_summary = summary
+    case.deep_summary_source = source
+    case.deep_summary_provenance_verified = verified
+    case.deep_summary_verification_notes = notes
+    return summary
 
 
 def deep_read_cases(cases: list[CaseRecord], issue: str, limit: int | None = None) -> None:

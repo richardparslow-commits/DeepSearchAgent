@@ -9,6 +9,7 @@ import pytest
 from va_legal_agent.llm import (
     ReasoningResult,
     _build_messages,
+    _coerce_string_list,
     _build_reasoning_messages,
     _parse_reasoning_response,
     call_openai,
@@ -586,10 +587,41 @@ def test_parse_reasoning_response_returns_none_on_garbage():
     assert _parse_reasoning_response('{"unrelated": true}') is None  # no usable keys
 
 
+def test_parse_reasoning_response_accepts_a_single_string_principle():
+    """A model string is one principle, never one element per character."""
+    result = _parse_reasoning_response(
+        '{"reconciled_principles": "  Single legal principle.  "}'
+    )
+
+    assert result is not None
+    assert result.reconciled_principles == ["Single legal principle."]
+    assert len(result.reconciled_principles) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, []),
+        ("", []),
+        ("   ", []),
+        ("Single principle", ["Single principle"]),
+        ([" P1 ", "", "P2", 5, {"x": 1}, True], ["P1", "P2"]),
+        (("P1", " P2 "), ["P1", "P2"]),
+        (5, []),
+        ({"principle": "P1"}, []),
+    ],
+)
+def test_coerce_string_list_is_character_safe(value, expected):
+    assert _coerce_string_list(value) == expected
+
+
 def test_parse_reasoning_response_rejects_wrong_schema_types():
     """A JSON object with the right names but wrong shapes is not usable."""
     assert _parse_reasoning_response(
-        '{"reconciled_principles": "not a list"}'
+        '{"reconciled_principles": 5}'
+    ) is None
+    assert _parse_reasoning_response(
+        '{"reconciled_principles": {"not": "a list"}}'
     ) is None
     assert _parse_reasoning_response(
         '{"contradictions": "not a list"}'

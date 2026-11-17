@@ -11,7 +11,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from html import escape
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from .config import get_settings
 from .models import Contradiction
@@ -186,18 +186,45 @@ def _build_reasoning_messages(
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _coerce_string_list(value: Any) -> list[str]:
+    """Normalize an LLM field that should be a list of strings.
+
+    Models occasionally return one principle as a bare string instead of a
+    one-item array. Iterating that string would split it into characters, so
+    a string is always treated as one value. Lists/tuples keep their order;
+    blank strings and non-string garbage are discarded rather than rendered
+    as model output. Every other scalar or mapping type yields an empty list
+    instead of being iterated.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    if isinstance(value, (list, tuple)):
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    result.append(stripped)
+        return result
+    return []
+
+
 def _reasoning_schema_error(data: dict[str, object]) -> str | None:
     """Return a schema error for an LLM reasoning object, or ``None``.
 
     The parser still tolerates omitted optional keys for backward
-    compatibility, but a present key must have the documented shape. This
-    stops a string from being iterated as a list of principle characters, or
-    a scalar from being rendered as a synthesis.
+    compatibility, but a present key must have the documented shape. A string
+    for ``reconciled_principles`` is accepted and normalized as one principle
+    by :func:`_coerce_string_list`; other non-list shapes are rejected so no
+    scalar is silently rendered as a list.
     """
     if "reconciled_principles" in data and not isinstance(
-        data.get("reconciled_principles"), list
+        data.get("reconciled_principles"), (str, list, tuple)
     ):
-        return "reconciled_principles must be a list"
+        return "reconciled_principles must be a string or list"
     if "contradictions" in data and not isinstance(data.get("contradictions"), list):
         return "contradictions must be a list"
     if "synthesis" in data and not isinstance(data.get("synthesis"), str):
@@ -241,11 +268,7 @@ def _parse_reasoning_response(text: str) -> ReasoningResult | None:
     if _reasoning_schema_error(data) is not None:
         return None
 
-    principles = [
-        str(item).strip()
-        for item in (data.get("reconciled_principles") or [])
-        if isinstance(item, str) and item.strip()
-    ]
+    principles = _coerce_string_list(data.get("reconciled_principles"))
     contradictions: list[Contradiction] = []
     for item in data.get("contradictions") or []:
         if not isinstance(item, dict):
@@ -384,6 +407,18 @@ def _provenance_failures(text: str, corpus: str, compact: str, titles: set[str])
     if words and not (words & corpus_words):
         failures.append("no lexical overlap with the retrieved authorities")
     return failures
+
+
+def validate_text_provenance(text: str, cases: "list[CaseRecord]") -> list[str]:
+    """Return source-anchoring failures for arbitrary generated text.
+
+    The deep-read reducer is not a JSON reasoning result, but it makes the
+    same legal claims. This shared check keeps the deterministic provenance
+    rules (citations, case names, dockets, statutes/regulations, quotations,
+    and lexical overlap) in one place.
+    """
+    corpus, compact, titles = _source_corpus(cases)
+    return _provenance_failures(text, corpus, compact, titles)
 
 
 def validate_llm_synthesis_provenance(
