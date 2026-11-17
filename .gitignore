@@ -15,6 +15,9 @@ mutants/
 # AI tooling state
 .freebuff/
 
+# Local audit artifacts from independent review passes
+.audit/
+
 # Environments
 .env
 .venv/
