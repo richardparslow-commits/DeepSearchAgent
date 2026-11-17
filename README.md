@@ -51,6 +51,24 @@ make smoke                           # one real query per configured provider
 make mutate-check                    # full mutation pass + baseline gate in one shot
 ```
 
+To gate CI on provenance drift after both analyses have written sidecars:
+
+```bash
+if python -m va_legal_agent --compare-provenance base.provenance.json current.provenance.json \
+  --require-comparable --comparison-format json --output-file provenance-comparison.json; then
+  status=0
+else
+  status=$?
+fi
+case "$status" in
+  0) echo "provenance comparable" ;;
+  1) echo "provenance drift or unverifiable evidence; see provenance-comparison.json" >&2 ;;
+  2) echo "provenance comparison failed (usage or invalid sidecar)" >&2 ;;
+  *) echo "provenance comparison failed with status $status" >&2 ;;
+esac
+exit "$status"
+```
+
 See Configuration for the full settings table, the Retry and exhaustion chain section for worst-case timing, and Troubleshooting for provider-specific failures.
 
 ## Quick start
