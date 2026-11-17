@@ -61,6 +61,13 @@ from .topics import (
     phrase_matches,
     topic_matches_issue,
 )
+from .va_domain import (
+    build_case_abstract,
+    build_rvsr_guidance,
+    build_senior_rater_guidance,
+    build_surfaced_case,
+    impacts_from_cases,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -554,7 +561,14 @@ def _dedupe_rank_and_enrich(
         deep_read_cases(deep_selection, claim_issue, limit=len(deep_selection))
 
     for case in ranked:
-        case.impact = summarize_case_impact(case)
+        # Deep-read sets a full-text abstract; when deep-read is off (or the
+        # body could not be fetched) retain an explicitly incomplete
+        # metadata-only abstract rather than dropping the structured contract.
+        if case.case_abstract is None:
+            case.case_abstract = build_case_abstract("", case)
+        profile = analyze_case_impact(case)
+        case.impact = profile.nuance
+        case.provision_impacts = profile.provision_impacts
     return ranked
 
 
@@ -1227,6 +1241,18 @@ def _build_analysis(
     # next steps from the cases (optionally enhanced by the LLM).
     interpretive = build_interpretive_analysis(claim_issue, claim_type, cases)
     top_cases = [f"{case.title} ({case.court})" for case in cases[:5]]
+    # D1 metadata is preserved in parallel to the legacy display strings.  The
+    # legacy list remains for callers that expect strings; every renderer that
+    # can carry structure consumes ``surfaced_cases`` instead.
+    surfaced_cases = [build_surfaced_case(case) for case in cases[:5]]
+    case_abstracts = [
+        record.case_abstract
+        for record in surfaced_cases
+        if record.case_abstract is not None
+    ]
+    provision_impacts = impacts_from_cases(cases[:5])
+    rvsr_guidance = build_rvsr_guidance(claim_issue, cases[:5])
+    senior_rater_guidance = build_senior_rater_guidance(claim_issue, cases[:5])
     # Deep-read summaries ride along with the top cases so the output shows what
     # full-text ingestion produced per case (empty when deep-read was off or a
     # body could not be fetched).
@@ -1255,6 +1281,11 @@ def _build_analysis(
         how_it_affects_va_claims=interpretive.how_it_affects_va_claims,
         next_steps=interpretive.next_steps,
         top_cases=top_cases,
+        surfaced_cases=surfaced_cases,
+        case_abstracts=case_abstracts,
+        provision_impacts=provision_impacts,
+        rvsr_guidance=rvsr_guidance,
+        senior_rater_guidance=senior_rater_guidance,
         deep_summaries=deep_summaries,
         extraction_candidates=extraction_candidates,
         detected_elements=interpretive.detected_elements,

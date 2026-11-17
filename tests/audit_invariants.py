@@ -9,9 +9,93 @@ from va_legal_agent.models import (
     SOURCE_AUDIT_GAP_CODES,
     SOURCE_OPINION_FETCH_ERROR_KINDS,
     SOURCE_OPINION_LIMIT_REASONS,
+    LegalAnalysis,
     SourceAuditLedger,
     SourceOpinionAudit,
 )
+
+
+def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
+    """Assert the AUD4-002/003/004 lossless-output contract.
+
+    This helper intentionally checks the cross-object invariants a renderer
+    could otherwise hide: every legacy display string has a D1 record, every
+    surfaced record carries provenance state, every structured abstract is
+    meaningfully populated, provision impacts name a stage/effect/anchor and a
+    manual citation, and both role playbooks are non-empty.
+    """
+    assert len(analysis.surfaced_cases) == min(len(analysis.top_cases), 5)
+    assert len(analysis.surfaced_cases) == len(analysis.case_abstracts)
+    assert analysis.rvsr_guidance.evidence_review_checklist
+    assert analysis.rvsr_guidance.exam_development_triggers
+    assert analysis.rvsr_guidance.rating_codesheet_actions
+    assert analysis.rvsr_guidance.reasons_for_decision_requirements
+    assert analysis.senior_rater_guidance.hlr_de_novo_focus
+    assert analysis.senior_rater_guidance.duty_to_assist_errors
+    assert analysis.senior_rater_guidance.cue_analysis
+    assert analysis.senior_rater_guidance.precedent_conflict_resolution
+    assert analysis.senior_rater_guidance.quality_review_checkpoints
+    valid_sources = {
+        "official_court_opinion",
+        "official_transcript_archive",
+        "secondary_summary",
+        "unverified",
+    }
+    valid_statuses = {
+        "precedential_panel",
+        "en_banc",
+        "single_judge_memorandum",
+        "non_precedential_bva",
+        "unknown",
+    }
+    for record in analysis.surfaced_cases:
+        assert record.case_title and record.court
+        assert record.precedential_status in valid_statuses
+        assert record.transcript_source_type in valid_sources
+        assert record.history_status in {"not_assessed", "superseded_detected"}
+        assert record.official_transcript_url is None or record.provenance_verified
+        if record.transcript_source_type != "official_court_opinion":
+            assert any("Transcript source" in warning for warning in record.warnings)
+        if record.precedential_status == "single_judge_memorandum":
+            assert any("Single-judge" in warning for warning in record.warnings)
+        assert record.case_abstract is not None
+        assert record.case_abstract.case_title == record.case_title
+        assert record.case_abstract.claimant_and_conditions
+    for abstract in analysis.case_abstracts:
+        assert abstract.case_title
+        assert abstract.claimant_and_conditions
+        assert abstract.source_text_chars >= 0
+        assert abstract.abstract_source in {"full_text", "record_metadata"}
+        if abstract.abstract_complete:
+            assert any(
+                (
+                    abstract.procedural_history,
+                    abstract.issues_presented,
+                    abstract.holding_and_legal_rule,
+                    abstract.reasoning_summary,
+                    abstract.disposition,
+                )
+            )
+    for impact in analysis.provision_impacts:
+        assert impact.citation
+        assert impact.stage in {
+            "intake_notice",
+            "development_exam",
+            "rating_dc_evaluation",
+            "effective_date",
+            "appellate_review",
+        }
+        assert impact.legal_effect in {
+            "narrowing",
+            "expanding",
+            "invalidating_m21_1_rule",
+            "clarifying_evidentiary_threshold",
+            "clarifying",
+            "procedural",
+        }
+        assert impact.provenance_anchor
+        assert impact.m21_1_citations
+        assert impact.registry_version
 
 
 def _expected_bottlenecks(

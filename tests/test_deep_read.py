@@ -225,13 +225,14 @@ def test_extract_chunk_facts_body_at_end_of_chunk(text):
     assert "diagnosed with tinnitus" in result
 
 
-def test_extract_chunk_facts_capped_at_300_chars():
-    """The extracted facts are capped at ~300 characters."""
+def test_extract_chunk_facts_is_not_truncated_at_300_chars():
+    """The handling facts retain a complete long sentence (AUD4-004)."""
     text = "BACKGROUND\n" + ("X " * 200) + ".\n\nANALYSIS\n"
     result = _extract_chunk_facts(text)
 
-    assert len(result) <= 300
-    assert result.endswith("...")
+    assert len(result) > 300
+    assert result.endswith(".")
+    assert not result.endswith("...")
 
 
 def test_extract_chunk_facts_sentences_capped_at_three():
@@ -638,3 +639,33 @@ def test_reduce_prompt_keeps_quotes_but_escapes_angle_brackets():
     assert "&quot;" not in user
     assert "&lt;/case&gt;" in user
     assert "&lt;/digest&gt;" in user
+
+
+def test_deep_read_case_sets_full_structured_abstract(monkeypatch):
+    body = (
+        "I. BACKGROUND\n"
+        "The veteran served on active duty and filed a claim for service connection "
+        "for PTSD. The Regional Office denied the claim and the Board affirmed.\n\n"
+        "II. ANALYSIS\n"
+        "We hold that the Board applied the wrong standard under 38 C.F.R. § 3.304(f) "
+        "and 38 C.F.R. § 4.130. The error requires remand because the examination did "
+        "not address the ameliorative effect of medication.\n\n"
+        "III. CONCLUSION\n"
+        "The Board decision is VACATED and REMANDED for further proceedings consistent "
+        "with this opinion."
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text", lambda url, max_pages=0: body
+    )
+    case = _case(title="Structured Abstract v. Collins")
+
+    result = deep_read_case(case, "PTSD")
+
+    assert result
+    assert case.case_abstract is not None
+    assert case.case_abstract.abstract_complete is True
+    assert case.case_abstract.source_text_chars > 300
+    assert "PTSD" in case.case_abstract.claimant_and_conditions
+    assert "VACATED" in case.case_abstract.disposition
+    assert "REMANDED" in case.case_abstract.remand_instructions
+    assert "§ 3.304(f)" in case.case_abstract.reasoning_summary

@@ -138,6 +138,87 @@ class ExtractionCandidate(BaseModel):
     detail: str = ""
 
 
+class AppellateHistoryEntry(BaseModel):
+    """One verified or unverified step in a decision's appellate history."""
+
+    status: str = ""  # good_law, affirmed, reversed, vacated, overruled, superseded_by_statute, unknown
+    case_title: str = ""
+    citation: str = ""
+    source: str = ""
+    verified: bool = False
+
+
+class CaseAbstract(BaseModel):
+    """Structured, non-truncated abstract of a VA decision.
+
+    Unlike the legacy 300-character ``deep_summary`` snippet, every field is
+    populated from the full opinion body when available and carries enough
+    context for a reviewer to compare a claim to the decision without opening
+    the PDF. ``abstract_complete`` is False when only record metadata was
+    available (deep-read disabled or fetch failed); callers must not present a
+    metadata-only abstract as a full-text summary.
+    """
+
+    case_title: str = ""
+    court: str = ""
+    claimant_and_conditions: str = ""
+    procedural_history: str = ""
+    issues_presented: str = ""
+    holding_and_legal_rule: str = ""
+    reasoning_summary: str = ""
+    disposition: str = ""
+    remand_instructions: str = ""
+    source_text_chars: int = 0
+    abstract_source: str = "record_metadata"  # full_text or record_metadata
+    abstract_complete: bool = False
+
+
+class ProvisionImpact(BaseModel):
+    """One provision-level effect of a decision on VBA adjudication.
+
+    ``provenance_anchor`` is a verbatim sentence from the opinion containing
+    the citation. ``provenance_verified`` records only that the source URL is
+    an official/primary domain; it is not a claim that the mapping has been
+    reviewed by VA or that the decision remains good law.
+    """
+
+    citation: str
+    authority_type: str = "statute"
+    stage: str = "appellate_review"
+    legal_effect: str = "clarifying"
+    provenance_anchor: str = ""
+    m21_1_citations: list[str] = Field(default_factory=list)
+    diagnostic_code: str = ""
+    staged_rating: bool = False
+    medication_effect: bool = False
+    source_url: str = ""
+    provenance_verified: bool = False
+    registry_version: str = "2026.11"
+
+
+class RvsrGuidance(BaseModel):
+    """Role-specific operational playbook for a VA Rating Veterans Service Representative."""
+
+    issue: str = ""
+    evidence_review_checklist: list[str] = Field(default_factory=list)
+    exam_development_triggers: list[str] = Field(default_factory=list)
+    rating_codesheet_actions: list[str] = Field(default_factory=list)
+    reasons_for_decision_requirements: list[str] = Field(default_factory=list)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
+class SeniorRaterGuidance(BaseModel):
+    """Role-specific operational playbook for a Senior RVSR, DRO, or quality reviewer."""
+
+    issue: str = ""
+    hlr_de_novo_focus: list[str] = Field(default_factory=list)
+    duty_to_assist_errors: list[str] = Field(default_factory=list)
+    cue_analysis: list[str] = Field(default_factory=list)
+    precedent_conflict_resolution: list[str] = Field(default_factory=list)
+    quality_review_checkpoints: list[str] = Field(default_factory=list)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
 class CaseRecord(BaseModel):
     title: str
     court: str
@@ -225,6 +306,11 @@ class CaseRecord(BaseModel):
     composite_score: float = 0.0
     ranking_explanation: str = ""
     source_reliability: str = ""
+    # Structured full-text abstract and provision-level VBA impact. Both are
+    # populated by the deep-read/impact layers and preserved by the surfaced
+    # case contract instead of being flattened into display strings.
+    case_abstract: CaseAbstract | None = None
+    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
 
 
 class CitationTreatment(BaseModel):
@@ -1561,6 +1647,38 @@ class RegulationsMapping(BaseModel):
     source: str = "Federal Register/Regulations.gov"
 
 
+class SurfacedCaseRecord(BaseModel):
+    """Deliverable 1 (D1) metadata for one surfaced authority.
+
+    The legacy ``LegalAnalysis.top_cases`` display strings remain for
+    compatibility; this record is the lossless contract used by text, CSV, and
+    JSON renderers. ``official_transcript_url`` is set only for official or
+    archival sources, while ``retrieved_url`` always records what was fetched.
+    """
+
+    case_title: str
+    court: str
+    docket_number: str | None = None
+    reporter_citation: str | None = None
+    decision_date: str | None = None
+    precedential_status: str = "unknown"
+    appellate_history: list[AppellateHistoryEntry] = Field(default_factory=list)
+    history_status: str = "not_assessed"
+    official_transcript_url: str | None = None
+    retrieved_url: str | None = None
+    transcript_source_type: str = "unverified"
+    provenance_verified: bool = False
+    source_reliability: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    case_abstract: CaseAbstract | None = None
+    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+
+    @property
+    def display_label(self) -> str:
+        """Backward-compatible one-line label for legacy callers."""
+        return f"{self.case_title} ({self.court})"
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -1569,6 +1687,15 @@ class LegalAnalysis(BaseModel):
     how_it_affects_va_claims: str
     next_steps: list[str] = Field(default_factory=list)
     top_cases: list[str] = Field(default_factory=list)
+    # Lossless D1 case records aligned with ``top_cases``. ``top_cases`` is
+    # retained only as a display compatibility layer.
+    surfaced_cases: list[SurfacedCaseRecord] = Field(default_factory=list)
+    case_abstracts: list[CaseAbstract] = Field(default_factory=list)
+    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+    rvsr_guidance: RvsrGuidance = Field(default_factory=RvsrGuidance)
+    senior_rater_guidance: SeniorRaterGuidance = Field(
+        default_factory=SeniorRaterGuidance
+    )
     # Per-case full-text summaries from deep-read mode, aligned with top_cases:
     # each entry is {"case": "Title (court)", "summary": "..."} (empty summary
     # when deep-read was off or a body could not be fetched).
@@ -1656,4 +1783,5 @@ class ImpactProfile(BaseModel):
     statutes: list[str] = Field(default_factory=list)
     statute_note: str = ""
     authority_note: str = ""
+    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
     nuance: str = ""

@@ -27,6 +27,7 @@ from .models import (
     CaseRecord,
     FederalRegisterDocument,
     LegalAnalysis,
+    ProvisionImpact,
     RegulationsDocket,
     RegulationsDocument,
     RegulationsMapping,
@@ -35,6 +36,20 @@ from .models import (
 )
 from .redaction import redact_secrets, sanitize_exception
 from .search import SearchError, http_proxy_kwargs
+
+def provision_level_impacts(cases: list[CaseRecord]) -> list[ProvisionImpact]:
+    """Return the structured 38 U.S.C./C.F.R./M21-1 impact layer.
+
+    This module remains the read-only Regulations.gov rulemaking client.  The
+    provision analyzer lives in :mod:`va_legal_agent.va_domain` so a docket
+    lookup and a legal-impact mapping cannot be confused: a rulemaking docket
+    is context, while a provision impact names the adjudication stage and the
+    opinion sentence that supports it.
+    """
+    from .va_domain import impacts_from_cases
+
+    return impacts_from_cases(cases)
+
 
 FEDERAL_REGISTER_DOCUMENTS_URL = (
     "https://www.federalregister.gov/api/v1/documents.json"

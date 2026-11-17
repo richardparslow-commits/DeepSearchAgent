@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import CitatorCheck
+from .models import CitatorCheck, LegalAnalysis
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,34 @@ class SnapshotStore:
             {"request": request, "response": response},
             source_url=source_url,
         )
+
+    def record_analysis(self, analysis: LegalAnalysis) -> SnapshotRecord:
+        """Persist the complete analysis contract, including D1 metadata.
+
+        The normal JSON renderer already serializes these fields; this snapshot
+        keeps the same lossless payload beside the evidence that produced it so
+        a later audit can compare a surfaced case's citation, transcript URL,
+        structured abstract, and provision impacts without re-running retrieval.
+        """
+        payload = analysis_snapshot_payload(analysis)
+        return self.record(
+            "analysis.report",
+            payload,
+            source_url=(analysis.surfaced_cases[0].retrieved_url or "")
+            if analysis.surfaced_cases
+            else "",
+            metadata={
+                "run_id": analysis.run_id,
+                "issue": analysis.issue,
+                "surfaced_case_count": len(analysis.surfaced_cases),
+                "provision_impact_count": len(analysis.provision_impacts),
+            },
+        )
+
+
+def analysis_snapshot_payload(analysis: LegalAnalysis) -> dict[str, Any]:
+    """Return the lossless JSON-safe analysis payload used by snapshots."""
+    return analysis.model_dump(mode="json")
 
 
 class SnapshottingCourtListenerProvider:

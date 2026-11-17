@@ -18,7 +18,15 @@ from .config import get_settings
 from .fetch import extract_statutes
 from .impact import detect_outcome
 from .llm import interpret_cases, reason_cases
-from .models import CaseRecord, ClaimElement, Contradiction, PrincipleFinding, StatuteOutcomeRow
+from .models import (
+    CaseRecord,
+    ClaimElement,
+    Contradiction,
+    PrincipleFinding,
+    RvsrGuidance,
+    SeniorRaterGuidance,
+    StatuteOutcomeRow,
+)
 from .topics import (
     BINDING_COURTS,
     COURT_SUPREME,
@@ -27,6 +35,7 @@ from .topics import (
     phrase_matches,
     phrase_pattern,
 )
+from .va_domain import build_rvsr_guidance, build_senior_rater_guidance
 
 @dataclass(frozen=True)
 class ElementSpec:
@@ -162,6 +171,10 @@ class InterpretiveAnalysis:
     coverage_confidence: str = "low"
     interpretation_source: str = "template"
     statute_outcome_matrix: list[StatuteOutcomeRow] = field(default_factory=list)
+    rvsr_guidance: RvsrGuidance = field(default_factory=RvsrGuidance)
+    senior_rater_guidance: SeniorRaterGuidance = field(
+        default_factory=SeniorRaterGuidance
+    )
 
 
 def _source_text(case: CaseRecord) -> str:
@@ -561,9 +574,37 @@ def build_interpretive_analysis(
         else 0.0
     )
 
-    # ── Confidence heuristics ───────────────────────────────────────────
+    # ── Role-specific operational guidance ─────────────────────────────
+    # Generic "compare the facts" prompts are no longer emitted.  The RVSR and
+    # Senior Rater/DRO playbooks derive their actions from the issue, the
+    # structured abstracts, and the provision-level impacts on the records.
+    rvsr_guidance = build_rvsr_guidance(claim_issue, cases)
+    senior_rater_guidance = build_senior_rater_guidance(claim_issue, cases)
     next_steps = [spec.step for spec in element_specs]
-    next_steps.extend(GENERIC_NEXT_STEPS)
+    next_steps.extend(
+        f"RVSR — {item}" for item in rvsr_guidance.evidence_review_checklist[:2]
+    )
+    next_steps.extend(
+        f"RVSR — {item}" for item in rvsr_guidance.exam_development_triggers[:1]
+    )
+    next_steps.extend(
+        f"RVSR — {item}" for item in rvsr_guidance.rating_codesheet_actions[:2]
+    )
+    next_steps.extend(
+        f"RVSR — {item}" for item in rvsr_guidance.reasons_for_decision_requirements[:1]
+    )
+    next_steps.extend(
+        f"Senior Rater/DRO — {item}" for item in senior_rater_guidance.hlr_de_novo_focus[:1]
+    )
+    next_steps.extend(
+        f"Senior Rater/DRO — {item}" for item in senior_rater_guidance.duty_to_assist_errors[:1]
+    )
+    next_steps.extend(
+        f"Senior Rater/DRO — {item}" for item in senior_rater_guidance.cue_analysis[:1]
+    )
+    next_steps.extend(
+        f"Senior Rater/DRO — {item}" for item in senior_rater_guidance.precedent_conflict_resolution[:1]
+    )
 
     template_text = _template_interpretation(
         claim_issue, claim_type, cases, element_specs, findings, interpret_limit
@@ -644,4 +685,6 @@ def build_interpretive_analysis(
         coverage_confidence=coverage_confidence,
         interpretation_source=source,
         statute_outcome_matrix=build_statute_outcome_matrix(cases),
+        rvsr_guidance=rvsr_guidance,
+        senior_rater_guidance=senior_rater_guidance,
     )

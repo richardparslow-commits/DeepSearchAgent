@@ -12,6 +12,7 @@ from va_legal_agent.impact import (
     statute_note_for,
 )
 from va_legal_agent.models import CaseRecord
+from va_legal_agent.va_domain import build_case_abstract, extract_provision_impacts
 
 CAVC = "Court of Appeals for Veterans Claims"
 CAFC = "U.S. Court of Appeals for the Federal Circuit"
@@ -370,3 +371,39 @@ def test_analyze_case_impact_lists_tags_and_completes_profile():
     assert profile.outcome_note
     assert profile.statute_note
     assert profile.authority_note
+
+
+def test_aud4_provision_impact_objects_name_stage_effect_and_m21():
+    text = (
+        "We hold that the Board erred by failing to assign a staged rating under "
+        "Fenderson v. West. The examiner did not consider the ameliorative effect "
+        "of medication under Jones v. Shinseki. See 38 C.F.R. § 4.130 and "
+        "Diagnostic Code 9411."
+    )
+    case = _case(title="Staged Rating Case", court=CAVC)
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+
+    profile = analyze_case_impact(case)
+
+    citations = {impact.citation for impact in profile.provision_impacts}
+    assert "38 C.F.R. § 4.130" in citations
+    assert "Diagnostic Code 9411" in citations
+    assert "Staged rating (Fenderson/Hart)" in citations
+    assert "Ameliorative effect of medication (Jones/McCarroll)" in citations
+    assert all(impact.stage for impact in profile.provision_impacts)
+    assert all(impact.legal_effect for impact in profile.provision_impacts)
+    assert all(impact.provenance_anchor for impact in profile.provision_impacts)
+    assert all(impact.m21_1_citations for impact in profile.provision_impacts)
+    assert "Provision-level VBA impact" in profile.nuance
+
+
+def test_aud4_medication_is_not_inferred_from_a_bare_medication_reference():
+    text = "The record includes prescription medications and a medication list."
+    case = _case(title="Bare Medication Case", court=CAVC)
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+
+    assert not any(
+        impact.medication_effect for impact in case.provision_impacts
+    )

@@ -17,6 +17,7 @@ from va_legal_agent.interpretation import (
 )
 from va_legal_agent.llm import ReasoningResult
 from va_legal_agent.models import CaseRecord, Contradiction, LegalAnalysis
+from va_legal_agent.va_domain import build_case_abstract, extract_provision_impacts
 from va_legal_agent.topics import COURT_SUPREME, TOPICS
 
 
@@ -1643,3 +1644,32 @@ def test_bare_condition_places_the_no_element_gap_before_missing_principles():
 
     assert result.gaps[0].startswith("No claim elements were detected")
     assert "No explicit legal principle" in result.gaps[1]
+
+
+def test_aud4_interpretation_emits_concrete_rvsr_and_senior_playbooks():
+    text = (
+        "I. BACKGROUND\nThe veteran filed a claim for service connection for PTSD. "
+        "The Board denied the claim.\n\n"
+        "II. ANALYSIS\nWe hold that the Board failed to obtain an adequate examination "
+        "and did not address a staged rating. See 38 C.F.R. § 3.159, "
+        "38 C.F.R. § 4.130, and 38 C.F.R. § 4.14.\n\n"
+        "III. CONCLUSION\nThe decision is VACATED and REMANDED."
+    )
+    case = _case("PTSD v. Collins")
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+
+    result = build_interpretive_analysis("PTSD rating", "Compensation", [case])
+
+    assert result.rvsr_guidance.evidence_review_checklist
+    assert result.rvsr_guidance.exam_development_triggers
+    assert result.rvsr_guidance.rating_codesheet_actions
+    assert result.rvsr_guidance.reasons_for_decision_requirements
+    assert result.senior_rater_guidance.hlr_de_novo_focus
+    assert result.senior_rater_guidance.duty_to_assist_errors
+    assert result.senior_rater_guidance.cue_analysis
+    assert result.senior_rater_guidance.precedent_conflict_resolution
+    assert result.senior_rater_guidance.quality_review_checkpoints
+    assert any(step.startswith("RVSR —") for step in result.next_steps)
+    assert any(step.startswith("Senior Rater/DRO —") for step in result.next_steps)
+    assert not any("Compare the facts of the current claim" in step for step in result.next_steps)

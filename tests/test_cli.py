@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import logging
+from pathlib import Path
 
 import pytest
 import requests
@@ -21,8 +22,12 @@ from va_legal_agent.__main__ import (
     main,
     render_analysis,
 )
+from va_legal_agent.agent import _build_analysis
+from va_legal_agent.va_domain import build_case_abstract, extract_provision_impacts
 from va_legal_agent.models import (
     AuthorityCheck,
+    CaseAbstract,
+    CaseRecord,
     CitatorCheck,
     CitatorCoverage,
     ClaimElement,
@@ -30,9 +35,13 @@ from va_legal_agent.models import (
     LegalAnalysis,
     NegativeTreatment,
     PrincipleFinding,
+    ProvisionImpact,
+    RvsrGuidance,
+    SeniorRaterGuidance,
     SourceAuditLedger,
     SourceAuditProvenance,
     SourceValiditySignal,
+    SurfacedCaseRecord,
     SOURCE_AUDIT_LOGIC_VERSION,
 )
 
@@ -4531,3 +4540,132 @@ def test_render_analysis_extraction_candidates_across_formats():
     row = dict(zip(rows[0], rows[1]))
     payload = json.loads(row["extraction_candidates"])
     assert payload[0]["flags"] == ["one quote was rejected"]
+
+
+def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
+    analysis = _sample_analysis()
+    analysis.surfaced_cases = [
+        SurfacedCaseRecord(
+            case_title="Smith v. Wilkie",
+            court="Court of Appeals for Veterans Claims",
+            docket_number="21-1234",
+            reporter_citation="33 Vet.App. 10",
+            decision_date="2024-01-02",
+            precedential_status="precedential_panel",
+            history_status="not_assessed",
+            official_transcript_url=None,
+            retrieved_url="https://lawfirm.example/smith",
+            transcript_source_type="secondary_summary",
+            provenance_verified=False,
+            warnings=["Transcript source is secondary_summary; verify the official opinion."],
+        )
+    ]
+    analysis.case_abstracts = [
+        CaseAbstract(
+            case_title="Smith v. Wilkie",
+            court="Court of Appeals for Veterans Claims",
+            claimant_and_conditions="Veteran claimed PTSD.",
+            procedural_history="RO denied; Board affirmed.",
+            issues_presented="Whether the examination was adequate.",
+            holding_and_legal_rule="An inadequate examination requires remand.",
+            reasoning_summary="Reasoning " + ("x" * 400),
+            disposition="Vacated and remanded.",
+            remand_instructions="Obtain a new examination.",
+            abstract_source="full_text",
+            abstract_complete=True,
+        )
+    ]
+    analysis.provision_impacts = [
+        ProvisionImpact(
+            citation="38 C.F.R. § 3.303",
+            authority_type="regulation_part3",
+            stage="rating_dc_evaluation",
+            legal_effect="clarifying",
+            provenance_anchor="The Board must apply 38 C.F.R. § 3.303.",
+            m21_1_citations=["M21-1, Part V, Subpart ii"],
+        )
+    ]
+    analysis.rvsr_guidance = RvsrGuidance(
+        evidence_review_checklist=["Review the complete claims file."],
+        exam_development_triggers=["Defer for an adequate examination."],
+        rating_codesheet_actions=["Apply 38 C.F.R. § 4.14."],
+        reasons_for_decision_requirements=["Explain each element."],
+    )
+    analysis.senior_rater_guidance = SeniorRaterGuidance(
+        hlr_de_novo_focus=["Conduct de novo review under 38 C.F.R. § 3.2601."],
+        duty_to_assist_errors=["Return for a missing examination."],
+        cue_analysis=["Apply 38 C.F.R. § 3.105(a)."],
+        precedent_conflict_resolution=["Follow binding CAVC precedent."],
+        quality_review_checkpoints=["Second-sign the rating."],
+    )
+
+    text = render_analysis(analysis, "text")
+    assert "Surfaced case records (D1):" in text
+    assert "docket: 21-1234" in text
+    assert "secondary_summary" in text
+    assert "WARNING: Transcript source is secondary_summary" in text
+    assert "Structured case abstracts:" in text
+    assert "Provision-level VBA impacts:" in text
+    assert "M21-1, Part V, Subpart ii" in text
+    assert "RVSR operational playbook:" in text
+    assert "Senior Rater / DRO operational playbook:" in text
+
+    data = json.loads(render_analysis(analysis, "json"))
+    assert data["surfaced_cases"][0]["docket_number"] == "21-1234"
+    assert data["case_abstracts"][0]["reasoning_summary"].endswith("x" * 50)
+    assert data["provision_impacts"][0]["m21_1_citations"]
+    assert data["rvsr_guidance"]["rating_codesheet_actions"]
+    assert data["senior_rater_guidance"]["cue_analysis"]
+
+    rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
+    row = dict(zip(rows[0], rows[1]))
+    assert json.loads(row["surfaced_cases"])[0]["docket_number"] == "21-1234"
+    assert json.loads(row["provision_impacts"])[0]["citation"] == "38 C.F.R. § 3.303"
+    assert json.loads(row["rvsr_guidance"])["evidence_review_checklist"]
+
+
+def test_aud4_real_cavc_fixture_renders_every_required_layer():
+    fixture = (
+        Path(__file__).resolve().parents[1]
+        / "benchmarks"
+        / "extraction"
+        / "fixtures"
+        / "cavc-westervelt-23-0024.txt"
+    )
+    text = fixture.read_text(encoding="utf-8")
+    case = CaseRecord(
+        title="Westervelt v. Collins",
+        court="Court of Appeals for Veterans Claims",
+        docket="23-0024",
+        decision_date="2025-04-08",
+        citation="36 Vet.App. 1",
+        url="https://uscourts.cavc.gov/opinions/cavc-westervelt-23-0024.txt",
+        source_reliability="official",
+        precedential=True,
+    )
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+    analysis = _build_analysis("PTSD rating and CUE", "Compensation", [case], [])
+
+    rendered = render_analysis(analysis, "text")
+    assert "Surfaced case records (D1):" in rendered
+    assert "docket: 23-0024" in rendered
+    assert "https://uscourts.cavc.gov/opinions/cavc-westervelt-23-0024.txt" in rendered
+    assert "Structured case abstracts:" in rendered
+    assert len(analysis.case_abstracts[0].reasoning_summary) > 300
+    assert "38 C.F.R. § 3.105(a)" in rendered
+    assert "Diagnostic Code 8045-9304" in rendered
+    assert "Staged rating (Fenderson/Hart)" in rendered
+    assert "M21-1" in rendered
+    assert "RVSR operational playbook:" in rendered
+    assert "Senior Rater / DRO operational playbook:" in rendered
+
+    payload = json.loads(render_analysis(analysis, "json"))
+    assert payload["surfaced_cases"][0]["docket_number"] == "23-0024"
+    assert payload["surfaced_cases"][0]["official_transcript_url"]
+    assert payload["case_abstracts"][0]["abstract_complete"] is True
+    assert any(
+        impact["staged_rating"] for impact in payload["provision_impacts"]
+    )
+    assert payload["rvsr_guidance"]["rating_codesheet_actions"]
+    assert payload["senior_rater_guidance"]["cue_analysis"]

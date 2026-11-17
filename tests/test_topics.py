@@ -80,3 +80,53 @@ def test_topics_have_unique_names_and_primary_phrases():
     for topic in TOPICS:
         assert topic.name
         assert topic.phrases  # ISSUE_TAG_PATTERNS enumerates every phrase
+
+
+def test_aud4_statute_hint_table_covers_vba_provision_families():
+    from va_legal_agent.topics import STATUTE_HINTS
+
+    keys = {key for key, _hint in STATUTE_HINTS}
+    expected = {
+        "1110",
+        "1131",
+        "1154",
+        "1155",
+        "5103",
+        "5103A",
+        "5107",
+        "5110",
+        "7104",
+        "7252",
+        "7261",
+        "3.102",
+        "3.103",
+        "3.105",
+        "3.156",
+        "3.159",
+        "3.2501",
+        "3.2601",
+        "3.303",
+        "3.304",
+        "3.306",
+        "3.307",
+        "3.309",
+        "3.310",
+        "3.320",
+        "3.321",
+        "3.400",
+        "4.1",
+        "4.2",
+        "4.14",
+        "4.16",
+        "4.20",
+        "4.21",
+        "4.25",
+        "4.26",
+        "4.40",
+        "4.45",
+        "4.59",
+        "4.125",
+        "4.126",
+        "4.130",
+    }
+    assert expected <= keys

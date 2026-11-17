@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 from .fetch import extract_outcome, extract_statutes
-from .models import CaseRecord, ImpactProfile
+from .models import CaseRecord, ImpactProfile, ProvisionImpact
 from .topics import (
     BINDING_COURTS,
     BOARD_COURT,
@@ -22,6 +22,7 @@ from .topics import (
     TOPICS_BY_NAME,
     phrase_matches,
 )
+from .va_domain import extract_provision_impacts
 
 # Detection phrase -> reported tag, derived from the shared topic table in
 # topics.py, checked in priority order.
@@ -102,7 +103,45 @@ BOILERPLATE = (
 
 
 def _impact_text(case: CaseRecord) -> str:
-    return f"{case.title} {case.snippet} {case.holding} {case.impact}".lower()
+    """Return source-derived text for impact and provision scanning.
+
+    The structured abstract is included because it is built from the opinion
+    body; the generated ``impact`` narrative is excluded so the analyzer never
+    feeds on its own prior output.
+    """
+    abstract = case.case_abstract
+    abstract_text = ""
+    if abstract is not None:
+        abstract_text = " ".join(
+            part
+            for part in (
+                abstract.claimant_and_conditions,
+                abstract.procedural_history,
+                abstract.issues_presented,
+                abstract.holding_and_legal_rule,
+                abstract.reasoning_summary,
+                abstract.disposition,
+                abstract.remand_instructions,
+            )
+            if part
+        )
+    return (
+        f"{case.title} {case.snippet} {case.holding} {case.deep_summary} "
+        f"{abstract_text}"
+    ).lower()
+
+
+def provision_impact_note(impacts: list[ProvisionImpact]) -> str:
+    """Summarize structured provision impacts for the legacy nuance string."""
+    if not impacts:
+        return ""
+    labels: list[str] = []
+    for impact in impacts[:6]:
+        label = f"{impact.citation} ({impact.stage}; {impact.legal_effect})"
+        if impact.m21_1_citations:
+            label += f" -> {impact.m21_1_citations[0]}"
+        labels.append(label)
+    return "Provision-level VBA impact: " + "; ".join(labels) + "."
 
 
 def detect_issue_tags(case: CaseRecord) -> list[str]:
@@ -256,12 +295,16 @@ def analyze_case_impact(case: CaseRecord) -> ImpactProfile:
     outcome_note = outcome_note_for(outcome, case.appellant_role)
     statute_note = statute_note_for(statutes)
     authority_note = authority_note_for(case.court, case.precedential)
+    impacts = extract_provision_impacts(_impact_text(case), case)
 
     parts = [f"This ruling is relevant to {', '.join(tags[:3])} in VA compensation claims."]
     if outcome_note:
         parts.append(f"Procedural posture: {outcome_note}")
     if statute_note:
         parts.append(statute_note)
+    impact_note = provision_impact_note(impacts)
+    if impact_note:
+        parts.append(impact_note)
     parts.append(authority_note)
     parts.append(BOILERPLATE)
 
@@ -272,5 +315,6 @@ def analyze_case_impact(case: CaseRecord) -> ImpactProfile:
         statutes=statutes,
         statute_note=statute_note,
         authority_note=authority_note,
+        provision_impacts=impacts,
         nuance=" ".join(parts),
     )

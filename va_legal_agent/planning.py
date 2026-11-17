@@ -35,6 +35,48 @@ _TOPIC_STATUTES: dict[str, tuple[str, ...]] = {
     "3.303": ("service connection",),
     "3.159": ("duty to assist",),
     "4.1": ("rating",),
+    # The remaining STATUTE_HINTS entries drive the structured impact and
+    # provision registry, not the broad search planner. Mapping them to an
+    # empty topic tuple deliberately preserves the existing query budget while
+    # keeping the anchor table complete for the invariant that every hint has
+    # a mapping entry.
+    "1154": (),
+    "1155": (),
+    "5104": (),
+    "5110": (),
+    "7105": (),
+    "7252": (),
+    "7261": (),
+    "3.102": (),
+    "3.103": (),
+    "3.105": (),
+    "3.156": (),
+    "3.2501": (),
+    "3.2600": (),
+    "3.2601": (),
+    "3.304": (),
+    "3.306": (),
+    "3.307": (),
+    "3.309": (),
+    "3.310": (),
+    "3.320": (),
+    "3.321": (),
+    "3.400": (),
+    "4.2": (),
+    "4.7": (),
+    "4.10": (),
+    "4.14": (),
+    "4.16": (),
+    "4.20": (),
+    "4.21": (),
+    "4.25": (),
+    "4.26": (),
+    "4.40": (),
+    "4.45": (),
+    "4.59": (),
+    "4.125": (),
+    "4.126": (),
+    "4.130": (),
 }
 
 

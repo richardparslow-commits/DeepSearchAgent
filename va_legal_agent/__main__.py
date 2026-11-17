@@ -25,6 +25,7 @@ from .models import (
     AuthorityCheck,
     AuthorityQueueEntry,
     CRSReport,
+    CaseAbstract,
     CaseExtractionCandidates,
     CitatorCheck,
     ClaimElement,
@@ -32,8 +33,12 @@ from .models import (
     Contradiction,
     LegalAnalysis,
     PrincipleFinding,
+    ProvisionImpact,
     RegulationsMapping,
     SourceAuditProvenance,
+    RvsrGuidance,
+    SeniorRaterGuidance,
+    SurfacedCaseRecord,
     StatuteOutcomeRow,
     StatutorySupersessionSignal,
     group_source_audit_provenances,
@@ -1042,6 +1047,85 @@ def _citator_lines(checks: list[CitatorCheck]) -> list[str]:
     return lines
 
 
+def _surfaced_case_lines(records: list[SurfacedCaseRecord]) -> list[str]:
+    """Render every D1 field, including explicit provenance warnings."""
+    lines: list[str] = []
+    for record in records:
+        history = "; ".join(
+            f"{entry.status}: {entry.case_title or entry.citation or 'unverified'}"
+            for entry in record.appellate_history
+        ) or record.history_status
+        transcript = record.official_transcript_url or record.retrieved_url or "(none)"
+        line = (
+            f"{record.case_title} ({record.court}) | docket: "
+            f"{record.docket_number or '(none)'} | citation: "
+            f"{record.reporter_citation or '(none)'} | decided: "
+            f"{record.decision_date or '(unknown)'} | status: "
+            f"{record.precedential_status} | history: {history} | transcript: "
+            f"{transcript} [{record.transcript_source_type}; "
+            f"provenance verified: {record.provenance_verified}]"
+        )
+        if record.warnings:
+            line += " | WARNING: " + " ".join(record.warnings)
+        lines.append(line)
+    return lines
+
+
+def _abstract_lines(abstracts: list[CaseAbstract]) -> list[str]:
+    lines: list[str] = []
+    for abstract in abstracts:
+        label = f"{abstract.case_title} ({abstract.court})"
+        if not abstract.abstract_complete:
+            label += " [metadata-only abstract; full text unavailable]"
+        lines.append(
+            f"{label} | claimant/conditions: {abstract.claimant_and_conditions or '(none)'} "
+            f"| procedural history: {abstract.procedural_history or '(none)'} "
+            f"| issues: {abstract.issues_presented or '(none)'} "
+            f"| holding/rule: {abstract.holding_and_legal_rule or '(none)'} "
+            f"| reasoning: {abstract.reasoning_summary or '(none)'} "
+            f"| disposition: {abstract.disposition or '(none)'} "
+            f"| remand: {abstract.remand_instructions or '(none)'}"
+        )
+    return lines
+
+
+def _provision_impact_lines(impacts: list[ProvisionImpact]) -> list[str]:
+    return [
+        f"{impact.citation} [{impact.stage}; {impact.legal_effect}] "
+        f"M21-1: {', '.join(impact.m21_1_citations) or '(none)'}; "
+        f"DC: {impact.diagnostic_code or '(none)'}; "
+        f"staged: {impact.staged_rating}; medication: {impact.medication_effect}; "
+        f"anchor: \"{impact.provenance_anchor or '(none)'}\"; source: "
+        f"{impact.source_url or '(none)'} (verified: {impact.provenance_verified})"
+        for impact in impacts
+    ]
+
+
+def _rvsr_lines(guidance: RvsrGuidance) -> list[str]:
+    lines: list[str] = []
+    for title, items in (
+        ("Evidence review", guidance.evidence_review_checklist),
+        ("Exam development", guidance.exam_development_triggers),
+        ("Rating codesheet", guidance.rating_codesheet_actions),
+        ("Reasons for decision", guidance.reasons_for_decision_requirements),
+    ):
+        lines.extend(f"{title}: {item}" for item in items)
+    return lines
+
+
+def _senior_lines(guidance: SeniorRaterGuidance) -> list[str]:
+    lines: list[str] = []
+    for title, items in (
+        ("HLR de novo", guidance.hlr_de_novo_focus),
+        ("Duty-to-assist error", guidance.duty_to_assist_errors),
+        ("CUE analysis", guidance.cue_analysis),
+        ("Precedent vs. M21-1", guidance.precedent_conflict_resolution),
+        ("Quality review", guidance.quality_review_checkpoints),
+    ):
+        lines.extend(f"{title}: {item}" for item in items)
+    return lines
+
+
 def _analysis_to_text(analysis: LegalAnalysis) -> str:
     """Render a LegalAnalysis as a readable plain-text report."""
     deep_blocks = _deep_summary_blocks(analysis.deep_summaries)
@@ -1050,7 +1134,31 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         [f"Issue: {analysis.issue}"],
         [f"Run id: {analysis.run_id or '(none)'}"],
         _bullets("Top cases", analysis.top_cases),
+        _bullets(
+            "Surfaced case records (D1)",
+            _surfaced_case_lines(analysis.surfaced_cases),
+        )
+        if analysis.surfaced_cases
+        else [],
         [f"Summary:\n{analysis.summary or '(none)'}"],
+        _bullets("Structured case abstracts", _abstract_lines(analysis.case_abstracts))
+        if analysis.case_abstracts
+        else [],
+        _bullets(
+            "Provision-level VBA impacts",
+            _provision_impact_lines(analysis.provision_impacts),
+        )
+        if analysis.provision_impacts
+        else [],
+        _bullets("RVSR operational playbook", _rvsr_lines(analysis.rvsr_guidance))
+        if analysis.rvsr_guidance.evidence_review_checklist
+        else [],
+        _bullets(
+            "Senior Rater / DRO operational playbook",
+            _senior_lines(analysis.senior_rater_guidance),
+        )
+        if analysis.senior_rater_guidance.hlr_de_novo_focus
+        else [],
         _bullets("Deep summaries", deep_blocks) if deep_blocks else [],
         [f"How this affects VA claims:\n{analysis.how_it_affects_va_claims or '(none)'}"],
         _bullets("Applicable principles", analysis.likely_applicable_principles),
@@ -1210,7 +1318,8 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "authority_queue", "citator_checks", "citator_flags",
         "detected_elements", "principle_findings", "statute_outcome_matrix",
         "search_telemetry", "courtlistener_quota",
-        "source_provenance_warnings",
+        "source_provenance_warnings", "surfaced_cases", "case_abstracts",
+        "provision_impacts", "rvsr_guidance", "senior_rater_guidance",
     ]
     row = [
         analysis.run_id,
@@ -1282,6 +1391,20 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         json.dumps(analysis.search_telemetry, sort_keys=True),
         json.dumps(analysis.courtlistener_quota, sort_keys=True),
         " | ".join(analysis.source_provenance_warnings),
+        json.dumps(
+            [record.model_dump() for record in analysis.surfaced_cases],
+            sort_keys=True,
+        ),
+        json.dumps(
+            [abstract.model_dump() for abstract in analysis.case_abstracts],
+            sort_keys=True,
+        ),
+        json.dumps(
+            [impact.model_dump() for impact in analysis.provision_impacts],
+            sort_keys=True,
+        ),
+        json.dumps(analysis.rvsr_guidance.model_dump(), sort_keys=True),
+        json.dumps(analysis.senior_rater_guidance.model_dump(), sort_keys=True),
     ]
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")

@@ -9,12 +9,15 @@ import pytest
 
 from va_legal_agent.adjudication import (
     build_adjudication_queue,
+    rvsr_operational_playbook,
+    senior_rater_operational_playbook,
     load_queue,
     record_decision,
     render_queue_text,
     save_queue,
 )
 from va_legal_agent.models import (
+    CaseRecord,
     CitatorCheck,
     CitatorCoverage,
     NegativeTreatment,
@@ -363,3 +366,26 @@ def test_queue_text_rejects_unknown_item(tmp_path: Path):
     with pytest.raises(KeyError, match="unknown adjudication item"):
         render_queue_text(load_queue(path), item_id="missing")
     assert json.loads(path.read_text(encoding="utf-8"))["items"] == []
+
+
+def test_aud4_adjudication_exposes_both_operational_playbooks():
+    case = CaseRecord(
+        title="CUE v. McDonough",
+        court="Court of Appeals for Veterans Claims",
+        holding=(
+            "The Board must address the DRO's CUE finding separately under "
+            "38 C.F.R. § 3.105(a) and 38 C.F.R. § 3.2600, and must assess a "
+            "staged rating under Fenderson v. West."
+        ),
+        url="https://uscourts.cavc.gov/opinions/cue",
+        source_reliability="official",
+    )
+
+    rvsr = rvsr_operational_playbook("CUE and rating", [case])
+    senior = senior_rater_operational_playbook("CUE and rating", [case])
+
+    assert rvsr.rating_codesheet_actions
+    assert any("staged" in item.lower() for item in rvsr.rating_codesheet_actions)
+    assert senior.cue_analysis
+    assert any("3.105" in item for item in senior.cue_analysis)
+    assert any("CUE finding" in item for item in senior.hlr_de_novo_focus)
