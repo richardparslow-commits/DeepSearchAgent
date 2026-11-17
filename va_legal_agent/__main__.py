@@ -2063,6 +2063,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--require-comparable",
+        action="store_true",
+        help=(
+            "With --compare-provenance: exit with status 1 after emitting "
+            "the report when the analyses are not genuinely comparable."
+        ),
+    )
+    parser.add_argument(
         "--adjudication-queue",
         dest="adjudication_queue",
         default=None,
@@ -2236,6 +2244,9 @@ def main() -> None:
 
     _configure_logging(args.log_level, _resolve_log_format(args.log_format))
 
+    if args.require_comparable and not args.compare_provenance:
+        parser.error("--require-comparable requires --compare-provenance.")
+
     if args.compare_provenance:
         if _sidecar_requested(args.provenance_sidecar):
             parser.error(
@@ -2277,6 +2288,8 @@ def main() -> None:
             _emit_output(comparison_output, args.output_file)
         except OSError as exc:
             parser.error(f"could not write comparison output: {exc}")
+        if args.require_comparable and not comparison.get("comparable"):
+            raise SystemExit(1)
         return
 
     # Surface misconfigured SEARCH_PROVIDERS early — including --show-config

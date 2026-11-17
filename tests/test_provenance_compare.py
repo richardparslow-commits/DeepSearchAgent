@@ -547,6 +547,77 @@ def test_cli_compares_provenance_as_json_file(
     assert result["counts"]["matched_source_audits"] == 1
 
 
+def test_cli_require_comparable_allows_comparable_result(
+    capsys, tmp_path, monkeypatch
+):
+    first, second = _sidecars(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--compare-provenance",
+            str(first),
+            str(second),
+            "--require-comparable",
+        ],
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "Provenance comparison: COMPARABLE" in output
+
+
+def test_cli_require_comparable_exits_one_after_emitting_drift(
+    capsys, tmp_path, monkeypatch
+):
+    first = _write_sidecar(
+        tmp_path / "a.provenance.json", [_audit(_provenance())]
+    )
+    second = _write_sidecar(
+        tmp_path / "b.provenance.json",
+        [_audit(_provenance(max_pages=2))],
+    )
+    output_path = tmp_path / "comparison.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "va-legal-agent",
+            "--compare-provenance",
+            str(first),
+            str(second),
+            "--comparison-format",
+            "json",
+            "--output-file",
+            str(output_path),
+            "--require-comparable",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().out == ""
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    assert result["status"] == "not_comparable"
+    assert "configuration_drift" in result["reasons"]
+
+
+def test_cli_require_comparable_requires_compare(capsys, monkeypatch):
+    monkeypatch.setattr(
+        "sys.argv", ["va-legal-agent", "--require-comparable"]
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 2
+    assert "--require-comparable requires --compare-provenance" in (
+        capsys.readouterr().err
+    )
+
+
 def test_cli_compare_reports_invalid_sidecar(capsys, tmp_path, monkeypatch):
     first, second = _sidecars(tmp_path)
     invalid = tmp_path / "invalid.json"
