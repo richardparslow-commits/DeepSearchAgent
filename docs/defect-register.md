@@ -1,19 +1,22 @@
 # DeepSearchAgent — Consolidated Defect Register
 
-**Status date:** 2026-11-14
+**Status date:** 2026-11-17
 
-**Registered here:** Audit Pass 1 (32 findings) and the supplementary legal finding `L-1`.
+**Registered here:** Audit Pass 1 (32 findings), the supplementary legal finding `L-1`,
+and the independent security finding `AUD4-001`.
 **Source-complete:** Audit Pass 2 (7 findings) and Audit Pass 3 (22 findings) are fully
 closed in their source documents. They are summarized below but not row-expanded here,
 because this maintenance update reconciles the remaining-core audit report; their source
 documents remain authoritative.
-**Reserved:** Pass 4.
+**Pass 4:** `AUD4-001`, the GovInfo/Congress credential-disclosure remediation, is
+recorded below. Its evidence is in [`aud4-001-root-cause.md`](aud4-001-root-cause.md).
 
 **Sources:** [Audit Pass 1](audit-pass1.md) · [Audit Pass 2](audit-pass2.md) ·
 [Audit Pass 3](audit-pass3.md) · [Remaining core layer](audit-pass3-remaining.md)
 
 IDs preserve their source: `P1-###` = Pass 1, `P2-###` = Pass 2, `P3-###` / `P4-###` =
-later passes, `L-1` = supplementary legal-premise check. Do not renumber existing IDs.
+later passes, `AUD4-###` = independent security audit, `L-1` = supplementary
+legal-premise check. Do not renumber existing IDs.
 
 ## Source status
 
@@ -22,17 +25,18 @@ later passes, `L-1` = supplementary legal-premise check. Do not renumber existin
 | 1 | `docs/audit-pass1.md` | 32 | 32 | 32 Closed, 0 Partial, 0 Open |
 | 2 | `docs/audit-pass2.md` | 7 | 0 | 7 Closed; source document only |
 | 3 | `docs/audit-pass3.md` | 22 | 0 | 22 Closed; source document only |
-| 4 | — | 0 | 0 | Reserved |
+| 4 | `docs/aud4-001-root-cause.md` | 1 | 1 | `AUD4-001`, Critical; Closed |
 | Legal check | `docs/audit-pass1.md` § Legal-premise check | 1 | 1 | `L-1`, High; Closed |
 
 ## Summary
 
 | Severity | Total | Open | Partial | Closed |
 |---|---:|---:|---:|---:|
+| Critical | 1 | 0 | 0 | 1 |
 | High | 9 | 0 | 0 | 9 |
 | Medium | 16 | 0 | 0 | 16 |
 | Low | 8 | 0 | 0 | 8 |
-| **Total** | **33** | **0** | **0** | **33** |
+| **Total** | **34** | **0** | **0** | **34** |
 
 Pass 1 alone contributes 32 findings: **32 Closed, 0 Partial, 0 Open**, matching the
 remaining-core audit report. The ninth High is the supplementary legal finding `L-1`: it is
@@ -40,7 +44,7 @@ outside Pass 1's file scope but is a fixed release-blocking defect recorded in t
 audit document, so it is included here rather than left out of the consolidated view.
 
 Pass 2 has **2 High, 3 Medium, 2 Low**, all Closed. Pass 3 has **3 High, 10 Medium,
-9 Low**, all Closed. They are not part of the 33-row table below; see
+9 Low**, all Closed. They are not part of the 34-row table below; see
 [Pass 2 / Pass 3 status](#pass-2--pass-3-status).
 
 ## Severity and disposition
@@ -50,7 +54,8 @@ re-triage it.
 
 | Severity | Meaning |
 |---|---|
-| **High** | Release-blocking: credential exposure, legal misstatement, data loss, or an unbounded/looping run. |
+| **Critical** | Release-blocking: direct credential disclosure in a request, error, or traceback. |
+| **High** | Release-blocking: legal misstatement, data loss, or an unbounded/looping run. |
 | **Medium** | Material correctness, security, or robustness defect with bounded impact or a practical workaround. |
 | **Low** | Minor robustness, observability, or configuration defect; not release-blocking. |
 
@@ -74,7 +79,7 @@ ID. Line ranges are current for the remediated P1 rows in this tree.
 
 | Severity | ID | File and line range | One-line defect | Status | Suggested disposition |
 |---|---|---|---|---|---|
-| High | P3-001 | `path/to/file.py:12-34` | One-line defect. | Open | Fix now |
+| Critical | AUD4-001 | `va_legal_agent/authorities.py:850-874`; `va_legal_agent/congress.py:262-322`; `va_legal_agent/__main__.py:76-215`; `webapp.py:244-256` | GovInfo key was sent as an `api_key` query parameter and the raw `HTTPError` chain retained it in `SearchError`/tracebacks; fixed with `X-Api-Key`, centralized redaction, and sanitized `__cause__`/`__context__`. | Closed | Closed — verify |
 | High | P1-001 | `va_legal_agent/__main__.py:218-245` | Scheme-less `SEARCH_HTTP_PROXY` bypassed `_mask_proxy_url`; fixed by prepending `//` for parsing and redacting userinfo. | Closed | Closed — verify |
 | High | P1-004 | `va_legal_agent/__main__.py:784-785, 1019-1179, 1431-1434` | Non-positive `--max-batch-requests` deferred every row and `--auto-run` looped indefinitely; fixed with positive validation and bounded, stall-aware retries. | Closed | Closed — verify |
 | High | P1-007 | `va_legal_agent/config.py:31, 94-125` | `env_float` accepted `nan`/`inf`; fixed to reject non-finite values and cap sleep/backoff/timeout settings at 3600 s (wall-clock deadlines remain unbounded but finite). | Closed | Closed — verify |
@@ -122,7 +127,7 @@ the register is next consolidated.
 
 ## Appending later passes
 
-Pass 4 is reserved. If Pass 2 or Pass 3 rows are expanded into this table later, preserve
+Pass 4 contains `AUD4-001`. If Pass 2 or Pass 3 rows are expanded into this table later, preserve
 their source IDs exactly and keep the six-column schema:
 
 - IDs: `P2-###`, `P3-###`, `P4-###`; never reuse or renumber an existing ID.

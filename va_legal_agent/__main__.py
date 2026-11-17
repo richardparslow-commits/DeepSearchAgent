@@ -39,6 +39,7 @@ from .models import (
     group_source_audit_provenances,
 )
 from .planning import decompose_issue, plan_queries
+from .redaction import redact_secrets, sanitize_exception
 from .provenance_compare import (
     SIDECAR_VERSION,
     compare_provenance_sidecars,
@@ -75,18 +76,33 @@ def _resolve_log_format(cli_value: str | None) -> str:
     return "text"
 
 
+class _RedactingTextFormatter(logging.Formatter):
+    """Text formatter that sanitizes exception chains before rendering."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.exc_info and record.exc_info[1] is not None:
+            sanitize_exception(record.exc_info[1])
+            # Force a fresh render from the now-sanitized exception rather
+            # than a cached exc_text produced by another handler.
+            record.exc_text = None
+        return redact_secrets(super().format(record))
+
+
 class _JsonFormatter(logging.Formatter):
     """Format log records as one JSON object per line for machine parsing."""
 
     def format(self, record: logging.LogRecord) -> str:
+        if record.exc_info and record.exc_info[1] is not None:
+            sanitize_exception(record.exc_info[1])
+            record.exc_text = None
         payload = {
             "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S"),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": redact_secrets(record.getMessage()),
         }
         if record.exc_info:
-            payload["exc_info"] = self.formatException(record.exc_info)
+            payload["exc_info"] = redact_secrets(self.formatException(record.exc_info))
         for key in (
             "event",
             "run_id",
@@ -103,7 +119,7 @@ class _JsonFormatter(logging.Formatter):
                 payload[key] = value
         for key, value in getattr(record, "data", {}).items():
             payload[key] = value
-        return json.dumps(payload, ensure_ascii=False)
+        return redact_secrets(json.dumps(payload, ensure_ascii=False))
 
 
 def _configure_logging(level: str, log_format: str = "text") -> None:
@@ -116,7 +132,9 @@ def _configure_logging(level: str, log_format: str = "text") -> None:
     if log_format == "json":
         handler.setFormatter(_JsonFormatter())
     else:
-        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+        handler.setFormatter(
+            _RedactingTextFormatter("%(levelname)s %(name)s: %(message)s")
+        )
     logging.basicConfig(
         level=getattr(logging, level, logging.WARNING),
         handlers=[handler],
@@ -155,10 +173,18 @@ def _emit_completion_event(analysis: LegalAnalysis, run_id: str) -> None:
 
 
 def _format_exception(error: BaseException) -> str:
-    """Return the complete traceback text for *error*, without a trailing newline."""
-    return "".join(
-        traceback.format_exception(type(error), error, error.__traceback__)
-    ).rstrip()
+    """Return the complete traceback text for *error*, without a trailing newline.
+
+    The exception chain is sanitized in place before formatting.  The final
+    string is redacted again as a boundary check for any string captured by a
+    third-party traceback formatter.
+    """
+    sanitize_exception(error)
+    return redact_secrets(
+        "".join(
+            traceback.format_exception(type(error), error, error.__traceback__)
+        ).rstrip()
+    )
 
 
 def _emit_failure_event(issue: str, error: BaseException, run_id: str) -> None:
@@ -169,19 +195,22 @@ def _emit_failure_event(issue: str, error: BaseException, run_id: str) -> None:
     ``error`` message field for consumers and adds the exception type and full
     traceback for diagnosis.
     """
+    sanitize_exception(error)
+    safe_error = redact_secrets(str(error))
+    safe_traceback = _format_exception(error)
     _EVENTS_LOGGER.error(
         "analysis failed for %s (run=%s): %s",
         issue,
         run_id,
-        error,
+        safe_error,
         exc_info=(type(error), error, error.__traceback__),
         extra={
             "event": "analysis_failed",
             "run_id": run_id,
             "issue": issue,
-            "error": str(error),
+            "error": safe_error,
             "error_type": type(error).__name__,
-            "traceback": _format_exception(error),
+            "traceback": safe_traceback,
         },
     )
 
@@ -2029,11 +2058,12 @@ def _auto_run(
                     _emit_completion_event(analysis, run_id)
                     results[issue] = {"issue": issue, "verdict": "run"}
                 except Exception as exc:  # noqa: BLE001 - per-issue failure is recorded
+                    sanitize_exception(exc)
                     _emit_failure_event(issue, exc, run_id)
                     results[issue] = {
                         "issue": issue,
                         "verdict": "error",
-                        "error": str(exc),
+                        "error": redact_secrets(str(exc)),
                         "error_type": type(exc).__name__,
                         "traceback": _format_exception(exc),
                     }
@@ -2087,6 +2117,7 @@ def _auto_run(
             usage = fetch_courtlistener_usage()
             daily = courtlistener_daily_budget(usage)
         except SearchError as exc:
+            sanitize_exception(exc)
             usage_failures += 1
             logger.error(
                 "auto-run: could not determine the next quota window: %s "
@@ -2663,13 +2694,14 @@ def main() -> None:
             snapshot_dir=args.snapshot_dir,
         )
     except Exception as exc:  # noqa: BLE001 - emit event, then preserve original behavior
+        sanitize_exception(exc)
         _emit_failure_event(args.issue, exc, run_id)
         if tracker:
             tracker.record(
                 {
                     "event": "analysis_failed",
                     "issue": args.issue,
-                    "error": str(exc),
+                    "error": redact_secrets(str(exc)),
                     "search_telemetry": telemetry,
                 }
             )

@@ -35,6 +35,7 @@ from .models import (
     LegalAnalysis,
     StatutorySupersessionSignal,
 )
+from .redaction import redact_secrets, sanitize_exception
 from .search import SearchError, http_proxy_kwargs
 from .topics import COURT_CAVC, COURT_FEDERAL_CIRCUIT
 
@@ -852,19 +853,25 @@ class GovInfoClient:
             "offsetMark": "*",
             "sorts": [{"field": "score", "sortOrder": "DESC"}],
         }
+        headers = _headers()
+        # api.data.gov accepts the key in X-Api-Key.  Keeping it out of the
+        # query string prevents it from entering HTTPError.url and every
+        # request log line that records the URL.
+        headers["X-Api-Key"] = self.api_key
         try:
             response = requests.post(
                 GOVINFO_SEARCH_URL,
-                params={"api_key": self.api_key},
                 json=body,
-                headers=_headers(),
+                headers=headers,
                 timeout=_timeout(),
                 **http_proxy_kwargs(),
             )
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
-            raise SearchError(f"GovInfo search failed: {exc}") from exc
+            sanitize_exception(exc, (self.api_key,))
+            detail = redact_secrets(str(exc), (self.api_key,))
+            raise SearchError(f"GovInfo search failed: {detail}") from exc
         if not isinstance(payload, dict):
             raise SearchError("GovInfo search returned an unexpected response.")
         results = payload.get("results") or []
@@ -938,6 +945,7 @@ def _fetch_govinfo_text(url: str) -> str:
         )
         response.raise_for_status()
     except requests.RequestException as exc:
+        sanitize_exception(exc)
         raise SearchError(f"GovInfo text request failed: {exc}") from exc
     soup = BeautifulSoup(getattr(response, "text", "") or "", "html.parser")
     for tag in soup(["script", "style", "noscript"]):

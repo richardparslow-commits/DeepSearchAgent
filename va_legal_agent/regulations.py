@@ -33,6 +33,7 @@ from .models import (
     RegulationsPublicComment,
     RegulationsSupportingDocument,
 )
+from .redaction import redact_secrets, sanitize_exception
 from .search import SearchError, http_proxy_kwargs
 
 FEDERAL_REGISTER_DOCUMENTS_URL = (
@@ -229,7 +230,9 @@ class RegulationsClient:
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
-            raise SearchError(f"{source_name} request failed: {exc}") from exc
+            sanitize_exception(exc, (api_key,))
+            detail = redact_secrets(str(exc), (api_key,))
+            raise SearchError(f"{source_name} request failed: {detail}") from exc
         if not isinstance(payload, dict):
             raise SearchError(
                 f"{source_name} returned a non-object JSON response."

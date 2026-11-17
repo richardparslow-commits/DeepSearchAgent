@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import traceback
 from collections.abc import Sequence
 
 from va_legal_agent.models import (
@@ -36,6 +37,35 @@ def _expected_bottlenecks(
         if reasons:
             expected[row.opinion_id] = reasons
     return expected
+
+
+def assert_exception_chain_redacted(exc: BaseException, secret: str) -> None:
+    """Assert that *secret* is absent from an exception and every rendered form.
+
+    This is deliberately independent of the production redaction helper: it
+    walks ``__cause__``/``__context__`` directly and formats each node, so a
+    regression that only redacts the outer message still fails.
+    """
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        assert secret not in str(current), f"secret in str({type(current).__name__})"
+        assert secret not in repr(current), f"secret in repr({type(current).__name__})"
+        assert secret not in repr(getattr(current, "args", ())), "secret in args"
+        formatted = "".join(
+            traceback.format_exception(
+                type(current), current, current.__traceback__
+            )
+        )
+        assert secret not in formatted, "secret in formatted traceback"
+        for attr in ("__cause__", "__context__"):
+            chained = getattr(current, attr, None)
+            if isinstance(chained, BaseException):
+                pending.append(chained)
 
 
 def assert_source_opinion_audit_invariants(
