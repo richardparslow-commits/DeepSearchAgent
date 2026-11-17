@@ -318,6 +318,11 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
         decision_date=raw.get("decision_date", ""),
         docket=raw.get("docket", ""),
         judge=raw.get("judge", ""),
+        panel=raw.get("panel", ""),
+        recap_docket_url=raw.get("recap_docket_url", ""),
+        recap_docket_id=raw.get("recap_docket_id", ""),
+        oral_argument_url=raw.get("oral_argument_url", ""),
+        oral_argument_date=raw.get("oral_argument_date", ""),
         courtlistener_opinion_id=raw.get("courtlistener_opinion_id", ""),
         holding="",
         impact="",
@@ -940,6 +945,29 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
             value = details.get(key) or getattr(case, key)
             if value:
                 setattr(case, key, value)
+        # Oral-argument metadata is advisory and optional. The search result
+        # supplies the date and docket id; the recording's public page needs a
+        # separate audio lookup, which is best-effort and never blocks the
+        # case's text enrichment. Older/fake providers without the method are
+        # simply skipped.
+        fetch_oral_argument = getattr(courtlistener, "fetch_oral_argument", None)
+        oral_lookup = bool(
+            getattr(settings, "courtlistener_oral_argument_lookup", False)
+        )
+        if oral_lookup and callable(fetch_oral_argument) and case.recap_docket_id:
+            try:
+                oral = fetch_oral_argument(case.recap_docket_id)
+            except Exception as exc:  # noqa: BLE001 - advisory metadata only
+                logger.info(
+                    "Could not fetch oral-argument metadata for %s: %s",
+                    case.url,
+                    exc,
+                )
+            else:
+                for key in ("oral_argument_url", "oral_argument_date"):
+                    value = oral.get(key) if isinstance(oral, dict) else ""
+                    if value and not getattr(case, key):
+                        setattr(case, key, value)
         # Precedential is tri-state: False means a non-precedential marker was
         # found and True means a readable body carried none. Keep None as
         # unknown instead of coercing it to either certainty.

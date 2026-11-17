@@ -297,6 +297,11 @@ class Settings:
     # Off by default because it consumes CourtListener quota.
     courtlistener_semantic_gap_search: bool = False
 
+    # Optional public oral-argument recording lookup during case enrichment.
+    # Off by default because it costs one extra authenticated CourtListener
+    # request per enriched case with a docket id. Advisory metadata only.
+    courtlistener_oral_argument_lookup: bool = False
+
     # Validate CAVC decisions against the court's official Panel Opinions
     # list. Panel-listed dockets are precedential; Rule 30(a) single-judge
     # dispositions are not. Off by default because it fetches the list.
@@ -512,6 +517,10 @@ class Settings:
             courtlistener_semantic_gap_search=env_bool(
                 "COURTLISTENER_SEMANTIC_GAP_SEARCH",
                 d.courtlistener_semantic_gap_search,
+            ),
+            courtlistener_oral_argument_lookup=env_bool(
+                "COURTLISTENER_ORAL_ARGUMENT_LOOKUP",
+                d.courtlistener_oral_argument_lookup,
             ),
             cavc_panel_validation=env_bool(
                 "CAVC_PANEL_VALIDATION", d.cavc_panel_validation

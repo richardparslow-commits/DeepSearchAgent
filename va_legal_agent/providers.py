@@ -210,6 +210,76 @@ def _id_from_url(value: object, pattern: re.Pattern[str]) -> int | None:
     return parsed if parsed > 0 else None
 
 
+def _courtlistener_public_url(value: object) -> str:
+    """Return an absolute CourtListener page URL from a relative API URL."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    return "https://www.courtlistener.com/" + text.lstrip("/")
+
+
+def _panel_names(value: object) -> str:
+    """Normalize CourtListener panel names into one advisory display string.
+
+    The API mixes display names with links to the people endpoint. Only names
+    are usable for display here; judge links are deliberately skipped rather
+    than exposing opaque numeric ids as if they were names.
+    """
+    if isinstance(value, str):
+        values: list[object] = [value]
+    elif isinstance(value, list):
+        values = value
+    else:
+        return ""
+    names: list[str] = []
+    for entry in values:
+        if isinstance(entry, dict):
+            entry = entry.get("name") or entry.get("full_name") or ""
+        text = str(entry or "").strip()
+        if not text or text.startswith(("http://", "https://")) or "/people/" in text:
+            continue
+        if text not in names:
+            names.append(text)
+    return "; ".join(names)
+
+
+def _docket_identifier(docket: dict) -> str:
+    """Return a positive CourtListener docket id from an object or URL."""
+    raw_id = docket.get("id")
+    if raw_id is not None and str(raw_id).strip().isdigit():
+        parsed = int(str(raw_id).strip())
+        if parsed > 0:
+            return str(parsed)
+    for value in (
+        docket.get("resource_uri"),
+        docket.get("url"),
+        docket.get("absolute_url"),
+    ):
+        parsed = _id_from_url(value, _DOCKET_ID_PATTERN)
+        if parsed is not None:
+            return str(parsed)
+    return ""
+
+
+def _docket_public_url(docket_id: str, case_name: str = "") -> str:
+    """Build a public docket URL when the API omitted its absolute URL.
+
+    CourtListener's docket route requires a slug segment even though the slug
+    is not used to resolve the page. Deriving it from the case name gives a
+    readable, stable fallback; the numeric id alone (``/docket/<id>/``) does
+    not resolve. The generic ``docket`` slug is used when no name is known.
+    """
+    if not docket_id:
+        return ""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(case_name or "").lower()).strip("-")
+    return (
+        "https://www.courtlistener.com/docket/"
+        f"{docket_id}/{slug or 'docket'}/"
+    )
+
+
 def _opinion_result(
     opinion: dict,
     cluster: dict,
@@ -225,6 +295,11 @@ def _opinion_result(
     citations = _cluster_citation_values(cluster.get("citations"))
     citation = citations[0] if citations else ""
     opinion_ids = _cluster_opinion_ids(cluster) or [opinion_id]
+    docket_id = _docket_identifier(docket)
+    case_name = str(cluster.get("case_name") or "")
+    recap_url = _courtlistener_public_url(docket.get("absolute_url"))
+    if not recap_url:
+        recap_url = _docket_public_url(docket_id, case_name)
     return {
         "title": cluster.get("case_name") or "Untitled case",
         "url": url,
@@ -238,6 +313,11 @@ def _opinion_result(
         "decision_date": cluster.get("date_filed") or "",
         "docket": docket.get("docket_number") or "",
         "judge": cluster.get("judges") or "",
+        "panel": _panel_names(cluster.get("panel"))
+        or _panel_names(docket.get("panel_str")),
+        "recap_docket_url": recap_url,
+        "recap_docket_id": docket_id,
+        "oral_argument_date": str(docket.get("date_argued") or ""),
         # The citator needs the individual opinion's role (lead, dissent,
         # etc.) and the cluster's precedential designation before it can
         # decide whether a treatment finding is authoritative.
@@ -280,6 +360,9 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
         snippet = str(opinions[0].get("snippet") or "").strip()
         raw_id = opinions[0].get("id")
         opinion_id = str(raw_id) if raw_id is not None else ""
+    docket_id = str(item.get("docket_id") or "").strip()
+    if not docket_id.isdigit() or int(docket_id) <= 0:
+        docket_id = ""
     return {
         "title": case_name,
         "url": url,
@@ -289,6 +372,11 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
         "decision_date": item.get("dateFiled") or "",
         "docket": item.get("docketNumber") or "",
         "judge": item.get("judge") or "",
+        "panel": _panel_names(item.get("panel_names")),
+        "recap_docket_url": _docket_public_url(docket_id, case_name),
+        "recap_docket_id": docket_id,
+        "oral_argument_url": "",
+        "oral_argument_date": str(item.get("dateArgued") or ""),
         "courtlistener_opinion_id": opinion_id,
     }
 
@@ -506,6 +594,7 @@ class CourtListenerProvider:
     API_URL = "https://www.courtlistener.com/api/rest/v4/opinions/"
     CLUSTERS_URL = "https://www.courtlistener.com/api/rest/v4/clusters/"
     DOCKETS_URL = "https://www.courtlistener.com/api/rest/v4/dockets/"
+    AUDIO_URL = "https://www.courtlistener.com/api/rest/v4/audio/"
     BATCH_SIZE = 100
     CITATIONS_URL = "https://www.courtlistener.com/api/rest/v4/opinions-cited/"
     CITATION_LOOKUP_URL = "https://www.courtlistener.com/api/rest/v4/citation-lookup/"
@@ -963,6 +1052,44 @@ class CourtListenerProvider:
         return _opinion_result(
             opinion, cluster, docket, opinion_id, str(cluster_url or "")
         )
+
+    def fetch_oral_argument(self, docket_id: object) -> dict[str, str]:
+        """Return the newest public oral-argument link for *docket_id*.
+
+        The audio endpoint is the only stable source of a recording's public
+        page; the docket response exposes API links rather than a ready-to-use
+        frontend URL. An empty result means no recording was returned, while a
+        request failure raises :class:`SearchError` for the best-effort caller
+        to report without invalidating the case.
+        """
+        text = str(docket_id or "").strip()
+        if not text.isdigit() or int(text) <= 0:
+            return {}
+        try:
+            data = self._get_json(
+                self.AUDIO_URL,
+                {
+                    "docket": int(text),
+                    "order_by": "-date_created",
+                    "page_size": 1,
+                    "format": "json",
+                },
+            )
+        except SearchError as exc:
+            raise SearchError(
+                f"CourtListener oral-argument lookup failed for docket {text}: {exc}"
+            ) from exc
+        for row in data.get("results", []):
+            if not isinstance(row, dict):
+                continue
+            url = _courtlistener_public_url(row.get("absolute_url"))
+            if not url:
+                continue
+            return {
+                "oral_argument_url": url,
+                "oral_argument_date": str(row.get("date_argued") or ""),
+            }
+        return {}
 
     def fetch_opinion_text(self, opinion_id: int) -> str:
         """Return the full opinion body for *opinion_id* from the detail endpoint.

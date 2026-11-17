@@ -68,7 +68,7 @@ Set `SEARCH_PROVIDERS` in `.env` (comma-separated, default is just `duckduckgo`)
 | Provider | What it searches | Notes |
 |---|---|---|
 | `duckduckgo` | Open web search | Default; no key; may be rate-limited / challenge-flagged under burst |
-| `courtlistener` | Structured CAVC / Federal Circuit / SCOTUS opinions (v4 REST API) | **Requires `COURTLISTENER_API_KEY`** (free account) or every query 401s |
+| `courtlistener` | Structured CAVC / Federal Circuit / SCOTUS opinions (v4 REST API), with advisory panel and public docket references, plus opt-in oral-argument metadata | **Requires `COURTLISTENER_API_KEY`** (free account) or every query 401s |
 | `bva` | Board decisions via search.usa.gov | No key; rate-limits aggressively |
 | `bvasitemap` | Recent current-year BVA decisions from the official va.gov sitemap | WAF-free; recent decisions only |
 | `bvalocal` | Full current-year BVA corpus, downloaded to a local index (`.bva_index/`) | Sub-second, WAF-free; first use downloads ~40k files |

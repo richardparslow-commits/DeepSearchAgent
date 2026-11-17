@@ -49,6 +49,7 @@ _ENV_VARS = (
     "COURTLISTENER_CACHE_TTL_SECONDS",
     "COURTLISTENER_USAGE_GUARD",
     "COURTLISTENER_SEMANTIC_GAP_SEARCH",
+    "COURTLISTENER_ORAL_ARGUMENT_LOOKUP",
     "CAVC_PANEL_VALIDATION",
     "AUTHORITY_VERIFICATION",
     "FEDERAL_REGISTER_LOOKBACK_DAYS",
@@ -242,6 +243,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.courtlistener_cache_ttl_seconds == 86_400
     assert settings.courtlistener_usage_guard is True
     assert settings.courtlistener_semantic_gap_search is False
+    assert settings.courtlistener_oral_argument_lookup is False
     assert settings.cavc_panel_validation is False
     assert settings.authority_verification is False
     assert settings.federal_register_lookback_days == 365
@@ -308,6 +310,7 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("COURTLISTENER_API_KEY", "tok-123")
     monkeypatch.setenv("COURTLISTENER_USAGE_GUARD", "0")
     monkeypatch.setenv("COURTLISTENER_SEMANTIC_GAP_SEARCH", "1")
+    monkeypatch.setenv("COURTLISTENER_ORAL_ARGUMENT_LOOKUP", "1")
     monkeypatch.setenv("CAVC_PANEL_VALIDATION", "1")
     monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
     monkeypatch.setenv("FEDERAL_REGISTER_LOOKBACK_DAYS", "90")
@@ -361,6 +364,7 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.courtlistener_api_key == "tok-123"
     assert settings.courtlistener_usage_guard is False
     assert settings.courtlistener_semantic_gap_search is True
+    assert settings.courtlistener_oral_argument_lookup is True
     assert settings.cavc_panel_validation is True
     assert settings.authority_verification is True
     assert settings.federal_register_lookback_days == 90

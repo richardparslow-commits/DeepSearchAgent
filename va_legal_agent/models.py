@@ -149,6 +149,22 @@ class CaseRecord(BaseModel):
     impact: str = ""
     docket: str = ""
     judge: str = ""
+    # CourtListener advisory panel metadata. ``panel`` is a display string of
+    # panel member names; it does not establish the author of the majority
+    # opinion. Empty when only numeric judge links or no panel data were
+    # returned.
+    panel: str = ""
+    # Public CourtListener docket page, when known. This is a RECAP/PACER
+    # reference only: an empty value or a link does not prove that docket
+    # documents are available in RECAP, and no docket content is treated as
+    # authority or as appellate history.
+    recap_docket_url: str = ""
+    recap_docket_id: str = ""
+    # Public oral-argument recording metadata. Absence is not evidence that no
+    # argument occurred; enrichment leaves these empty when no recording is
+    # found or the advisory lookup fails.
+    oral_argument_url: str = ""
+    oral_argument_date: str = ""
     # CourtListener opinion id (from the search result's nested opinion), so
     # deep-read can pull the full text from the opinion detail endpoint
     # instead of the WAF-challenged frontend page.
