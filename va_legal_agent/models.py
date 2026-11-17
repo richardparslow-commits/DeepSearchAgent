@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
 
 
 # Stable vocabularies for the public source-invalidator audit. The model keeps
@@ -196,6 +196,25 @@ class ProvisionImpact(BaseModel):
     registry_version: str = "2026.11"
 
 
+class ImpactProfile(BaseModel):
+    """Structured, nuanced impact analysis for a single case.
+
+    The profile is retained on the case and on the final report instead of
+    being flattened to ``nuance``. Renderers and snapshots therefore preserve
+    the affected issue tags, outcome, statutes, authority note, provision
+    impacts, and narrative together.
+    """
+
+    issue_tags: list[str] = Field(default_factory=list)
+    outcome: str = ""
+    outcome_note: str = ""
+    statutes: list[str] = Field(default_factory=list)
+    statute_note: str = ""
+    authority_note: str = ""
+    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+    nuance: str = ""
+
+
 class RvsrGuidance(BaseModel):
     """Role-specific operational playbook for a VA Rating Veterans Service Representative."""
 
@@ -217,6 +236,71 @@ class SeniorRaterGuidance(BaseModel):
     precedent_conflict_resolution: list[str] = Field(default_factory=list)
     quality_review_checkpoints: list[str] = Field(default_factory=list)
     source_authorities: list[str] = Field(default_factory=list)
+
+
+class RvsrAdjudicationWorkflow(BaseModel):
+    """Actionable RVSR compensation-rating workflow for the surfaced law."""
+
+    issue: str = ""
+    evidence_review_checklist: list[str] = Field(default_factory=list)
+    lay_evidence_competence: list[str] = Field(default_factory=list)
+    duty_to_assist_exam_actions: list[str] = Field(default_factory=list)
+    rating_codesheet_actions: list[str] = Field(default_factory=list)
+    effective_date_actions: list[str] = Field(default_factory=list)
+    reasons_for_decision_requirements: list[str] = Field(default_factory=list)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
+class SeniorRaterDroWorkflow(BaseModel):
+    """Senior RVSR/DRO workflow covering HLR, DTA returns, and CUE."""
+
+    issue: str = ""
+    hlr_de_novo_actions: list[str] = Field(default_factory=list)
+    dta_error_returns: list[str] = Field(default_factory=list)
+    cue_analysis: list[str] = Field(default_factory=list)
+    precedent_m21_conflict_resolution: list[str] = Field(default_factory=list)
+    dro_disposition_actions: list[str] = Field(default_factory=list)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
+class QrsAuditWorkflow(BaseModel):
+    """Quality Review Specialist / National Quality Review audit workflow."""
+
+    issue: str = ""
+    second_signature_checkpoints: list[str] = Field(default_factory=list)
+    nqr_qrt_error_calls: list[str] = Field(default_factory=list)
+    sample_review_focus: list[str] = Field(default_factory=list)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
+class AdjudicationRoleGuidance(BaseModel):
+    """RVSR, Senior Rater/DRO, and QRS workflows derived from one corpus."""
+
+    issue: str = ""
+    rvsr: RvsrAdjudicationWorkflow = Field(default_factory=RvsrAdjudicationWorkflow)
+    senior_rater_dro: SeniorRaterDroWorkflow = Field(
+        default_factory=SeniorRaterDroWorkflow
+    )
+    qrs: QrsAuditWorkflow = Field(default_factory=QrsAuditWorkflow)
+    source_authorities: list[str] = Field(default_factory=list)
+
+
+class AuthorityReliabilitySummary(BaseModel):
+    """Aggregate official-versus-secondary authority counts for a report."""
+
+    official_count: int = 0
+    secondary_count: int = 0
+    unknown_count: int = 0
+    official_primary_binding_count: int = 0
+    official_primary_persuasive_count: int = 0
+    official_agency_guidance_count: int = 0
+    secondary_summary_count: int = 0
+    unverified_count: int = 0
+    tier_counts: dict[str, int] = Field(default_factory=dict)
+
+    @property
+    def total(self) -> int:
+        return self.official_count + self.secondary_count + self.unknown_count
 
 
 class CaseRecord(BaseModel):
@@ -306,11 +390,18 @@ class CaseRecord(BaseModel):
     composite_score: float = 0.0
     ranking_explanation: str = ""
     source_reliability: str = ""
-    # Structured full-text abstract and provision-level VBA impact. Both are
-    # populated by the deep-read/impact layers and preserved by the surfaced
-    # case contract instead of being flattened into display strings.
+    # Explicit source-authority classification. ``authority_tier`` distinguishes
+    # binding primary authority from persuasive primary authority, agency
+    # guidance, secondary summaries, and unverified records.
+    authority_tier: str = ""
+    is_official_authority: bool = False
+    # Structured full-text abstract, provision-level VBA impact, and the full
+    # impact profile. These are populated by the deep-read/impact layers and
+    # preserved by the surfaced case contract instead of being flattened into
+    # display strings.
     case_abstract: CaseAbstract | None = None
     provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+    impact_profile: ImpactProfile | None = None
 
 
 class CitationTreatment(BaseModel):
@@ -1678,9 +1769,27 @@ class SurfacedCaseRecord(BaseModel):
     transcript_source_type: str = "unverified"
     provenance_verified: bool = False
     source_reliability: str = ""
+    authority_tier: str = "unverified"
+    is_official_authority: bool = False
     warnings: list[str] = Field(default_factory=list)
     case_abstract: CaseAbstract | None = None
     provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _infer_authority_tier(self) -> "SurfacedCaseRecord":
+        """Keep manually constructed records consistent with their source label.
+
+        Producers normally set the full tier. This fallback ensures a record
+        built directly with ``source_reliability='official'`` is never rendered
+        as unverified, and a secondary record is never badged as primary.
+        """
+        if self.authority_tier == "unverified":
+            if self.source_reliability == "secondary":
+                self.authority_tier = "secondary_summary"
+            elif self.source_reliability == "official":
+                self.authority_tier = "official_primary_persuasive"
+                self.is_official_authority = True
+        return self
 
     @property
     def display_label(self) -> str:
@@ -1701,10 +1810,23 @@ class LegalAnalysis(BaseModel):
     surfaced_cases: list[SurfacedCaseRecord] = Field(default_factory=list)
     case_abstracts: list[CaseAbstract] = Field(default_factory=list)
     provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
+    # Full impact profile for the primary surfaced case, plus every per-case
+    # profile for lossless rendering. ``impact_profile`` is None only when no
+    # case reached the report.
+    impact_profile: ImpactProfile | None = None
+    impact_profiles: list[ImpactProfile] = Field(default_factory=list)
     rvsr_guidance: RvsrGuidance = Field(default_factory=RvsrGuidance)
     senior_rater_guidance: SeniorRaterGuidance = Field(
         default_factory=SeniorRaterGuidance
     )
+    adjudication_guidance: AdjudicationRoleGuidance = Field(
+        default_factory=AdjudicationRoleGuidance
+    )
+    source_reliability_summary: AuthorityReliabilitySummary = Field(
+        default_factory=AuthorityReliabilitySummary
+    )
+    llm_provenance_warnings: list[str] = Field(default_factory=list)
+    llm_provenance_validated: bool = False
     # Per-case full-text summaries from deep-read mode, aligned with top_cases:
     # each entry is {"case": "Title (court)", "summary": "..."} (empty summary
     # when deep-read was off or a body could not be fetched).
@@ -1782,15 +1904,15 @@ class LegalAnalysis(BaseModel):
         """Warn when source audits span non-comparable envelopes."""
         return source_audit_provenance_warnings(self.citator_checks)
 
+    @computed_field
+    @property
+    def source_reliability(self) -> AuthorityReliabilitySummary:
+        """Backward-friendly alias for the aggregate reliability contract."""
+        return self.source_reliability_summary
 
-class ImpactProfile(BaseModel):
-    """Structured, nuanced impact analysis for a single case."""
 
-    issue_tags: list[str] = Field(default_factory=list)
-    outcome: str = ""
-    outcome_note: str = ""
-    statutes: list[str] = Field(default_factory=list)
-    statute_note: str = ""
-    authority_note: str = ""
-    provision_impacts: list[ProvisionImpact] = Field(default_factory=list)
-    nuance: str = ""
+# Compatibility aliases for callers that use the guidance naming from the
+# AUD4-005 remediation brief. The workflow classes are the canonical models.
+RvsrAdjudicationGuidance = RvsrAdjudicationWorkflow
+SeniorRaterDroGuidance = SeniorRaterDroWorkflow
+QrsAuditGuidance = QrsAuditWorkflow

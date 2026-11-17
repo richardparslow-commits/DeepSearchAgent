@@ -407,3 +407,27 @@ def test_aud4_medication_is_not_inferred_from_a_bare_medication_reference():
     assert not any(
         impact.medication_effect for impact in case.provision_impacts
     )
+
+
+def test_impact_profile_retains_every_renderable_field():
+    case = _case(
+        snippet="service connection requires a nexus opinion",
+        holding="The Board must provide reasons and bases.",
+        outcome="remanded",
+        statutes=["38 C.F.R. § 3.303"],
+        appellant_role="veteran",
+    )
+    case.provision_impacts = extract_provision_impacts(
+        "38 C.F.R. § 3.303 and Diagnostic Code 9411", case
+    )
+
+    profile = analyze_case_impact(case)
+
+    assert profile.issue_tags
+    assert profile.outcome == "remanded"
+    assert profile.outcome_note
+    assert profile.statutes == ["38 C.F.R. § 3.303"]
+    assert profile.statute_note
+    assert profile.authority_note
+    assert profile.provision_impacts
+    assert profile.nuance

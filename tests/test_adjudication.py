@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from va_legal_agent.adjudication import (
+    build_adjudication_guidance,
     build_adjudication_queue,
     rvsr_operational_playbook,
     senior_rater_operational_playbook,
@@ -389,3 +390,65 @@ def test_aud4_adjudication_exposes_both_operational_playbooks():
     assert senior.cue_analysis
     assert any("3.105" in item for item in senior.cue_analysis)
     assert any("CUE finding" in item for item in senior.hlr_de_novo_focus)
+
+
+def test_aud4_vba_adjudication_workflows_cover_rvsr_hlr_cue_and_qrs():
+    case = CaseRecord(
+        title="CUE v. McDonough",
+        court="Court of Appeals for Veterans Claims",
+        holding=(
+            "The Board must address an inadequate examination under 38 C.F.R. "
+            "§ 3.159, a DRO CUE finding under 38 C.F.R. § 3.105(a), and an HLR "
+            "under 38 C.F.R. § 3.2601. A staged rating is required under "
+            "Fenderson v. West."
+        ),
+        url="https://uscourts.cavc.gov/opinions/cue",
+        source_reliability="official",
+        precedential=True,
+    )
+
+    guidance = build_adjudication_guidance("CUE, HLR, and staged rating", [case])
+
+    # RVSR workflow: evidence, lay competence, exam adequacy, codesheet,
+    # effective dates, and reasons for decision are all explicit.
+    assert guidance.rvsr.evidence_review_checklist
+    assert any("5107(b)" in item for item in guidance.rvsr.lay_evidence_competence)
+    assert any("lay" in item.lower() for item in guidance.rvsr.lay_evidence_competence)
+    assert guidance.rvsr.duty_to_assist_exam_actions
+    assert any("3.159" in item for item in guidance.rvsr.duty_to_assist_exam_actions)
+    assert guidance.rvsr.rating_codesheet_actions
+    assert any("staged" in item.lower() for item in guidance.rvsr.rating_codesheet_actions)
+    assert guidance.rvsr.effective_date_actions
+    assert any("3.400" in item for item in guidance.rvsr.effective_date_actions)
+    assert guidance.rvsr.reasons_for_decision_requirements
+
+    # Senior Rater/DRO: HLR is de novo, DTA errors return, CUE is time-bound,
+    # and binding precedent controls an unrevised M21-1 provision.
+    assert any("3.2601" in item for item in guidance.senior_rater_dro.hlr_de_novo_actions)
+    assert any("de novo" in item.lower() for item in guidance.senior_rater_dro.hlr_de_novo_actions)
+    assert guidance.senior_rater_dro.dta_error_returns
+    assert any("return" in item.lower() for item in guidance.senior_rater_dro.dta_error_returns)
+    assert any("3.105(a)" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert any("George" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert any("20.1403" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert any(
+        "M21-1" in item and "precedent" in item.lower()
+        for item in guidance.senior_rater_dro.precedent_m21_conflict_resolution
+    )
+    assert guidance.senior_rater_dro.dro_disposition_actions
+
+    # QRS workflow: pre-promulgation signatures and NQR/QRT error calls.
+    assert guidance.qrs.second_signature_checkpoints
+    assert any("diagnostic" in item.lower() for item in guidance.qrs.second_signature_checkpoints)
+    assert guidance.qrs.nqr_qrt_error_calls
+    assert any("duty-to-assist" in item.lower() for item in guidance.qrs.nqr_qrt_error_calls)
+    assert guidance.qrs.sample_review_focus
+    assert guidance.source_authorities
+
+
+def test_aud4_citator_queue_api_is_unchanged_by_vba_workflow_engine():
+    """The queue remains an independent evidence-review process."""
+    queue = build_adjudication_queue([_check(authoritative=[_treatment()])])
+    assert len(queue.items) == 1
+    assert queue.items[0].kind == "treatment_finding"
+    assert queue.items[0].proposal is not None

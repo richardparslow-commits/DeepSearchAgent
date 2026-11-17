@@ -4667,6 +4667,14 @@ def test_aud4_real_cavc_fixture_renders_every_required_layer():
     assert "Staged rating (Fenderson/Hart)" in rendered
     assert "M21-1" in rendered
     assert "RVSR operational playbook:" in rendered
+    # AUD4-005/007/008: full profile, role workflows, and reliability badges
+    # all reach the CLI text renderer.
+    assert "Full impact profiles (beyond nuance):" in rendered
+    assert "VA Rater (RVSR) Application:" in rendered
+    assert "Senior VA Rater / DRO Application (HLR & CUE):" in rendered
+    assert "Quality Review (QRS) Checkpoints:" in rendered
+    assert "Official Court Transcript / Primary Authority" in rendered
+    assert "source: official" in rendered
     assert "Senior Rater / DRO operational playbook:" in rendered
 
     payload = json.loads(render_analysis(analysis, "json"))

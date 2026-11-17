@@ -3,19 +3,21 @@
 **Status date:** 2026-11-17
 
 **Registered here:** Audit Pass 1 (32 findings), the supplementary legal finding `L-1`,
-and the independent security/domain findings `AUD4-001`, `AUD4-002`, `AUD4-003`, and
-`AUD4-004`.
+and the independent security/domain findings `AUD4-001` through `AUD4-008`.
 **Source-complete:** Audit Pass 2 (7 findings) and Audit Pass 3 (22 findings) are fully
 closed in their source documents. They are summarized below but not row-expanded here,
 because this maintenance update reconciles the remaining-core audit report; their source
 documents remain authoritative.
 **Pass 4:** `AUD4-001` (GovInfo/Congress credential disclosure) and
-`AUD4-002`/`AUD4-003`/`AUD4-004` (D1 case metadata, VBA provision impact, and
-structured abstracts/RVSR-DRO guidance) are recorded below. `AUD4-001` evidence
-is in [`aud4-001-root-cause.md`](aud4-001-root-cause.md); the three domain fixes
-are covered by `tests/test_legal_agent.py`, `tests/test_topics.py`,
+`AUD4-002` through `AUD4-008` (D1 metadata, VBA provision impact, structured
+abstracts, role workflows, LLM provenance, full `ImpactProfile`, and source
+reliability) are recorded below. Root-cause evidence is in
+[`aud4-001-root-cause.md`](aud4-001-root-cause.md) and
+[`aud4-005-008-root-cause.md`](aud4-005-008-root-cause.md). The domain fixes are
+covered by `tests/test_legal_agent.py`, `tests/test_topics.py`,
 `tests/test_regulations.py`, `tests/test_impact.py`, `tests/test_deep_read.py`,
-`tests/test_interpretation.py`, `tests/test_cli.py`, `tests/test_webapp.py`, and
+`tests/test_llm.py`, `tests/test_interpretation.py`, `tests/test_adjudication.py`,
+`tests/test_reliability.py`, `tests/test_cli.py`, `tests/test_webapp.py`, and
 `tests/test_audit_invariants.py`.
 
 **Sources:** [Audit Pass 1](audit-pass1.md) · [Audit Pass 2](audit-pass2.md) ·
@@ -32,7 +34,7 @@ legal-premise check. Do not renumber existing IDs.
 | 1 | `docs/audit-pass1.md` | 32 | 32 | 32 Closed, 0 Partial, 0 Open |
 | 2 | `docs/audit-pass2.md` | 7 | 0 | 7 Closed; source document only |
 | 3 | `docs/audit-pass3.md` | 22 | 0 | 22 Closed; source document only |
-| 4 | `docs/aud4-001-root-cause.md`; domain regression tests | 4 | 4 | `AUD4-001`, Critical; `AUD4-002`/`003`/`004`, High; Closed |
+| 4 | `docs/aud4-001-root-cause.md`; `docs/aud4-005-008-root-cause.md`; domain regression tests | 8 | 8 | `AUD4-001`, Critical; `AUD4-002` through `AUD4-008`, High; Closed |
 | Legal check | `docs/audit-pass1.md` § Legal-premise check | 1 | 1 | `L-1`, High; Closed |
 
 ## Summary
@@ -40,17 +42,18 @@ legal-premise check. Do not renumber existing IDs.
 | Severity | Total | Open | Partial | Closed |
 |---|---:|---:|---:|---:|
 | Critical | 1 | 0 | 0 | 1 |
-| High | 12 | 0 | 0 | 12 |
+| High | 16 | 0 | 0 | 16 |
 | Medium | 16 | 0 | 0 | 16 |
 | Low | 8 | 0 | 0 | 8 |
-| **Total** | **37** | **0** | **0** | **37** |
+| **Total** | **41** | **0** | **0** | **41** |
 
 Pass 1 alone contributes 32 findings: **32 Closed, 0 Partial, 0 Open**, matching the
 remaining-core audit report. The ninth High is the supplementary legal finding `L-1`: it is
 outside Pass 1's file scope but is a fixed release-blocking defect recorded in the same
 audit document, so it is included here rather than left out of the consolidated view. The
-remaining three High findings are the AUD4-002/003/004 domain defects resolved in this
-remediation and verified by the unit, integration, and invariant suites named above.
+remaining seven High findings are the AUD4-002 through AUD4-008 domain defects
+resolved in this remediation and verified by the unit, integration, and invariant
+suites named above.
 
 Pass 2 has **2 High, 3 Medium, 2 Low**, all Closed. Pass 3 has **3 High, 10 Medium,
 9 Low**, all Closed. They are not part of the 34-row table below; see
@@ -92,6 +95,10 @@ ID. Line ranges are current for the remediated P1 rows in this tree.
 | High | AUD4-002 | `va_legal_agent/models.py` (`SurfacedCaseRecord`); `va_legal_agent/agent.py` (`_build_analysis`, citator merge); `va_legal_agent/__main__.py` (text/CSV/JSON); `va_legal_agent/snapshots.py` | A surfaced authority was flattened to `Title (court)`, dropping docket, citation, date, panel status, precedential status, citator history, transcript provenance, and verification state; fixed with a lossless `SurfacedCaseRecord`, post-citator history merge, and end-to-end rendering/snapshotting alongside the legacy display strings. | Closed | Closed — verify |
 | High | AUD4-003 | `va_legal_agent/topics.py`; `va_legal_agent/impact.py`; `va_legal_agent/regulations.py`; `va_legal_agent/va_domain.py` | Statute handling was a nine-entry hint table plus one generic sentence, and the Regulations.gov client was the only regulatory layer; fixed with a versioned 38 U.S.C./38 C.F.R. Part 3/4, diagnostic-code, staged-rating, medication-effect, and M21-1 registry that emits stage/effect/provenance objects while preserving the rulemaking client. | Closed | Closed — verify |
 | High | AUD4-004 | `va_legal_agent/deep_read.py`; `va_legal_agent/interpretation.py`; `va_legal_agent/adjudication.py`; `va_legal_agent/va_domain.py` | Facts and procedure were a 300-character free-text snippet and next steps were generic research prompts; fixed with a non-truncated `CaseAbstract` and concrete RVSR and Senior Rater/DRO playbooks covering evidence, exams, codesheet execution, reasons for decision, HLR, DTA, CUE, and precedent-versus-M21-1 conflicts. | Closed | Closed — verify |
+| High | AUD4-005 | `va_legal_agent/adjudication.py` | The module was only a citator human-review queue with no RVSR compensation workflow, HLR § 3.2601 path, DTA return, CUE § 3.105(a) analysis, DRO disposition, or QRS/NQR process; fixed with structured `RvsrAdjudicationWorkflow`, `SeniorRaterDroWorkflow`, `QrsAuditWorkflow`, and `AdjudicationRoleGuidance` while preserving every queue symbol and test. | Closed | Closed — verify |
+| High | AUD4-006 | `va_legal_agent/llm.py`; `va_legal_agent/interpretation.py` | Arbitrary LLM JSON was accepted without schema or content checks, and principles/synthesis were adopted directly; fixed with strict key/type validation and a deterministic provenance gate that rejects fabricated citations, dockets, quotations, statutes, regulations, M21-1 references, and unanchored prose, then falls back to source-grounded principles and template narrative with warnings. | Closed | Closed — verify |
+| High | AUD4-007 | `va_legal_agent/models.py`; `va_legal_agent/agent.py`; `va_legal_agent/__main__.py`; `webapp.py`; `va_legal_agent/snapshots.py` | `ImpactProfile` was computed and reduced to `.nuance`, and no RVSR/Senior Rater/DRO/QRS output model existed; fixed by retaining the full profile plus every per-case profile and rendering/serializing structured role workflows and impact fields end to end. | Closed | Closed — verify |
+| High | AUD4-008 | `va_legal_agent/reliability.py`; `va_legal_agent/models.py`; `va_legal_agent/agent.py`; `va_legal_agent/ranking.py`; `va_legal_agent/interpretation.py`; `va_legal_agent/__main__.py`; `webapp.py` | `source_reliability` was computed but never consumed; fixed with an explicit authority tier and official boolean, aggregate report summary, official-first tie-breaking, reliability-aware confidence, and Official Primary vs. Secondary/Unverified labels in CLI, CSV/JSON, snapshots, and web cards. | Closed | Closed — verify |
 | High | P1-001 | `va_legal_agent/__main__.py:218-245` | Scheme-less `SEARCH_HTTP_PROXY` bypassed `_mask_proxy_url`; fixed by prepending `//` for parsing and redacting userinfo. | Closed | Closed — verify |
 | High | P1-004 | `va_legal_agent/__main__.py:784-785, 1019-1179, 1431-1434` | Non-positive `--max-batch-requests` deferred every row and `--auto-run` looped indefinitely; fixed with positive validation and bounded, stall-aware retries. | Closed | Closed — verify |
 | High | P1-007 | `va_legal_agent/config.py:31, 94-125` | `env_float` accepted `nan`/`inf`; fixed to reject non-finite values and cap sleep/backoff/timeout settings at 3600 s (wall-clock deadlines remain unbounded but finite). | Closed | Closed — verify |

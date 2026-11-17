@@ -17,8 +17,14 @@ from dataclasses import dataclass, field
 from .config import get_settings
 from .fetch import extract_statutes
 from .impact import detect_outcome
-from .llm import interpret_cases, reason_cases
+from .adjudication import build_adjudication_guidance
+from .llm import (
+    interpret_cases,
+    reason_cases,
+    validate_llm_synthesis_provenance,
+)
 from .models import (
+    AdjudicationRoleGuidance,
     CaseRecord,
     ClaimElement,
     Contradiction,
@@ -175,6 +181,11 @@ class InterpretiveAnalysis:
     senior_rater_guidance: SeniorRaterGuidance = field(
         default_factory=SeniorRaterGuidance
     )
+    adjudication_guidance: AdjudicationRoleGuidance = field(
+        default_factory=AdjudicationRoleGuidance
+    )
+    llm_provenance_warnings: list[str] = field(default_factory=list)
+    llm_provenance_validated: bool = False
 
 
 def _source_text(case: CaseRecord) -> str:
@@ -580,6 +591,7 @@ def build_interpretive_analysis(
     # structured abstracts, and the provision-level impacts on the records.
     rvsr_guidance = build_rvsr_guidance(claim_issue, cases)
     senior_rater_guidance = build_senior_rater_guidance(claim_issue, cases)
+    adjudication_guidance = build_adjudication_guidance(claim_issue, cases)
     next_steps = [spec.step for spec in element_specs]
     next_steps.extend(
         f"RVSR — {item}" for item in rvsr_guidance.evidence_review_checklist[:2]
@@ -613,15 +625,35 @@ def build_interpretive_analysis(
     # statute surface even without the LLM, so the report flags tension between
     # authorities on the template path too.
     deterministic_contradictions = detect_contradictions(cases)
-    reasoning = reason_cases(claim_issue, claim_type, cases[: settings.llm_reasoning_limit])
+    raw_reasoning = reason_cases(
+        claim_issue, claim_type, cases[: settings.llm_reasoning_limit]
+    )
+    provenance_warnings: list[str] = []
+    reasoning_attempted = raw_reasoning is not None
+    reasoning = raw_reasoning
+    if reasoning is not None:
+        reasoning, provenance_warnings = validate_llm_synthesis_provenance(
+            reasoning, cases[: settings.llm_reasoning_limit]
+        )
+        if not (
+            reasoning.reconciled_principles
+            or reasoning.contradictions
+            or reasoning.synthesis
+        ):
+            reasoning = None
+
     # When the reconciling pass provides a synthesis it replaces the lighter
     # narrative call entirely (one LLM call instead of two); otherwise the
-    # single-call narrative is still tried.
-    llm_text = (
-        None
-        if reasoning and reasoning.synthesis
-        else interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
-    )
+    # single-call narrative is still tried. A rejected synthesis never falls
+    # through to the unvalidated narrative call.
+    llm_text = None
+    if reasoning is not None:
+        if not reasoning.synthesis and not reasoning.rejected_synthesis:
+            llm_text = interpret_cases(
+                claim_issue, claim_type, cases[:interpret_limit]
+            )
+    elif not reasoning_attempted:
+        llm_text = interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
 
     # The deterministic principles are the always-on baseline; the reasoning
     # pass overrides them (its principles carry inline citations) when the LLM
@@ -643,6 +675,8 @@ def build_interpretive_analysis(
         contradictions = deterministic_contradictions
         source = "llm" if llm_text else "template"
 
+    provenance_gate_applied = raw_reasoning is not None
+
     # ── Coverage confidence ─────────────────────────────────────────────
     # Volume alone is not confidence. High confidence requires a binding,
     # precedential decision, meaningful element coverage, and at least one
@@ -653,11 +687,24 @@ def build_interpretive_analysis(
         for case in cases
         if case.precedential is True and case.court in BINDING_COURTS
     ]
+    official_binding_cases = [
+        case for case in binding_cases if case.is_official_authority
+    ]
+    reliability_present = any(case.source_reliability for case in cases)
     multi_case_support = any(
         len(element.covered_by) >= 2 for element in detected
     )
     if not binding_cases or coverage_score <= 0.0:
         coverage_confidence = "low"
+    elif reliability_present and not official_binding_cases:
+        # A binding-court label on a secondary page is not high-confidence
+        # primary authority. It can still support medium confidence.
+        coverage_confidence = (
+            "medium"
+            if coverage_score >= 0.30
+            and (len(cases) >= 5 or len(binding_cases) >= 3)
+            else "low"
+        )
     elif (
         len(cases) >= 10
         and coverage_score >= 0.60
@@ -687,4 +734,7 @@ def build_interpretive_analysis(
         statute_outcome_matrix=build_statute_outcome_matrix(cases),
         rvsr_guidance=rvsr_guidance,
         senior_rater_guidance=senior_rater_guidance,
+        adjudication_guidance=adjudication_guidance,
+        llm_provenance_warnings=provenance_warnings,
+        llm_provenance_validated=provenance_gate_applied,
     )

@@ -295,7 +295,9 @@ def analyze_case_impact(case: CaseRecord) -> ImpactProfile:
     outcome_note = outcome_note_for(outcome, case.appellant_role)
     statute_note = statute_note_for(statutes)
     authority_note = authority_note_for(case.court, case.precedential)
-    impacts = extract_provision_impacts(_impact_text(case), case)
+    impacts = case.provision_impacts or extract_provision_impacts(
+        _impact_text(case), case
+    )
 
     parts = [f"This ruling is relevant to {', '.join(tags[:3])} in VA compensation claims."]
     if outcome_note:

@@ -35,6 +35,44 @@ def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
     assert analysis.senior_rater_guidance.cue_analysis
     assert analysis.senior_rater_guidance.precedent_conflict_resolution
     assert analysis.senior_rater_guidance.quality_review_checkpoints
+    # AUD4-005/007: structured role workflows and full impact persistence.
+    assert analysis.impact_profile is not None
+    assert analysis.impact_profiles
+    for profile in analysis.impact_profiles:
+        assert profile.issue_tags
+        assert profile.nuance
+        assert profile.provision_impacts
+    guidance = analysis.adjudication_guidance
+    assert guidance.rvsr.evidence_review_checklist
+    assert guidance.rvsr.lay_evidence_competence
+    assert any("5107(b)" in item for item in guidance.rvsr.lay_evidence_competence)
+    assert guidance.rvsr.duty_to_assist_exam_actions
+    assert guidance.rvsr.rating_codesheet_actions
+    assert guidance.rvsr.effective_date_actions
+    assert guidance.rvsr.reasons_for_decision_requirements
+    assert guidance.senior_rater_dro.hlr_de_novo_actions
+    assert any("3.2601" in item for item in guidance.senior_rater_dro.hlr_de_novo_actions)
+    assert guidance.senior_rater_dro.dta_error_returns
+    assert guidance.senior_rater_dro.cue_analysis
+    assert any("3.105(a)" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert any("George" in item for item in guidance.senior_rater_dro.cue_analysis)
+    assert guidance.senior_rater_dro.precedent_m21_conflict_resolution
+    assert guidance.qrs.second_signature_checkpoints
+    assert guidance.qrs.nqr_qrt_error_calls
+    assert guidance.qrs.sample_review_focus
+    # AUD4-008: every surfaced authority has an explicit tier and the aggregate
+    # summary accounts for every record.
+    assert analysis.source_reliability_summary.total == len(analysis.surfaced_cases)
+    valid_tiers = {
+        "official_primary_binding",
+        "official_primary_persuasive",
+        "official_agency_guidance",
+        "secondary_summary",
+        "unverified",
+    }
+    for record in analysis.surfaced_cases:
+        assert record.authority_tier in valid_tiers
+        assert isinstance(record.is_official_authority, bool)
     valid_sources = {
         "official_court_opinion",
         "official_transcript_archive",

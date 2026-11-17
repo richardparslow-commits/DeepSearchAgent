@@ -7,6 +7,7 @@ import types
 import pytest
 
 from va_legal_agent.llm import (
+    ReasoningResult,
     _build_messages,
     _build_reasoning_messages,
     _parse_reasoning_response,
@@ -14,6 +15,7 @@ from va_legal_agent.llm import (
     interpret_cases,
     llm_enabled,
     reason_cases,
+    validate_llm_synthesis_provenance,
 )
 from va_legal_agent.models import CaseRecord, CitationTreatment
 
@@ -582,6 +584,57 @@ def test_parse_reasoning_response_returns_none_on_garbage():
     assert _parse_reasoning_response("not json at all") is None
     assert _parse_reasoning_response("[1, 2, 3]") is None  # not a dict
     assert _parse_reasoning_response('{"unrelated": true}') is None  # no usable keys
+
+
+def test_parse_reasoning_response_rejects_wrong_schema_types():
+    """A JSON object with the right names but wrong shapes is not usable."""
+    assert _parse_reasoning_response(
+        '{"reconciled_principles": "not a list"}'
+    ) is None
+    assert _parse_reasoning_response(
+        '{"contradictions": "not a list"}'
+    ) is None
+    assert _parse_reasoning_response('{"synthesis": {"not": "text"}}') is None
+
+
+def test_provenance_gate_strips_fabricated_citation_and_unanchored_synthesis():
+    cases = [_case()]
+    result = ReasoningResult(
+        reconciled_principles=[
+            "The veteran prevails on the nexus question (999 Vet. App. 999).",
+            "Service connection requires competent evidence (Fountain v. McDonald).",
+        ],
+        synthesis="The court adopted a new rule under 38 C.F.R. § 9.999.",
+        schema_validated=True,
+    )
+
+    sanitized, warnings = validate_llm_synthesis_provenance(result, cases)
+
+    assert sanitized.reconciled_principles == [
+        "Service connection requires competent evidence (Fountain v. McDonald)."
+    ]
+    assert sanitized.synthesis == ""
+    assert sanitized.rejected_principle_count == 1
+    assert sanitized.rejected_synthesis is True
+    assert any("999 Vet. App. 999" in warning for warning in warnings)
+    assert any("rejected synthesis" in warning for warning in warnings)
+
+
+def test_provenance_gate_rejects_unanchored_principle_and_accepts_real_quotation():
+    cases = [_case()]
+    result = ReasoningResult(
+        reconciled_principles=[
+            "A rule with no source anchor anywhere.",
+            'The Board must provide reasons and bases ("The Board must provide reasons and bases.").',
+        ],
+        schema_validated=True,
+    )
+
+    sanitized, warnings = validate_llm_synthesis_provenance(result, cases)
+
+    assert len(sanitized.reconciled_principles) == 1
+    assert "reasons and bases" in sanitized.reconciled_principles[0]
+    assert any("rejected principle 1" in warning for warning in warnings)
 
 
 def test_reason_cases_returns_none_without_key(monkeypatch):

@@ -47,7 +47,11 @@ from .providers import (
 )
 from .ranking import _parse_year, rank_cases, select_with_court_floor
 from .regulations import verify_analysis_regulations
-from .reliability import classify_source
+from .reliability import (
+    classify_authority_tier,
+    classify_source,
+    summarize_authority_reliability,
+)
 from .search import SearchError
 from .snapshots import SnapshotStore
 from .topics import (
@@ -343,11 +347,21 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
     )
 
 
+def _stamp_authority_tier(case: CaseRecord) -> None:
+    """Recompute a case's authority tier after enrichment changes its status."""
+    tier, official = classify_authority_tier(
+        case.url, case.court, case.precedential
+    )
+    case.authority_tier = tier
+    case.is_official_authority = official
+
+
 def _case_from_raw(raw: dict[str, str], issue: str) -> CaseRecord:
     """Normalize one provider row and score it against the issue."""
     court_name = raw.get("court") or detect_court_name(raw.get("url", ""))
     case = normalize_case(raw, court_name, issue)
     case.relevance_score = score_case_relevance(case, issue)
+    _stamp_authority_tier(case)
     return case
 
 
@@ -540,6 +554,12 @@ def _dedupe_rank_and_enrich(
         # survives.
         deduped = _dedupe(deduped)
 
+    # Publication status and URL can both change during enrichment, so stamp
+    # the authority tier again before ranking. Ranking uses the official flag
+    # only as a same-score tie-breaker, never to override court authority.
+    for case in deduped:
+        _stamp_authority_tier(case)
+
     # Final ordering comes from the ranking layer (authority tiers strictly
     # dominant; within a tier: relevance, recency, and completeness), then a
     # per-court representation floor so lower-authority tiers (BVA) are not
@@ -567,9 +587,12 @@ def _dedupe_rank_and_enrich(
         # metadata-only abstract rather than dropping the structured contract.
         if case.case_abstract is None:
             case.case_abstract = build_case_abstract("", case)
+        _stamp_authority_tier(case)
         profile = analyze_case_impact(case)
         case.impact = profile.nuance
         case.provision_impacts = profile.provision_impacts
+        # AUD4-007: retain the full profile, not only its narrative.
+        case.impact_profile = profile
     return ranked
 
 
@@ -1228,6 +1251,17 @@ def _build_analysis(
     # A, mark A as superseded so the contradiction detector doesn't flag the
     # expected outcome difference as a live conflict.
     _resolve_superseded_cases(cases)
+    for case in cases:
+        _stamp_authority_tier(case)
+        if case.impact_profile is None:
+            profile = analyze_case_impact(case)
+            case.impact = profile.nuance
+            # Preserve already-enriched impacts (for example from a fixture
+            # or an earlier extraction pass); the profile retains its own
+            # complete impact list regardless.
+            if not case.provision_impacts:
+                case.provision_impacts = profile.provision_impacts
+            case.impact_profile = profile
 
     summary = "\n".join(
         f"- {case.title} ({case.court}) "
@@ -1252,8 +1286,17 @@ def _build_analysis(
         if record.case_abstract is not None
     ]
     provision_impacts = impacts_from_cases(cases[:5])
+    impact_profiles = [
+        case.impact_profile
+        for case in cases[:5]
+        if case.impact_profile is not None
+    ]
+    impact_profile = impact_profiles[0] if impact_profiles else None
     rvsr_guidance = build_rvsr_guidance(claim_issue, cases[:5])
     senior_rater_guidance = build_senior_rater_guidance(claim_issue, cases[:5])
+    source_reliability_summary = summarize_authority_reliability(
+        [record.authority_tier for record in surfaced_cases]
+    )
     # Deep-read summaries ride along with the top cases so the output shows what
     # full-text ingestion produced per case (empty when deep-read was off or a
     # body could not be fetched).
@@ -1285,8 +1328,14 @@ def _build_analysis(
         surfaced_cases=surfaced_cases,
         case_abstracts=case_abstracts,
         provision_impacts=provision_impacts,
+        impact_profile=impact_profile,
+        impact_profiles=impact_profiles,
         rvsr_guidance=rvsr_guidance,
         senior_rater_guidance=senior_rater_guidance,
+        adjudication_guidance=interpretive.adjudication_guidance,
+        source_reliability_summary=source_reliability_summary,
+        llm_provenance_warnings=interpretive.llm_provenance_warnings,
+        llm_provenance_validated=interpretive.llm_provenance_validated,
         deep_summaries=deep_summaries,
         extraction_candidates=extraction_candidates,
         detected_elements=interpretive.detected_elements,

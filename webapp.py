@@ -456,6 +456,12 @@ _INDEX_HTML = """<!doctype html>
   button.secondary { background:var(--panel2); color:var(--text); border:1px solid var(--border);
                      margin-top:0; padding:4px 12px; font-size:12px; font-weight:500; }
   .note { color:var(--muted); font-size:12.5px; margin-top:12px; }
+  .badges { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .badge { font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid var(--border);
+           color:var(--muted); background:var(--panel2); }
+  .badge.official { color:var(--green); border-color:#2c5138; background:#14251b; }
+  .badge.secondary { color:var(--red); border-color:#5a2a2a; background:#251414; }
+  .badge.count { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -498,6 +504,7 @@ _INDEX_HTML = """<!doctype html>
     <div id="runs"><div class="empty">Loading…</div></div>
   </div>
 
+  <div id="badges" class="badges" hidden></div>
   <pre id="result" hidden></pre>
   <p class="note">Research support derived from public decisions, not legal advice.
   Status updates and the final report appear above; the page polls every 2 seconds.</p>
@@ -506,6 +513,7 @@ _INDEX_HTML = """<!doctype html>
   const form = document.getElementById('form');
   const statusEl = document.getElementById('status');
   const resultEl = document.getElementById('result');
+  const badgesEl = document.getElementById('badges');
   const btn = document.getElementById('submit');
 
   form.addEventListener('submit', async (ev) => {
@@ -514,6 +522,8 @@ _INDEX_HTML = """<!doctype html>
     statusEl.className = 'running';
     statusEl.textContent = 'Starting run\u2026';
     resultEl.hidden = true;
+    badgesEl.hidden = true;
+    badgesEl.innerHTML = '';
     let res;
     try {
       res = await fetch('/analyze', { method: 'POST', body: new FormData(form) });
@@ -555,6 +565,7 @@ _INDEX_HTML = """<!doctype html>
       } else {
         resultEl.textContent = data.result;
       }
+      renderBadges(data.result_json);
       resultEl.hidden = false;
     } else {
       statusEl.className = 'error';
@@ -572,6 +583,31 @@ _INDEX_HTML = """<!doctype html>
   }
 
   function shortId(id) { return (id || '').slice(0, 8); }
+
+  function renderBadges(payload) {
+    const records = payload && Array.isArray(payload.surfaced_cases) ? payload.surfaced_cases : [];
+    if (!records.length) {
+      badgesEl.hidden = true;
+      badgesEl.innerHTML = '';
+      return;
+    }
+    const summary = payload.source_reliability_summary || {};
+    const count = '<span class="badge count">Official primary: ' +
+      esc(summary.official_count == null ? 0 : summary.official_count) +
+      ' · Secondary: ' + esc(summary.secondary_count == null ? 0 : summary.secondary_count) +
+      ' · Unverified: ' + esc(summary.unknown_count == null ? 0 : summary.unknown_count) + '</span>';
+    const cards = records.map(function(record) {
+      const official = !!record.is_official_authority;
+      const label = official
+        ? 'Official Court Transcript / Primary Authority'
+        : 'Secondary Summary / Non-Binding Source';
+      return '<span class="badge ' + (official ? 'official' : 'secondary') + '" title="' +
+        esc(record.authority_tier || '') + '">' + esc(record.case_title) + ' — ' +
+        esc(label) + '</span>';
+    }).join('');
+    badgesEl.innerHTML = count + cards;
+    badgesEl.hidden = false;
+  }
 
   function fmtTime(iso) {
     if (!iso) return '';

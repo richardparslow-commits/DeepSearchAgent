@@ -1,11 +1,19 @@
-"""Evidence-first human adjudication queue for citator findings.
+"""Evidence-first citator queue and VBA compensation adjudication workflows.
 
-The citator is advisory. This module turns each verbatim treatment finding into
-a review item whose evidence is serialized and rendered *before* the automated
-proposal. A human decision is stored separately from that evidence, requires a
-reviewer and rationale, and never changes ``CitatorCheck.status`` or ranking.
-Findings whose sources were blocked by enforcement stay on the citator check
-and in this queue as low-priority, withheld items for audit.
+The first half of this module is the citator human-review queue: the citator is
+advisory, each verbatim treatment finding is serialized and rendered *before*
+the automated proposal, and a human decision is stored separately from that
+evidence, requires a reviewer and rationale, and never changes
+``CitatorCheck.status`` or ranking. Findings whose sources were blocked by
+enforcement stay on the citator check and in the queue as low-priority,
+withheld items for audit.
+
+The second half builds structured VBA workflows for Rating Veterans Service
+Representatives (RVSR), Senior Raters/Decision Review Officers (DRO), and
+Quality Review Specialists (QRS): HLR under 38 C.F.R. § 3.2601, duty-to-assist
+returns, CUE under 38 C.F.R. § 3.105(a)/38 U.S.C. § 5109A, precedent-versus-
+M21-1 conflicts, and pre-promulgation/NQR quality checkpoints. The queue and
+the workflows share case records but never alter each other's status.
 """
 
 from __future__ import annotations
@@ -23,10 +31,14 @@ from .models import (
     AdjudicationProposal,
     AdjudicationQueue,
     AdjudicationReview,
+    AdjudicationRoleGuidance,
     CaseRecord,
     CitatorCheck,
     NegativeTreatment,
+    QrsAuditWorkflow,
+    RvsrAdjudicationWorkflow,
     RvsrGuidance,
+    SeniorRaterDroWorkflow,
     SeniorRaterGuidance,
     SourceValiditySignal,
 )
@@ -53,6 +65,132 @@ def senior_rater_operational_playbook(
     from .va_domain import build_senior_rater_guidance
 
     return build_senior_rater_guidance(issue, cases)
+
+
+def build_adjudication_guidance(
+    issue: str, cases: list[CaseRecord]
+) -> AdjudicationRoleGuidance:
+    """Build structured RVSR, Senior Rater/DRO, and QRS VBA workflows.
+
+    The citator queue above is a separate evidence-review process.  This
+    function is the compensation-claims adjudication engine: it converts the
+    deterministic role playbooks into explicit RVSR, HLR/CUE, and quality-
+    review actions that the report and web UI can render and persist.
+    """
+    rvsr = rvsr_operational_playbook(issue, cases)
+    senior = senior_rater_operational_playbook(issue, cases)
+
+    lay_competence = [
+        item
+        for item in rvsr.evidence_review_checklist
+        if any(
+            phrase in item.lower()
+            for phrase in ("lay", "competent", "credib", "jandreau", "buchanan")
+        )
+    ]
+    lay_competence.insert(
+        0,
+        "Apply 38 U.S.C. § 5107(b): resolve every material, approximate-balance "
+        "question in favor of the veteran after weighing the competent evidence; "
+        "do not use benefit-of-the-doubt to supply an absent element.",
+    )
+
+    effective_dates = [
+        "Assign the effective date under 38 C.F.R. § 3.400 and 38 U.S.C. § 5110 "
+        "from the claim, the date the evidence establishes entitlement, or the "
+        "controlling statutory trigger -- not automatically the rating date.",
+        "For a granted appeal or returned HLR, preserve the earliest proper "
+        "effective date and explain any staged or partial-period rating.",
+    ]
+    effective_dates.extend(
+        item for item in rvsr.rating_codesheet_actions if "effective date" in item.lower()
+    )
+
+    dro_dispositions = [
+        "Issue a new decision on the merits after de novo review, or identify the "
+        "specific pre-decisional duty-to-assist error that requires a return for "
+        "supplemental development; do not affirm on an incomplete record.",
+        "If the prior decision contains multiple issues, dispose of each issue "
+        "separately and state the evidence and regulation supporting the change.",
+        "Preserve the veteran's appeal rights and the date of the HLR decision in "
+        "the written disposition.",
+    ]
+
+    qrs_second_signature = list(senior.quality_review_checkpoints)
+    qrs_second_signature.extend(
+        [
+            "Confirm the RVSR applied the court's holding to the correct "
+            "diagnostic code and did not treat an M21-1 provision as superior "
+            "to binding precedent.",
+            "Confirm every benefit-of-the-doubt finding identifies the "
+            "approximate-balance evidence and does not conceal a missing element.",
+        ]
+    )
+    nqr_error_calls = [
+        "Call a duty-to-assist error when a required record, notice, examination, "
+        "or medical opinion was omitted and the omission could change the outcome.",
+        "Call a reasons-or-bases error when the decision fails to state the evidence, "
+        "the element findings, the diagnostic-code criteria, or the effective-date basis.",
+        "Call a CUE-processing error when the decision applies a later judicial "
+        "interpretation retroactively instead of the law extant at the prior decision.",
+        "Call a precedent-conflict error when an unrevised M21-1 provision is followed "
+        "over a binding CAVC/Federal Circuit/Supreme Court holding.",
+    ]
+    sample_focus = [
+        "Sample grants, denials, staged ratings, TDIU/extraschedular referrals, "
+        "bilateral-factor computations, and HLR returns for the issue in this report.",
+        "Verify the decision's stated authority actually supports the proposition for "
+        "which it is cited; do not accept a citation-only quality check.",
+    ]
+
+    refs = list(
+        dict.fromkeys(
+            [*rvsr.source_authorities, *senior.source_authorities]
+        )
+    )
+    return AdjudicationRoleGuidance(
+        issue=issue,
+        rvsr=RvsrAdjudicationWorkflow(
+            issue=issue,
+            evidence_review_checklist=list(rvsr.evidence_review_checklist),
+            lay_evidence_competence=lay_competence,
+            duty_to_assist_exam_actions=list(rvsr.exam_development_triggers),
+            rating_codesheet_actions=list(rvsr.rating_codesheet_actions),
+            effective_date_actions=effective_dates,
+            reasons_for_decision_requirements=list(
+                rvsr.reasons_for_decision_requirements
+            ),
+            source_authorities=list(rvsr.source_authorities),
+        ),
+        senior_rater_dro=SeniorRaterDroWorkflow(
+            issue=issue,
+            hlr_de_novo_actions=list(senior.hlr_de_novo_focus),
+            dta_error_returns=list(senior.duty_to_assist_errors),
+            cue_analysis=[
+                *senior.cue_analysis,
+                "Apply 38 U.S.C. § 5109A and 38 C.F.R. § 3.105(a): CUE is a "
+                "request to revise a final rating decision, not a new claim or "
+                "an ordinary disagreement with the prior weighing.",
+                "Apply 38 C.F.R. § 20.1403(e): a later judicial reinterpretation "
+                "cannot supply CUE unless the court holds the statute's plain "
+                "meaning was always unambiguous; the error must have been "
+                "undebatable on the law and facts extant at the prior decision.",
+            ],
+            precedent_m21_conflict_resolution=list(
+                senior.precedent_conflict_resolution
+            ),
+            dro_disposition_actions=dro_dispositions,
+            source_authorities=list(senior.source_authorities),
+        ),
+        qrs=QrsAuditWorkflow(
+            issue=issue,
+            second_signature_checkpoints=qrs_second_signature,
+            nqr_qrt_error_calls=nqr_error_calls,
+            sample_review_focus=sample_focus,
+            source_authorities=refs or ["the retrieved authorities"],
+        ),
+        source_authorities=refs or ["the retrieved authorities"],
+    )
 
 
 def _now() -> str:
