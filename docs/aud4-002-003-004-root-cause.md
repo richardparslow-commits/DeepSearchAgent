@@ -45,13 +45,13 @@ Broken contract: the output had no non-truncated `CaseAbstract`, and no role-spe
 
 `va_legal_agent/models.py` now defines:
 
-- `SurfacedCaseRecord` with `case_title`, `court`, `docket_number`, `reporter_citation`, `decision_date`, `precedential_status`, `appellate_history`, `history_status`, `official_transcript_url`, `retrieved_url`, `transcript_source_type`, `provenance_verified`, `source_reliability`, warnings, the structured abstract, and provision impacts.
+- `SurfacedCaseRecord` with `case_title`, `court`, `docket_number`, `reporter_citation`, `decision_date`, `precedential_status`, `panel`, `panel_status`, `appellate_history`, `history_status`, `citator_status`, `citator_confidence`, `citator_as_of`, `official_transcript_url`, `retrieved_url`, `transcript_source_type`, `provenance_verified`, `source_reliability`, warnings, the structured abstract, and provision impacts.
 - `AppellateHistoryEntry` for a status/case/citation/source/verification tuple.
 - `LegalAnalysis.surfaced_cases` aligned with the legacy `top_cases` display strings.
 - `impact.py` profiles and `CaseRecord` now preserve `provision_impacts`.
 - `CaseRecord.case_abstract` preserves the full structured abstract.
 
-`va_legal_agent/agent.py` builds surfaced records in `_build_analysis` for every top case. `__main__.py` renders all D1 fields in text, CSV, and JSON, including explicit warnings for secondary transcript sources, single-judge memoranda, unknown precedential status, and unassessed appellate history. `webapp.py` persists the same model dump, and `SnapshotStore.record_analysis` writes the lossless analysis payload.
+`va_legal_agent/agent.py` builds surfaced records in `_build_analysis` for every top case. After the optional citator runs, `apply_citator_checks` copies its status, confidence, as-of date, verified history, and authoritative negative treatments into the D1 record. `__main__.py` renders all D1 fields in text, CSV, and JSON, including panel status, citator state, and explicit warnings for secondary transcript sources, single-judge memoranda, unknown precedential status, and unassessed appellate history. `webapp.py` persists the same model dump, and `SnapshotStore.record_analysis` writes the lossless analysis payload.
 
 ### Provision-impact engine
 

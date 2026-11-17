@@ -4552,7 +4552,12 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
             reporter_citation="33 Vet.App. 10",
             decision_date="2024-01-02",
             precedential_status="precedential_panel",
-            history_status="not_assessed",
+            panel="SMITH and JONES",
+            panel_status="panel",
+            history_status="good_law_as_of",
+            citator_status="good_law",
+            citator_confidence="high",
+            citator_as_of="2025-08-01",
             official_transcript_url=None,
             retrieved_url="https://lawfirm.example/smith",
             transcript_source_type="secondary_summary",
@@ -4602,6 +4607,8 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
     text = render_analysis(analysis, "text")
     assert "Surfaced case records (D1):" in text
     assert "docket: 21-1234" in text
+    assert "panel: SMITH and JONES (panel)" in text
+    assert "citator: good_law" in text
     assert "secondary_summary" in text
     assert "WARNING: Transcript source is secondary_summary" in text
     assert "Structured case abstracts:" in text
@@ -4612,6 +4619,8 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
 
     data = json.loads(render_analysis(analysis, "json"))
     assert data["surfaced_cases"][0]["docket_number"] == "21-1234"
+    assert data["surfaced_cases"][0]["panel_status"] == "panel"
+    assert data["surfaced_cases"][0]["citator_status"] == "good_law"
     assert data["case_abstracts"][0]["reasoning_summary"].endswith("x" * 50)
     assert data["provision_impacts"][0]["m21_1_citations"]
     assert data["rvsr_guidance"]["rating_codesheet_actions"]

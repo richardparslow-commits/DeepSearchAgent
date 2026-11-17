@@ -1061,7 +1061,12 @@ def _surfaced_case_lines(records: list[SurfacedCaseRecord]) -> list[str]:
             f"{record.docket_number or '(none)'} | citation: "
             f"{record.reporter_citation or '(none)'} | decided: "
             f"{record.decision_date or '(unknown)'} | status: "
-            f"{record.precedential_status} | history: {history} | transcript: "
+            f"{record.precedential_status} | panel: "
+            f"{record.panel or '(names unavailable)'} ({record.panel_status}) "
+            f"| citator: {record.citator_status} "
+            f"(confidence: {record.citator_confidence}; as of: "
+            f"{record.citator_as_of or '(not assessed)'}) "
+            f"| history: {history} | transcript: "
             f"{transcript} [{record.transcript_source_type}; "
             f"provenance verified: {record.provenance_verified}]"
         )

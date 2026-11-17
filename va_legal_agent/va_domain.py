@@ -22,6 +22,8 @@ from .models import (
     AppellateHistoryEntry,
     CaseAbstract,
     CaseRecord,
+    CitatorCheck,
+    LegalAnalysis,
     ProvisionImpact,
     RvsrGuidance,
     SeniorRaterGuidance,
@@ -1086,6 +1088,20 @@ def impacts_from_cases(cases: list[CaseRecord]) -> list[ProvisionImpact]:
 # ---------------------------------------------------------------------------
 
 
+def _panel_status(case: CaseRecord) -> str:
+    """Return the explicit panel/decision-path status for D1."""
+    if case.court == BOARD_COURT:
+        return "board_panel"
+    text = f"{case.title} {case.panel} {case.snippet}".lower()
+    if "en banc" in text:
+        return "en_banc"
+    if case.cavc_panel_status:
+        return case.cavc_panel_status
+    if case.rule_30a:
+        return "single_judge"
+    return "not_assessed"
+
+
 def _precedential_status(case: CaseRecord) -> str:
     if case.court == BOARD_COURT:
         return "non_precedential_bva"
@@ -1155,6 +1171,8 @@ def build_surfaced_case(case: CaseRecord) -> SurfacedCaseRecord:
         reporter_citation=case.citation or None,
         decision_date=case.decision_date or None,
         precedential_status=status,
+        panel=case.panel or None,
+        panel_status=_panel_status(case),
         appellate_history=history,
         history_status="superseded_detected" if history else "not_assessed",
         official_transcript_url=official_url,
@@ -1171,6 +1189,125 @@ def build_surfaced_case(case: CaseRecord) -> SurfacedCaseRecord:
 # ---------------------------------------------------------------------------
 # RVSR and Senior Rater / DRO guidance
 # ---------------------------------------------------------------------------
+
+
+def apply_citator_checks(
+    analysis: LegalAnalysis, checks: list[CitatorCheck]
+) -> None:
+    """Attach CourtListener citator state and history to surfaced cases.
+
+    The citator is advisory and optional.  This function preserves its exact
+    status/confidence/as-of values and copies only verified appellate-history
+    records plus authoritative negative-treatment entries into the D1 history.
+    It never upgrades ``good_law`` into a finality finding.
+    """
+    if not checks or not analysis.surfaced_cases:
+        return
+    for record in analysis.surfaced_cases:
+        title = record.case_title.strip().lower()
+        citation = (record.reporter_citation or "").strip().lower()
+        check = next(
+            (
+                candidate
+                for candidate in checks
+                if candidate.target_case.strip().lower() == title
+                or (
+                    citation
+                    and citation
+                    in {item.strip().lower() for item in candidate.target_citations}
+                )
+                or (
+                    citation
+                    and citation == candidate.target_citation.strip().lower()
+                )
+            ),
+            None,
+        )
+        if check is None:
+            continue
+
+        record.citator_status = check.status
+        record.citator_confidence = check.confidence
+        record.citator_as_of = check.good_law_as_of or None
+        history: list[AppellateHistoryEntry] = list(record.appellate_history)
+
+        if check.appellate_history is not None:
+            for item in check.appellate_history.verified_history:
+                history.append(
+                    AppellateHistoryEntry(
+                        status=_history_status(
+                            item.disposition, item.relationship
+                        ),
+                        case_title=item.candidate_case,
+                        citation=item.candidate_citation,
+                        source=item.source_url,
+                        verified=True,
+                    )
+                )
+
+        for treatment in check.negative_treatments:
+            history.append(
+                AppellateHistoryEntry(
+                    status=_history_status(treatment.treatment),
+                    case_title=treatment.citing_case,
+                    citation=treatment.citing_citation,
+                    source=treatment.citing_url,
+                    verified=bool(treatment.binding),
+                )
+            )
+
+        if check.status == "good_law":
+            history.append(
+                AppellateHistoryEntry(
+                    status="good_law",
+                    case_title=check.target_case,
+                    citation=check.target_citation,
+                    source="CourtListener citator",
+                    # good_law is a review-set result, not a finality finding.
+                    verified=False,
+                )
+            )
+
+        if history:
+            seen: set[tuple[str, str, str]] = set()
+            deduped: list[AppellateHistoryEntry] = []
+            for entry in history:
+                key = (entry.status, entry.case_title, entry.citation)
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(entry)
+            record.appellate_history = deduped
+
+        if check.appellate_history is not None and check.appellate_history.status == "verified":
+            record.history_status = "verified_history"
+        elif check.status == "good_law":
+            record.history_status = "good_law_as_of"
+        elif check.status == "negative":
+            record.history_status = "negative_treatment"
+        elif check.status == "unknown":
+            record.history_status = "unknown"
+
+        record.warnings = [
+            warning
+            for warning in record.warnings
+            if "Appellate history has not been assessed by the citator" not in warning
+        ]
+
+
+def _history_status(*values: str) -> str:
+    """Normalize a citator disposition into the D1 history vocabulary."""
+    text = " ".join(value.lower() for value in values if value)
+    for status in (
+        "superseded_by_statute",
+        "overruled",
+        "reversed",
+        "vacated",
+        "affirmed",
+        "good_law",
+    ):
+        if status in text:
+            return status
+    return "unknown"
 
 
 def _case_brief(case: CaseRecord) -> str:

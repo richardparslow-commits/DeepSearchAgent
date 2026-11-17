@@ -52,7 +52,22 @@ def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
         assert record.case_title and record.court
         assert record.precedential_status in valid_statuses
         assert record.transcript_source_type in valid_sources
-        assert record.history_status in {"not_assessed", "superseded_detected"}
+        assert record.panel_status
+        assert record.citator_status in {
+            "not_assessed",
+            "good_law",
+            "negative",
+            "unknown",
+        }
+        assert record.citator_confidence in {"none", "low", "medium", "high"}
+        assert record.history_status in {
+            "not_assessed",
+            "superseded_detected",
+            "verified_history",
+            "good_law_as_of",
+            "negative_treatment",
+            "unknown",
+        }
         assert record.official_transcript_url is None or record.provenance_verified
         if record.transcript_source_type != "official_court_opinion":
             assert any("Transcript source" in warning for warning in record.warnings)
