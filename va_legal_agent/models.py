@@ -1662,8 +1662,17 @@ class SurfacedCaseRecord(BaseModel):
     reporter_citation: str | None = None
     decision_date: str | None = None
     precedential_status: str = "unknown"
+    # CourtListener panel metadata and the explicit CAVC panel-list result.
+    # ``panel`` is a display string, not proof of authorship.
+    panel: str | None = None
+    panel_status: str = "not_assessed"
     appellate_history: list[AppellateHistoryEntry] = Field(default_factory=list)
     history_status: str = "not_assessed"
+    # Advisory citator state. ``good_law`` means only that no authoritative
+    # negative treatment was found in the reviewed citing-opinion set.
+    citator_status: str = "not_assessed"
+    citator_confidence: str = "none"
+    citator_as_of: str | None = None
     official_transcript_url: str | None = None
     retrieved_url: str | None = None
     transcript_source_type: str = "unverified"

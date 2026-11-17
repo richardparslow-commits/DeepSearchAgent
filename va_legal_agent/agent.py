@@ -62,6 +62,7 @@ from .topics import (
     topic_matches_issue,
 )
 from .va_domain import (
+    apply_citator_checks,
     build_case_abstract,
     build_rvsr_guidance,
     build_senior_rater_guidance,
@@ -1428,6 +1429,9 @@ def analyze_cases_for_claim(
             ]
             analysis.citator_flags.extend(history_flags)
             analysis.citator_flags.extend(snapshot_flags)
+    # The citator runs after the initial analysis assembly; fold its optional
+    # appellate-history/status evidence back into the D1 records before return.
+    apply_citator_checks(analysis, analysis.citator_checks)
     return analysis
 
 

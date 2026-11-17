@@ -25,6 +25,7 @@ from va_legal_agent.llm import ReasoningResult
 from va_legal_agent.models import (
     AuthorityCheck,
     CaseRecord,
+    CitatorCheck,
     Contradiction,
     LegalAnalysis,
     PrincipleFinding,
@@ -62,6 +63,7 @@ from va_legal_agent.topics import (
     COURT_UNKNOWN,
 )
 from va_legal_agent.va_domain import (
+    apply_citator_checks,
     build_case_abstract,
     build_surfaced_case,
     extract_provision_impacts,
@@ -4762,3 +4764,40 @@ def test_aud4_analysis_json_round_trip_keeps_structured_contract():
     assert restored.provision_impacts[0].citation == analysis.provision_impacts[0].citation
     assert restored.rvsr_guidance == analysis.rvsr_guidance
     assert restored.senior_rater_guidance == analysis.senior_rater_guidance
+
+
+def test_aud4_d1_preserves_panel_status_and_citator_history():
+    case = _fixture_case("cavc-adams-23-5064.txt", date="2025-07-08", docket="23-5064")
+    case.panel = "PIETSCH, GREENBERG, and JAQUITH"
+    case.cavc_panel_status = "panel"
+    analysis = _build_analysis("service connection for obesity", "Compensation", [case], [])
+    record = analysis.surfaced_cases[0]
+
+    assert record.panel == "PIETSCH, GREENBERG, and JAQUITH"
+    assert record.panel_status == "panel"
+    assert record.citator_status == "not_assessed"
+    assert record.citator_confidence == "none"
+
+    check = CitatorCheck(
+        target_case=case.title,
+        target_citation="36 Vet.App. 1",
+        status="good_law",
+        good_law_as_of="2025-08-01",
+        confidence="high",
+        confidence_score=0.9,
+    )
+    apply_citator_checks(analysis, [check])
+
+    record = analysis.surfaced_cases[0]
+    assert record.citator_status == "good_law"
+    assert record.citator_confidence == "high"
+    assert record.citator_as_of == "2025-08-01"
+    assert record.history_status == "good_law_as_of"
+    assert any(
+        entry.status == "good_law" and entry.case_title == case.title
+        for entry in record.appellate_history
+    )
+    assert not any(
+        "Appellate history has not been assessed" in warning
+        for warning in record.warnings
+    )
