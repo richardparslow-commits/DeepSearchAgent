@@ -117,6 +117,73 @@ def _prevent_job_start(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(webapp.threading, "Thread", Mock())
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_results", 0),
+        ("max_results", -1),
+        ("max_results", 999999),
+        ("max_results", True),
+        ("max_results", 1.5),
+        ("max_results", float("inf")),
+        ("max_results", float("-inf")),
+        ("max_results", float("nan")),
+        ("max_results", "NaN"),
+        ("max_results", "Infinity"),
+        ("max_results", "-Infinity"),
+        ("max_wall_seconds", 0),
+        ("max_wall_seconds", -1),
+        ("max_wall_seconds", 999999),
+        ("max_wall_seconds", True),
+        ("max_wall_seconds", float("inf")),
+        ("max_wall_seconds", float("-inf")),
+        ("max_wall_seconds", float("nan")),
+        ("max_wall_seconds", "NaN"),
+        ("max_wall_seconds", "Infinity"),
+        ("max_wall_seconds", "-Infinity"),
+    ],
+)
+def test_invalid_job_bounds_are_rejected_before_dispatch(
+    isolated_client, monkeypatch: pytest.MonkeyPatch, field: str, value: object
+) -> None:
+    """Non-finite, boolean, and out-of-range request bounds are HTTP 400s."""
+    _prevent_job_start(monkeypatch)
+    payload = {"issue": "tinnitus", field: value}
+
+    response = isolated_client.post(
+        "/api/analyze",
+        data=json.dumps(payload, allow_nan=True),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert field in response.get_json()["error"]
+    assert webapp._JOBS == {}
+    webapp._SEM.acquire.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_results", 1),
+        ("max_results", "50"),
+        ("max_wall_seconds", 1),
+        ("max_wall_seconds", "300"),
+    ],
+)
+def test_valid_job_bounds_are_accepted(
+    isolated_client, monkeypatch: pytest.MonkeyPatch, field: str, value: object
+) -> None:
+    _prevent_job_start(monkeypatch)
+
+    response = isolated_client.post(
+        "/api/analyze", json={"issue": "tinnitus", field: value}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["run_id"]
+
+
 def test_status_serializes_snapshot(isolated_client, monkeypatch) -> None:
     """A status poll must not serialize the live dict the worker mutates."""
     webapp._JOBS["snapshot"] = {

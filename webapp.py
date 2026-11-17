@@ -39,6 +39,7 @@ providers, LLM key).
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -66,6 +67,13 @@ STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
 _MAX_JOBS = 50
 _RUNS_LIMIT = 20
 _MAX_ISSUE_LENGTH = 2000
+# Request bounds are validation limits, not job defaults: explicit values
+# outside these ranges are rejected before a worker thread or semaphore permit
+# is created. The defaults remain configured by the package settings.
+_MIN_MAX_RESULTS = 1
+_MAX_MAX_RESULTS = 50
+_MIN_WALL_SECONDS = 1.0
+_MAX_WALL_SECONDS = 300.0
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -201,18 +209,66 @@ def _load_jobs() -> None:
     _prune()
 
 
-def _int_or_none(value: object) -> int | None:
-    try:
-        return int(value) if value not in (None, "") else None
-    except (TypeError, ValueError):
-        return None
+def _bounded_int(
+    value: object, *, name: str, minimum: int, maximum: int
+) -> tuple[int | None, str | None]:
+    """Parse an optional integer request field and enforce a hard range.
+
+    ``bool`` is an ``int`` subclass in Python, and ``nan``/``inf`` bypass
+    ordinary comparisons, so both are rejected explicitly. Invalid text is an
+    error rather than a silent fallback to the configured default.
+    """
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, bool):
+        return None, f"{name} must be an integer between {minimum} and {maximum}"
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None, f"{name} must be a finite integer"
+        parsed = int(value)
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None, None
+        try:
+            parsed = int(raw)
+        except ValueError:
+            try:
+                numeric = float(raw)
+            except ValueError:
+                return None, f"{name} must be a finite integer"
+            if not math.isfinite(numeric) or not numeric.is_integer():
+                return None, f"{name} must be a finite integer"
+            parsed = int(numeric)
+    else:
+        return None, f"{name} must be a finite integer"
+    if not minimum <= parsed <= maximum:
+        return (
+            None,
+            f"{name} must be between {minimum} and {maximum}",
+        )
+    return parsed, None
 
 
-def _float_or_none(value: object) -> float | None:
+def _bounded_float(
+    value: object, *, name: str, minimum: float, maximum: float
+) -> tuple[float | None, str | None]:
+    """Parse an optional finite float request field and enforce a hard range."""
+    if value is None or value == "":
+        return None, None
+    if isinstance(value, bool):
+        return None, f"{name} must be a finite number"
     try:
-        return float(value) if value not in (None, "") else None
+        parsed = float(value)
     except (TypeError, ValueError):
-        return None
+        return None, f"{name} must be a finite number"
+    if not math.isfinite(parsed):
+        return None, f"{name} must be a finite number"
+    if not minimum <= parsed <= maximum:
+        return None, f"{name} must be between {minimum:g} and {maximum:g}"
+    return parsed, None
 
 
 def _run_job(
@@ -285,12 +341,29 @@ def _start_job(
             "error": f"issue must be at most {_MAX_ISSUE_LENGTH} characters"
         }, 400
 
-    max_results = _int_or_none(max_results_raw)
+    max_results, error = _bounded_int(
+        max_results_raw,
+        name="max_results",
+        minimum=_MIN_MAX_RESULTS,
+        maximum=_MAX_MAX_RESULTS,
+    )
+    if error:
+        return {"error": error}, 400
     if max_results is None:
-        max_results = get_settings().search_max_results
-    if max_results < 1:
-        return {"error": "max_results must be >= 1"}, 400
-    max_wall_seconds = _float_or_none(max_wall_raw)
+        # The configured default is trusted, but it must still be a usable
+        # integer if an operator raised it above the request cap.
+        max_results = min(
+            max(get_settings().search_max_results, _MIN_MAX_RESULTS),
+            _MAX_MAX_RESULTS,
+        )
+    max_wall_seconds, error = _bounded_float(
+        max_wall_raw,
+        name="max_wall_seconds",
+        minimum=_MIN_WALL_SECONDS,
+        maximum=_MAX_WALL_SECONDS,
+    )
+    if error:
+        return {"error": error}, 400
 
     if not _SEM.acquire(blocking=False):
         return (
@@ -478,12 +551,13 @@ _INDEX_HTML = """<!doctype html>
       <div class="row">
         <div>
           <label for="max_results">Max results</label>
-          <input id="max_results" name="max_results" type="number" min="1" value="5">
+          <input id="max_results" name="max_results" type="number" min="1"
+                 max="50" value="5">
         </div>
         <div>
           <label for="max_wall_seconds">Max wall time (seconds, optional)</label>
           <input id="max_wall_seconds" name="max_wall_seconds" type="number" min="1"
-                 placeholder="blank = unlimited">
+                 max="300" placeholder="blank = unlimited">
         </div>
       </div>
       <label>Output format</label>

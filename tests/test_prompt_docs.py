@@ -7,6 +7,7 @@ from va_legal_agent.interpretation import _outcome_direction
 
 ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE_PACK = ROOT / "GEMINI-GEM-KNOWLEDGE.md"
+DEFECT_REGISTER = ROOT / "docs" / "defect-register.md"
 AUTHORITY_PROMPTS = (ROOT / "GEMINI-GEM.md", ROOT / "PROGRESSIVE-GEM.md")
 
 
@@ -120,6 +121,53 @@ def test_knowledge_pack_distinguishes_precedential_cavc_decisions():
     assert "Precedential CAVC decisions (three-judge panel or en banc) bind the Board" in text
     assert "Non-precedential memorandum decisions and single-judge actions are persuasive only" in text
     assert "U.S. Vet. App. R. 30(a)" in text
+
+
+def test_defect_register_has_no_open_fix_now_placeholder():
+    text = DEFECT_REGISTER.read_text(encoding="utf-8")
+
+    assert "Open — Fix now" not in text
+    # P1-029 is a real closed row, not appendix template residue.
+    assert text.count("| Low | P1-029 |") == 1
+    appendix = text.split("## Appending later passes", 1)[1]
+    assert "P1-029" not in appendix
+
+
+def test_defect_register_summary_counts_match_register_rows():
+    text = DEFECT_REGISTER.read_text(encoding="utf-8")
+    register = text.split("## Register", 1)[1]
+    row_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+    for severity in re.findall(
+        r"^\| (Critical|High|Medium|Low) \| [A-Za-z0-9-]+ \|",
+        register,
+        re.MULTILINE,
+    ):
+        row_counts[severity] += 1
+
+    for severity in ("Critical", "High", "Medium", "Low"):
+        match = re.search(
+            rf"^\| {severity} \| (\d+) \| (\d+) \| (\d+) \| (\d+) \|$",
+            text,
+            re.MULTILINE,
+        )
+        assert match, severity
+        total, open_count, partial, closed = (int(value) for value in match.groups())
+        assert total == open_count + partial + closed
+        assert total == row_counts[severity]
+        assert closed == row_counts[severity]
+        assert open_count == partial == 0
+
+    total_match = re.search(
+        r"^\| \*\*Total\*\* \| \*\*(\d+)\*\* \| \*\*(\d+)\*\* \| "
+        r"\*\*(\d+)\*\* \| \*\*(\d+)\*\* \|$",
+        text,
+        re.MULTILINE,
+    )
+    assert total_match
+    total, open_count, partial, closed = (int(value) for value in total_match.groups())
+    assert total == sum(row_counts.values())
+    assert open_count == partial == 0
+    assert closed == total
 
 
 def test_gem_prompt_uses_lynch_for_benefit_of_doubt():

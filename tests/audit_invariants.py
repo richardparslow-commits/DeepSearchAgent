@@ -129,6 +129,37 @@ def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
                     abstract.disposition,
                 )
             )
+    # AUD4-011/012: every legacy top-case label has a structured record with
+    # the exact precedential note used by the human summary, and every
+    # deep-read entry that carries provenance names its source and verification
+    # state. Legacy empty deep summaries (deep-read off) stay compact.
+    assert len(analysis.top_case_records) == len(analysis.top_cases)
+    for record, label in zip(analysis.top_case_records, analysis.top_cases):
+        assert record.display_label == label
+        assert record.precedential_status in {
+            "precedential",
+            "non-precedential",
+            "unknown",
+            "superseded",
+        }
+        if record.precedential_note:
+            assert record.precedential_note in analysis.summary
+            assert record.precedential_note in record.display_label
+    for entry in analysis.deep_summaries:
+        source = entry.get("summary_source")
+        if not source:
+            continue
+        assert source in {
+            "llm_synthesized",
+            "extractive",
+            "extractive_fallback",
+        }
+        assert isinstance(entry.get("provenance_verified"), bool)
+        assert isinstance(entry.get("verification_notes"), list)
+        if source == "llm_synthesized" and entry.get("provenance_verified") is False:
+            assert entry.get("verification_notes")
+        if source in {"extractive", "extractive_fallback"}:
+            assert entry.get("provenance_verified") is True
     for impact in analysis.provision_impacts:
         assert impact.citation
         assert impact.stage in {

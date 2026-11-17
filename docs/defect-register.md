@@ -3,22 +3,24 @@
 **Status date:** 2026-11-17
 
 **Registered here:** Audit Pass 1 (32 findings), the supplementary legal finding `L-1`,
-and the independent security/domain findings `AUD4-001` through `AUD4-008`.
+and the independent security/domain findings `AUD4-001` through `AUD4-013`.
 **Source-complete:** Audit Pass 2 (7 findings) and Audit Pass 3 (22 findings) are fully
 closed in their source documents. They are summarized below but not row-expanded here,
 because this maintenance update reconciles the remaining-core audit report; their source
 documents remain authoritative.
-**Pass 4:** `AUD4-001` (GovInfo/Congress credential disclosure) and
+**Pass 4:** `AUD4-001` (GovInfo/Congress credential disclosure),
 `AUD4-002` through `AUD4-008` (D1 metadata, VBA provision impact, structured
 abstracts, role workflows, LLM provenance, full `ImpactProfile`, and source
-reliability) are recorded below. Root-cause evidence is in
+reliability), and `AUD4-009` through `AUD4-013` (LLM list coercion, webapp
+bounds, deep-summary provenance, structured precedential notes, and this
+register's consistency) are recorded below. Root-cause evidence is in
 [`aud4-001-root-cause.md`](aud4-001-root-cause.md) and
 [`aud4-005-008-root-cause.md`](aud4-005-008-root-cause.md). The domain fixes are
 covered by `tests/test_legal_agent.py`, `tests/test_topics.py`,
 `tests/test_regulations.py`, `tests/test_impact.py`, `tests/test_deep_read.py`,
 `tests/test_llm.py`, `tests/test_interpretation.py`, `tests/test_adjudication.py`,
 `tests/test_reliability.py`, `tests/test_cli.py`, `tests/test_webapp.py`, and
-`tests/test_audit_invariants.py`.
+`tests/test_audit_invariants.py`, and `tests/test_prompt_docs.py`.
 
 **Sources:** [Audit Pass 1](audit-pass1.md) · [Audit Pass 2](audit-pass2.md) ·
 [Audit Pass 3](audit-pass3.md) · [Remaining core layer](audit-pass3-remaining.md)
@@ -34,7 +36,7 @@ legal-premise check. Do not renumber existing IDs.
 | 1 | `docs/audit-pass1.md` | 32 | 32 | 32 Closed, 0 Partial, 0 Open |
 | 2 | `docs/audit-pass2.md` | 7 | 0 | 7 Closed; source document only |
 | 3 | `docs/audit-pass3.md` | 22 | 0 | 22 Closed; source document only |
-| 4 | `docs/aud4-001-root-cause.md`; `docs/aud4-005-008-root-cause.md`; domain regression tests | 8 | 8 | `AUD4-001`, Critical; `AUD4-002` through `AUD4-008`, High; Closed |
+| 4 | `docs/aud4-001-root-cause.md`; `docs/aud4-005-008-root-cause.md`; domain regression tests | 13 | 13 | `AUD4-001`, Critical; `AUD4-002` through `AUD4-008`, High; `AUD4-009` through `AUD4-013`, Medium; Closed |
 | Legal check | `docs/audit-pass1.md` § Legal-premise check | 1 | 1 | `L-1`, High; Closed |
 
 ## Summary
@@ -43,20 +45,24 @@ legal-premise check. Do not renumber existing IDs.
 |---|---:|---:|---:|---:|
 | Critical | 1 | 0 | 0 | 1 |
 | High | 16 | 0 | 0 | 16 |
-| Medium | 16 | 0 | 0 | 16 |
+| Medium | 21 | 0 | 0 | 21 |
 | Low | 8 | 0 | 0 | 8 |
-| **Total** | **41** | **0** | **0** | **41** |
+| **Total** | **46** | **0** | **0** | **46** |
 
 Pass 1 alone contributes 32 findings: **32 Closed, 0 Partial, 0 Open**, matching the
 remaining-core audit report. The ninth High is the supplementary legal finding `L-1`: it is
 outside Pass 1's file scope but is a fixed release-blocking defect recorded in the same
-audit document, so it is included here rather than left out of the consolidated view. The
-remaining seven High findings are the AUD4-002 through AUD4-008 domain defects
+audit document, so it is included here rather than left out of the consolidated view. The remaining seven High findings are the AUD4-002 through AUD4-008 domain defects
 resolved in this remediation and verified by the unit, integration, and invariant
-suites named above.
+suites named above. The five AUD4-009 through AUD4-013 findings are Medium and
+are closed with the same evidence: LLM list normalization, webapp request
+bounds, deep-summary provenance, structured top-case notes, and register
+consistency are covered by `tests/test_llm.py`, `tests/test_webapp.py`,
+`tests/test_deep_read.py`, `tests/test_legal_agent.py`,
+`tests/test_audit_invariants.py`, and `tests/test_prompt_docs.py`.
 
 Pass 2 has **2 High, 3 Medium, 2 Low**, all Closed. Pass 3 has **3 High, 10 Medium,
-9 Low**, all Closed. They are not part of the 34-row table below; see
+9 Low**, all Closed. They are not part of the 46-row table below; see
 [Pass 2 / Pass 3 status](#pass-2--pass-3-status).
 
 ## Severity and disposition
@@ -108,6 +114,11 @@ ID. Line ranges are current for the remediated P1 rows in this tree.
 | High | P1-025 | `va_legal_agent/fetch.py:60-100` | Quoted reporter citations overrode the decision's own BVA citation; fixed to prefer the own citation. | Closed | Closed — verify |
 | High | P1-026 | `va_legal_agent/fetch.py:312-321` | `_normalize_statute_value` stripped real attached subsections (`§ 3.1(aa)` became `§ 3.1`, nested `(iv)` was lost); fixed to preserve attached subsections. | Closed | Closed — verify |
 | High | L-1 | `va_legal_agent/impact.py:226-258` | Every CAVC case, including non-precedential memoranda, was described as binding; fixed to pass the case's three-state `precedential` value into the authority note. | Closed | Closed — verify |
+| Medium | AUD4-009 | `va_legal_agent/llm.py:189-267` | A string `reconciled_principles` value was rejected by the schema gate (and would otherwise have been iterated character-by-character); fixed by accepting a string as exactly one principle and normalizing all values through `_coerce_string_list`, which also strips items and drops blanks/non-strings. | Closed | Closed — verify |
+| Medium | AUD4-010 | `webapp.py:70-84, 204-300` | `max_results` and `max_wall_seconds` accepted booleans, non-finite floats (including string `nan`/`inf`), and out-of-range values before job dispatch; fixed with finite, range-checked parsers and explicit HTTP 400 validation before acquiring a semaphore permit or starting a thread. | Closed | Closed — verify |
+| Medium | AUD4-011 | `va_legal_agent/deep_read.py:163-280`; `va_legal_agent/models.py:306-345`; `va_legal_agent/agent.py:1300-1340`; `va_legal_agent/__main__.py:375-425` | LLM-generated deep summaries were returned as unverified model text beside source holdings; fixed by recording `summary_source`, `provenance_verified`, and `verification_notes`, validating model text against the retrieved source corpus, falling back to deterministic extractive digests when provenance fails, and labeling model text separately from `[Verified Source Holding]` in reports. | Closed | Closed — verify |
+| Medium | AUD4-012 | `va_legal_agent/models.py:1800-1830`; `va_legal_agent/agent.py:1266-1305` | The human-readable summary carried bracketed precedential notes but the structured `top_cases` data did not; fixed with `TopCaseRecord` (`precedential_status`, exact `precedential_note`, `display_label`) and a single status/note helper used by both the summary and structured records. | Closed | Closed — verify |
+| Medium | AUD4-013 | `docs/defect-register.md:1-183`; `tests/test_prompt_docs.py` | The register claimed zero open defects while retaining a stale appendix template, and summary counts were not mechanically tied to rows; fixed by removing the duplicate `P1-029` template, recording AUD4-009 through AUD4-013 in the main table, updating source/summary counts, and adding a row-count/placeholder invariant. | Closed | Closed — verify |
 | Medium | P1-002 | `va_legal_agent/__main__.py:187-196` | `_mask_secret` revealed nearly all of an 8–9 character secret; fixed to mask values of 16 characters or fewer completely. | Closed | Closed — verify |
 | Medium | P1-003 | `va_legal_agent/__main__.py:230-236` | A non-numeric proxy port raised `ValueError` and crashed `--show-config`; fixed to omit the bad port while keeping the host visible. | Closed | Closed — verify |
 | Medium | P1-005 | `va_legal_agent/__main__.py:138-160, 1126-1134, 1232-1255` | Analysis failures now retain the exception type and full traceback in the failure event and per-issue error row, and the summary exposes an errors list. | Closed | Closed — verify |
@@ -130,6 +141,7 @@ ID. Line ranges are current for the remediated P1 rows in this tree.
 | Low | P1-017 | `va_legal_agent/providers.py:640-675` | Non-numeric usage rows raised bare `ValueError`; fixed to coerce counters and raise `SearchError` for malformed payloads. | Closed | Closed — verify |
 | Low | P1-018 | `va_legal_agent/providers.py:1289-1305` | Naive local-index timestamps raised `TypeError`; fixed to treat them as UTC and treat un-ageable timestamps as stale. | Closed | Closed — verify |
 | Low | P1-021 | `va_legal_agent/search.py:242-245` | Zero-result pages were classified as provider failures; fixed to return an empty result list and record zero-result telemetry. | Closed | Closed — verify |
+| Low | P1-029 | `va_legal_agent/fetch.py:341-355` | Six U.S.C. citations exhausted the cap, dropping all C.F.R. regulations; fixed to reserve C.F.R. slots. | Closed | Closed — verify |
 | Low | P1-032 | `va_legal_agent/deep_read.py:167-183` | Deep-read synthesis emitted `- (nothing relevant)` sentinel lines; fixed to filter the sentinel and return an empty summary when no usable digest remains. | Closed | Closed — verify |
 
 ## Pass 2 / Pass 3 status
@@ -155,12 +167,6 @@ their source IDs exactly and keep the six-column schema:
 - Supersession: keep the original row; change its disposition to `Superseded by P3-###`
   (or add a note) rather than deleting it.
 - Recompute [Summary](#summary) and [Source status](#source-status) after each append.
-
-Template row:
-
-```markdown
-| Low | P1-029 | `va_legal_agent/fetch.py:341-355` | Six U.S.C. citations exhausted the cap, dropping all C.F.R. regulations; fixed to reserve C.F.R. slots. | Closed | Closed — verify |
-```
 
 ## Notes
 

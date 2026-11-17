@@ -33,6 +33,7 @@ from va_legal_agent.models import (
 )
 from va_legal_agent.planning import ResearchPlan, SubTask
 from va_legal_agent.search import SearchError
+from va_legal_agent.__main__ import render_analysis
 from va_legal_agent.agent import (
     _DaemonThreadPoolExecutor,
     _build_analysis,
@@ -785,7 +786,7 @@ def test_analyze_cases_deep_summaries_in_output(monkeypatch):
     analysis = analyze_cases_for_claim("service connection", deep_read=True)
 
     assert analysis.deep_summaries == [
-        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": "Deep summary of Smith v. Wilkie."}
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims) [precedential status unknown]", "summary": "Deep summary of Smith v. Wilkie."}
     ]
 
 
@@ -799,7 +800,7 @@ def test_analyze_cases_deep_summaries_empty_when_off(monkeypatch):
     analysis = analyze_cases_for_claim("service connection")
 
     assert analysis.deep_summaries == [
-        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims)", "summary": ""}
+        {"case": "Smith v. Wilkie (Court of Appeals for Veterans Claims) [precedential status unknown]", "summary": ""}
     ]
 
 
@@ -3970,7 +3971,10 @@ def test_analyze_cases_forwards_all_args_to_research_loop(monkeypatch):
     assert seen["max_wall_seconds"] == 2.5
     assert seen["deep_read"] is True
     assert seen["deep_read_limit"] == 4
-    assert analysis.top_cases == ["Smith v. Wilkie (Court of Appeals for Veterans Claims)"]
+    assert analysis.top_cases == [
+        "Smith v. Wilkie (Court of Appeals for Veterans Claims) "
+        "[precedential status unknown]"
+    ]
 
 
 def test_analyze_cases_summary_uses_newlines_and_caps_at_five(monkeypatch):
@@ -4654,6 +4658,96 @@ def test_enrich_marks_quote_extraction_not_assessed_without_source(monkeypatch):
     assert case.extraction_flags == [
         "LLM extraction not assessed: no readable source text was available."
     ]
+
+
+def test_aud4_012_top_cases_carry_the_exact_summary_precedential_notes():
+    cases = [
+        CaseRecord(
+            title="Nonprecedential v. VA",
+            court=COURT_CAVC,
+            precedential=False,
+        ),
+        CaseRecord(
+            title="Unknown v. VA",
+            court=COURT_CAVC,
+            precedential=None,
+        ),
+        CaseRecord(
+            title="Published v. VA",
+            court=COURT_CAVC,
+            precedential=True,
+        ),
+        CaseRecord(
+            title="Old v. VA",
+            court=COURT_CAVC,
+            precedential=True,
+            superseded_by="New v. VA",
+        ),
+    ]
+
+    analysis = _build_analysis("service connection", "Compensation", cases, [])
+
+    assert len(analysis.top_case_records) == len(analysis.top_cases) == 4
+    assert analysis.top_cases == [
+        record.display_label for record in analysis.top_case_records
+    ]
+    assert analysis.top_cases_structured == analysis.top_case_records
+    assert analysis.structured_top_cases == analysis.top_case_records
+    assert [record.precedential_status for record in analysis.top_case_records] == [
+        "non-precedential",
+        "unknown",
+        "precedential",
+        "superseded",
+    ]
+    for record in analysis.top_case_records:
+        if record.precedential_note:
+            assert record.precedential_note in analysis.summary
+            assert record.precedential_note in record.display_label
+
+
+def test_aud4_011_deep_summary_is_labeled_separately_from_verified_holding():
+    case = CaseRecord(
+        title="Deep Summary v. VA",
+        court=COURT_CAVC,
+        holding="The Board must provide reasons and bases.",
+        precedential=True,
+        deep_summary="The Board must provide reasons and bases.",
+        deep_summary_source="llm_synthesized",
+        deep_summary_provenance_verified=True,
+        deep_summary_verification_notes=[
+            "LLM synthesis passed deterministic source-provenance checks."
+        ],
+    )
+
+    analysis = _build_analysis("service connection", "Compensation", [case], [])
+    text = render_analysis(analysis, "text")
+
+    assert (
+        "[Verified Source Holding] The Board must provide reasons and bases."
+        in text
+    )
+    assert "[LLM-Synthesized Summary — Provenance Checked]" in text
+    assert analysis.deep_summaries[0]["summary_source"] == "llm_synthesized"
+    assert analysis.deep_summaries[0]["provenance_verified"] is True
+
+
+def test_aud4_011_unverified_deep_summary_is_explicitly_labeled():
+    case = CaseRecord(
+        title="Unverified Summary v. VA",
+        court=COURT_CAVC,
+        holding="The Board must provide reasons and bases.",
+        precedential=True,
+        deep_summary="Model text that was not anchored in the record.",
+        deep_summary_source="llm_synthesized",
+        deep_summary_provenance_verified=False,
+        deep_summary_verification_notes=["No extractive fallback was available."],
+    )
+
+    analysis = _build_analysis("service connection", "Compensation", [case], [])
+    text = render_analysis(analysis, "text")
+
+    assert "Unverified Model Text; Confirm Against Official Transcript" in text
+    assert "[Verified Source Holding]" in text
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "benchmarks" / "extraction" / "fixtures"
