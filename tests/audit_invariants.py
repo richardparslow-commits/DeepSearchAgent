@@ -15,6 +15,32 @@ from va_legal_agent.models import (
 )
 
 
+def assert_aud4_016_knowledge_guard(text: str) -> None:
+    """Assert the static case catalog cannot be presented as verified law."""
+    assert "illustrative / unverified examples — live retrieval required" in text
+    assert "not live-verified authority" in text
+    assert "must not be presented as verified legal authority" in text
+    assert (
+        "retrieve the primary court opinion/transcript in the current session"
+        in text
+    )
+    assert "check subsequent appellate/citator history" in text
+    assert "[Unverified — Live Retrieval Required]" in text
+    assert "official court transcript" in text
+
+    catalog = text.split("## 3. CASE CATALOG", 1)[1].split(
+        "### Known VA-Law Principles", 1
+    )[0]
+    assert "illustrative example for issue spotting only" in catalog
+    assert "apply the verification gate above" in catalog
+
+    principles = text.split("### Known VA-Law Principles", 1)[1].split(
+        "## 4.", 1
+    )[0]
+    assert "illustrative / unverified — live retrieval required" in principles
+    assert "not verified holdings" in principles
+
+
 def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
     """Assert the AUD4-002/003/004 lossless-output contract.
 

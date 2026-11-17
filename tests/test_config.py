@@ -16,6 +16,7 @@ from va_legal_agent.config import (
     env_int,
     env_iso_date,
     get_settings,
+    mask_url_userinfo,
 )
 
 
@@ -91,6 +92,31 @@ _ENV_VARS = (
     "DEEP_READ_PAGES",
     "DEEP_CHUNK_CHARS",
 )
+
+
+def test_mask_url_userinfo_masks_credentials_without_changing_clean_urls():
+    assert (
+        mask_url_userinfo("https://alice:s3cr3t@api.example.com/v1")
+        == "https://[REDACTED]@api.example.com/v1"
+    )
+    assert (
+        mask_url_userinfo("https://mytoken@proxy.internal/v1")
+        == "https://[REDACTED]@proxy.internal/v1"
+    )
+    assert (
+        mask_url_userinfo("https://api.example.com/v1?api_key=s3cr3t&model=x")
+        == "https://api.example.com/v1?api_key=[REDACTED]&model=x"
+    )
+    clean = "https://api.openai.com/v1"
+    assert mask_url_userinfo(clean) == clean
+    assert mask_url_userinfo(None) is None
+
+
+def test_openai_base_url_setting_remains_raw_for_the_client(monkeypatch):
+    raw = "https://alice:s3cr3t@api.example.com/v1"
+    monkeypatch.setenv("OPENAI_BASE_URL", raw)
+
+    assert get_settings().openai_base_url == raw
 
 
 def test_env_int_returns_default_when_unset(monkeypatch):

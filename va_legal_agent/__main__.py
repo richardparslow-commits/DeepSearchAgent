@@ -19,7 +19,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .adjudication import build_adjudication_queue, save_queue
 from .agent import analyze_cases_for_claim
 from .batch import BatchTracker
-from .config import get_settings
+from .config import get_settings, mask_url_userinfo
 from .interpretation import detect_claim_elements
 from .models import (
     AdjudicationRoleGuidance,
@@ -347,6 +347,11 @@ def _redacted_settings() -> dict[str, object]:
         data[key] = _mask_secret(data.get(key))
     # The proxy URL may embed ``user:pass@``, so mask that too.
     data["search_http_proxy"] = _mask_proxy_url(data.get("search_http_proxy"))
+    # OPENAI_BASE_URL may carry RFC 3986 userinfo or a token query parameter.
+    base_url = data.get("openai_base_url")
+    data["openai_base_url"] = (
+        mask_url_userinfo(base_url) if isinstance(base_url, str) else base_url
+    )
     return data
 
 

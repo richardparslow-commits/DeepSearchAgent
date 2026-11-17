@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,72 @@ MAX_SEARCH_WORKERS = 32
 # finite but absurd typo (e.g. SEARCH_MIN_INTERVAL_SECONDS=1e12) would hang a
 # run just as effectively as infinity; the cap fails back to the default.
 MAX_ENV_FLOAT_SECONDS = 3600.0
+
+# Query parameters that can carry credentials even when the URL authority has
+# no userinfo. They are masked in diagnostic/config output, never in the live
+# client setting.
+_SENSITIVE_URL_QUERY_KEYS = frozenset({"api_key", "api-key", "token", "access_token"})
+
+
+def mask_url_userinfo(url: str | None) -> str | None:
+    """Mask credentials embedded in a URL for safe diagnostic output.
+
+    RFC 3986 userinfo (``user:password@``) is replaced wholesale with
+    ``[REDACTED]@``; the host, port, path, and fragment remain visible. Query
+    parameters named ``api_key``, ``token``, or their common variants have
+    their values replaced with ``[REDACTED]``. A URL with neither userinfo nor
+    a sensitive query parameter is returned unchanged, so ordinary endpoint
+    values such as ``https://api.openai.com/v1`` remain readable. A malformed
+    URL is masked wholesale rather than risking a credential leak.
+    """
+    if not isinstance(url, str) or not url:
+        return url
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "[REDACTED]"
+
+    has_userinfo = parts.username is not None or parts.password is not None
+    query_chunks = parts.query.split("&") if parts.query else []
+    sensitive_query = any(
+        chunk.partition("=")[0].strip().lower() in _SENSITIVE_URL_QUERY_KEYS
+        for chunk in query_chunks
+    )
+    if not has_userinfo and not sensitive_query:
+        return url
+
+    if sensitive_query:
+        masked_chunks: list[str] = []
+        for chunk in query_chunks:
+            key, separator, _value = chunk.partition("=")
+            if key.strip().lower() in _SENSITIVE_URL_QUERY_KEYS:
+                masked_chunks.append(f"{key}=[REDACTED]" if separator else key)
+            else:
+                masked_chunks.append(chunk)
+        query = "&".join(masked_chunks)
+    else:
+        query = parts.query
+
+    if has_userinfo:
+        host = parts.hostname or ""
+        if not host:
+            return "[REDACTED]"
+        host_display = (
+            f"[{host}]" if ":" in host and not host.startswith("[") else host
+        )
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        netloc = f"[REDACTED]@{host_display}"
+        if port is not None:
+            netloc += f":{port}"
+    else:
+        netloc = parts.netloc
+
+    return urlunsplit(
+        (parts.scheme, netloc, parts.path, query, parts.fragment)
+    )
 
 
 def env_int(
@@ -415,6 +482,8 @@ class Settings:
     # LLM interpretation
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o-mini"
+    # Raw endpoint used by the OpenAI client. Display code must pass this
+    # value through mask_url_userinfo() before writing it to logs or JSON.
     openai_base_url: str | None = None
     openai_timeout_seconds: float = 60.0
     openai_max_tokens: int = 700

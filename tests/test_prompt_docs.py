@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from audit_invariants import assert_aud4_016_knowledge_guard
 from va_legal_agent.interpretation import _outcome_direction
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +122,17 @@ def test_knowledge_pack_distinguishes_precedential_cavc_decisions():
     assert "Precedential CAVC decisions (three-judge panel or en banc) bind the Board" in text
     assert "Non-precedential memorandum decisions and single-judge actions are persuasive only" in text
     assert "U.S. Vet. App. R. 30(a)" in text
+
+
+def test_knowledge_pack_requires_live_retrieval_before_case_authority():
+    text = KNOWLEDGE_PACK.read_text(encoding="utf-8")
+
+    assert_aud4_016_knowledge_guard(text)
+
+    for path in AUTHORITY_PROMPTS:
+        prompt = path.read_text(encoding="utf-8")
+        assert "Authority verification gate" in prompt, path.name
+        assert "[Unverified — Live Retrieval Required]" in prompt, path.name
 
 
 def test_defect_register_has_no_open_fix_now_placeholder():

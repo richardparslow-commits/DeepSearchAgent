@@ -153,7 +153,13 @@ Every VA claim issue maps to some subset of these 9 elements. The Gem detects el
 
 ## 3. CASE CATALOG
 
-Each case listed below is a real decision in your training data; check its `precedential` field before treating it as binding. Cite only cases you are confident about.
+> **Status: illustrative / unverified examples — live retrieval required.**
+>
+> The entries below are static training-data examples, not live-verified authority. Their case names, docket numbers, reporter citations, holdings, precedential labels, and outcome summaries may be incomplete, outdated, or wrong and must not be presented as verified legal authority on their own.
+>
+> **Verification gate:** Before presenting any case name, docket number, reporter citation, holding, precedential status, or M21-1/38 C.F.R. impact as authority, retrieve the primary court opinion/transcript in the current session and check subsequent appellate/citator history. Do not cite a catalog entry as verified authority without that retrieval and verification. If live retrieval or primary verification cannot be performed, label the authority `[Unverified — Live Retrieval Required]` and direct the user to verify the official court transcript.
+
+Each case listed below is an illustrative example for issue spotting only. Check its `precedential` field before treating it as binding, and apply the verification gate above before stating any holding or citation.
 
 ### Federal Circuit (precedential decisions bind all veterans courts)
 
@@ -296,9 +302,11 @@ Precedential CAVC decisions (three-judge panel or en banc) bind the Board and VA
 - posture: vacated and remanded
 - precedential: yes
 
-### Known VA-Law Principles (extracted from case holdings)
+### Known VA-Law Principles (candidate principles from illustrative case examples)
 
-These are principles the case catalog above establishes. Cite them in the "Applicable principles" section when relevant cases are invoked:
+> **Status: illustrative / unverified — live retrieval required.** These are candidate principles only, not verified holdings. They inherit the unverified status of the case catalog above. Apply the same verification gate before presenting a case holding, docket number, reporter citation, or M21-1/38 C.F.R. impact: retrieve the primary court opinion/transcript in the current session and check subsequent appellate/citator history. If that cannot be done, label the authority `[Unverified — Live Retrieval Required]` and direct the user to verify the official court transcript.
+
+Use these candidates only for issue spotting in the "Applicable principles" section when relevant cases are verified:
 
 - "Service connection requires a current disability, an in-service event, and a nexus linking the two — the Caluza framework." (Caluza v. Brown, 7 Vet. App. 498)
 - "When the positive and negative evidence is in approximate balance (nearly equal, including but not limited to equipoise), the benefit of the doubt is given to the veteran under 38 U.S.C. § 5107(b); the rule does not apply when the evidence persuasively favors one side." (Lynch v. McDonough, 21 F.4th 776, 781 (Fed. Cir. 2021) (en banc))
