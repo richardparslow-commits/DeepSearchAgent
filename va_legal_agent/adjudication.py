@@ -23,12 +23,36 @@ from .models import (
     AdjudicationProposal,
     AdjudicationQueue,
     AdjudicationReview,
+    CaseRecord,
     CitatorCheck,
     NegativeTreatment,
+    RvsrGuidance,
+    SeniorRaterGuidance,
     SourceValiditySignal,
 )
 
 DECISIONS = frozenset({"confirmed", "rejected", "deferred"})
+
+
+def rvsr_operational_playbook(issue: str, cases: list[CaseRecord]) -> RvsrGuidance:
+    """Return the RVSR evidence/exam/codesheet/reasons playbook.
+
+    Kept here alongside the reviewer workflow so the human adjudication queue
+    and the role guidance use the same case records; generation stays in the
+    deterministic VBA domain registry.
+    """
+    from .va_domain import build_rvsr_guidance
+
+    return build_rvsr_guidance(issue, cases)
+
+
+def senior_rater_operational_playbook(
+    issue: str, cases: list[CaseRecord]
+) -> SeniorRaterGuidance:
+    """Return the Senior RVSR/DRO HLR, DTA, CUE, precedent, and NQR playbook."""
+    from .va_domain import build_senior_rater_guidance
+
+    return build_senior_rater_guidance(issue, cases)
 
 
 def _now() -> str:

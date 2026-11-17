@@ -6,10 +6,13 @@ import pytest
 import requests
 
 from audit_invariants import (
+    assert_aud4_domain_invariants,
     assert_exception_chain_redacted,
     assert_source_opinion_audit_invariants,
 )
-from va_legal_agent.models import SourceOpinionAudit
+from va_legal_agent.agent import _build_analysis
+from va_legal_agent.models import CaseRecord, SourceOpinionAudit
+from va_legal_agent.va_domain import build_case_abstract, extract_provision_impacts
 from va_legal_agent.redaction import sanitize_exception
 
 
@@ -103,3 +106,29 @@ def test_secret_redaction_invariant_checks_raw_cause_chain() -> None:
             assert_exception_chain_redacted(error, secret)
         sanitize_exception(error)
         assert_exception_chain_redacted(error, secret)
+
+
+def test_aud4_domain_invariants_hold_for_real_fixture_output():
+    path = (
+        __import__("pathlib").Path(__file__).resolve().parents[1]
+        / "benchmarks"
+        / "extraction"
+        / "fixtures"
+        / "cavc-adams-23-5064.txt"
+    )
+    text = path.read_text(encoding="utf-8")
+    case = CaseRecord(
+        title="Adams v. Collins",
+        court="Court of Appeals for Veterans Claims",
+        docket="23-5064",
+        decision_date="2025-07-08",
+        url="https://uscourts.cavc.gov/opinions/adams",
+        source_reliability="official",
+        precedential=True,
+    )
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+
+    analysis = _build_analysis("service connection for obesity", "Compensation", [case], [])
+
+    assert_aud4_domain_invariants(analysis)

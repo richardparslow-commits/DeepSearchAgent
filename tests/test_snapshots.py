@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from va_legal_agent.models import CitatorCheck
+from va_legal_agent.models import (
+    CaseAbstract,
+    CitatorCheck,
+    LegalAnalysis,
+    ProvisionImpact,
+    SurfacedCaseRecord,
+)
 from va_legal_agent.snapshots import (
     SnapshotStore,
     SnapshottingCourtListenerProvider,
@@ -232,3 +238,55 @@ def test_snapshotting_provider_survives_store_failure(tmp_path, caplog):
 
     assert wrapper.lookup_citations("text") == {"text": "text"}
     assert "Could not persist courtlistener.lookup snapshot" in caplog.text
+
+
+def test_record_analysis_persists_lossless_d1_and_provision_payload(tmp_path):
+    analysis = LegalAnalysis(
+        run_id="run-1",
+        issue="PTSD rating",
+        summary="Smith v. Wilkie",
+        how_it_affects_va_claims="The Board must obtain an adequate examination.",
+        top_cases=["Smith v. Wilkie (Court of Appeals for Veterans Claims)"],
+        surfaced_cases=[
+            SurfacedCaseRecord(
+                case_title="Smith v. Wilkie",
+                court="Court of Appeals for Veterans Claims",
+                docket_number="21-1234",
+                reporter_citation="33 Vet.App. 10",
+                decision_date="2024-01-02",
+                official_transcript_url="https://uscourts.cavc.gov/opinions/smith",
+                transcript_source_type="official_court_opinion",
+                provenance_verified=True,
+                retrieved_url="https://uscourts.cavc.gov/opinions/smith",
+            )
+        ],
+        case_abstracts=[
+            CaseAbstract(
+                case_title="Smith v. Wilkie",
+                court="Court of Appeals for Veterans Claims",
+                claimant_and_conditions="Veteran claimed PTSD.",
+                reasoning_summary="Full reasoning " + ("z" * 400),
+                abstract_complete=True,
+                abstract_source="full_text",
+            )
+        ],
+        provision_impacts=[
+            ProvisionImpact(
+                citation="38 C.F.R. § 4.130",
+                stage="rating_dc_evaluation",
+                legal_effect="clarifying",
+                provenance_anchor="The Board must apply 38 C.F.R. § 4.130.",
+                m21_1_citations=["M21-1, Part V, Subpart ii"],
+            )
+        ],
+    )
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    record = store.record_analysis(analysis)
+
+    assert record.kind == "analysis.report"
+    payload = json.loads((store.root / record.path).read_text(encoding="utf-8"))
+    assert payload["payload"]["surfaced_cases"][0]["docket_number"] == "21-1234"
+    assert payload["payload"]["case_abstracts"][0]["abstract_complete"] is True
+    assert payload["payload"]["provision_impacts"][0]["m21_1_citations"]
+    assert payload["metadata"]["surfaced_case_count"] == 1

@@ -3,6 +3,7 @@ import logging
 import socket
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -59,6 +60,11 @@ from va_legal_agent.topics import (
     COURT_FEDERAL_CIRCUIT,
     COURT_SUPREME,
     COURT_UNKNOWN,
+)
+from va_legal_agent.va_domain import (
+    build_case_abstract,
+    build_surfaced_case,
+    extract_provision_impacts,
 )
 
 
@@ -4646,3 +4652,113 @@ def test_enrich_marks_quote_extraction_not_assessed_without_source(monkeypatch):
     assert case.extraction_flags == [
         "LLM extraction not assessed: no readable source text was available."
     ]
+
+
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "benchmarks" / "extraction" / "fixtures"
+
+
+def _fixture_case(filename: str, *, date: str, docket: str) -> CaseRecord:
+    text = (FIXTURE_DIR / filename).read_text(encoding="utf-8")
+    case = CaseRecord(
+        title="Adams v. Collins" if "adams" in filename else "Westervelt v. Collins",
+        court=COURT_CAVC,
+        docket=docket,
+        decision_date=date,
+        url=f"https://uscourts.cavc.gov/opinions/{filename}",
+        source_reliability="official",
+        precedential=True,
+    )
+    case.case_abstract = build_case_abstract(text, case)
+    case.provision_impacts = extract_provision_impacts(text, case)
+    return case
+
+
+@pytest.mark.parametrize(
+    ("filename", "date", "docket", "expected_citation", "expected_staged"),
+    [
+        ("cavc-adams-23-5064.txt", "2025-07-08", "23-5064", "38 C.F.R. § 3.310", False),
+        ("cavc-westervelt-23-0024.txt", "2025-04-08", "23-0024", "38 C.F.R. § 3.105(a)", True),
+    ],
+)
+def test_aud4_fixture_preserves_d1_abstract_and_vba_impact(
+    filename, date, docket, expected_citation, expected_staged
+):
+    case = _fixture_case(filename, date=date, docket=docket)
+    abstract = case.case_abstract
+    assert abstract is not None and abstract.abstract_complete
+    assert len(abstract.reasoning_summary) > 300  # no 300-char truncation
+    assert abstract.claimant_and_conditions
+    assert abstract.procedural_history
+    assert abstract.issues_presented
+    assert abstract.holding_and_legal_rule
+    assert abstract.disposition
+    assert abstract.remand_instructions
+
+    impacts = case.provision_impacts
+    citations = {impact.citation for impact in impacts}
+    assert expected_citation in citations
+    assert any(impact.authority_type == "diagnostic_code" for impact in impacts)
+    assert any(impact.m21_1_citations for impact in impacts)
+    assert any(impact.staged_rating for impact in impacts) is expected_staged
+    assert all(impact.provenance_anchor for impact in impacts)
+
+    surfaced = build_surfaced_case(case)
+    assert surfaced.case_title and surfaced.docket_number == docket
+    assert surfaced.decision_date == date
+    assert surfaced.transcript_source_type == "official_court_opinion"
+    assert surfaced.official_transcript_url == case.url
+    assert surfaced.provenance_verified is True
+    assert surfaced.case_abstract is not None
+
+    analysis = _build_analysis(
+        "service connection for obesity" if "adams" in filename else "PTSD rating",
+        "Compensation",
+        [case],
+        [],
+    )
+    assert analysis.top_cases == [f"{case.title} ({case.court})"]
+    assert analysis.surfaced_cases == [surfaced]
+    assert analysis.case_abstracts == [abstract]
+    assert analysis.provision_impacts
+    assert analysis.rvsr_guidance.rating_codesheet_actions
+    assert analysis.senior_rater_guidance.precedent_conflict_resolution
+
+
+def test_aud4_surfaced_case_labels_secondary_and_bva_sources():
+    secondary = CaseRecord(
+        title="Secondary Summary",
+        court=COURT_CAVC,
+        url="https://lawfirm.example/case-summary",
+        source_reliability="secondary",
+        precedential=False,
+        rule_30a=True,
+    )
+    record = build_surfaced_case(secondary)
+    assert record.transcript_source_type == "secondary_summary"
+    assert record.official_transcript_url is None
+    assert record.transcript_source_type != "official_court_opinion"
+    assert any("Transcript source" in warning for warning in record.warnings)
+    assert record.precedential_status == "single_judge_memorandum"
+
+    bva = CaseRecord(
+        title="BVA Decision",
+        court=COURT_BVA,
+        url="https://www.va.gov/vetapp25/Files1/2500001.txt",
+        source_reliability="official",
+        precedential=None,
+    )
+    bva_record = build_surfaced_case(bva)
+    assert bva_record.precedential_status == "non_precedential_bva"
+    assert bva_record.transcript_source_type == "official_transcript_archive"
+    assert bva_record.official_transcript_url == bva.url
+    assert any("Transcript source" in warning for warning in bva_record.warnings)
+
+
+def test_aud4_analysis_json_round_trip_keeps_structured_contract():
+    case = _fixture_case("cavc-adams-23-5064.txt", date="2025-07-08", docket="23-5064")
+    analysis = _build_analysis("service connection for obesity", "Compensation", [case], [])
+    restored = LegalAnalysis.model_validate_json(analysis.model_dump_json())
+    assert restored.surfaced_cases[0].case_abstract == analysis.surfaced_cases[0].case_abstract
+    assert restored.provision_impacts[0].citation == analysis.provision_impacts[0].citation
+    assert restored.rvsr_guidance == analysis.rvsr_guidance
+    assert restored.senior_rater_guidance == analysis.senior_rater_guidance

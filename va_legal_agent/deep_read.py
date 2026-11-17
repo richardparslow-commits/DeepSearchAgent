@@ -26,6 +26,7 @@ from .fetch import (
 from .llm import call_openai, llm_enabled
 from .models import CaseRecord
 from .providers import CourtListenerProvider, SearchError
+from .va_domain import build_case_abstract
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,10 @@ def _extract_chunk_facts(chunk: str) -> str:
 
     Looks for section headers like "BACKGROUND", "FACTS", "FINDINGS OF FACT",
     or "PROCEDURAL HISTORY" (common in BVA and CAVC decisions) and returns
-    the first 2-3 sentences (capped at ~300 characters) of the section body.
-    This captures the veteran's specific circumstances — what happened, what
-    condition was claimed, what the procedural posture was — which is the
-    information a practitioner compares to their own client's situation.
+    the first 2-3 complete sentences of the section body.  The historical
+    300-character cut is deliberately gone: it severed sentences, citations,
+    and conditions mid-word.  The structured, non-truncated abstract is built
+    separately by :func:`va_legal_agent.va_domain.build_case_abstract`.
     """
     match = _FACT_HEADER_RE.search(chunk)
     if not match:
@@ -71,13 +72,8 @@ def _extract_chunk_facts(chunk: str) -> str:
     body = match.group(2).strip()
     if not body:
         return ""
-    # Extract the first 2-3 sentences, capped at 300 chars.
     sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z])", body, maxsplit=3)
-    selected = sentences[:3]
-    result = " ".join(s.strip() for s in selected)
-    if len(result) > 300:
-        result = result[:297] + "..."
-    return result
+    return " ".join(s.strip() for s in sentences[:3])
 
 
 def chunk_text(text: str, max_chars: int) -> list[str]:
@@ -221,6 +217,7 @@ def deep_read_case(case: CaseRecord, issue: str) -> str:
         return ""
     if not text or not text.strip():
         return ""
+    case.case_abstract = build_case_abstract(text, case)
     chunks = chunk_text(text, settings.deep_chunk_chars)
     digests = [_digest_chunk(chunk) for chunk in chunks]
     return _synthesize_case(case.title, issue, digests)

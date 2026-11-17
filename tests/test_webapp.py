@@ -24,6 +24,13 @@ os.environ.pop("PORT", None)
 
 import webapp  # noqa: E402
 
+from va_legal_agent.models import (  # noqa: E402
+    CaseAbstract,
+    LegalAnalysis,
+    ProvisionImpact,
+    SurfacedCaseRecord,
+)
+
 
 def _run_import(**env: str) -> subprocess.CompletedProcess[str]:
     child_env = os.environ.copy()
@@ -339,3 +346,73 @@ def test_issue_length_is_capped(isolated_client) -> None:
     assert response.status_code == 400
     assert "at most 2000 characters" in response.get_json()["error"]
     assert webapp._JOBS == {}
+
+
+def test_webapp_job_persists_structured_d1_payload(
+    isolated_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The browser job's JSON contract must retain D1, abstracts, and impacts."""
+    analysis = LegalAnalysis(
+        issue="PTSD rating",
+        summary="- Smith v. Wilkie (Court of Appeals for Veterans Claims)",
+        how_it_affects_va_claims="The Board must obtain an adequate examination.",
+        top_cases=["Smith v. Wilkie (Court of Appeals for Veterans Claims)"],
+        surfaced_cases=[
+            SurfacedCaseRecord(
+                case_title="Smith v. Wilkie",
+                court="Court of Appeals for Veterans Claims",
+                docket_number="21-1234",
+                reporter_citation="33 Vet.App. 10",
+                decision_date="2024-01-02",
+                official_transcript_url="https://uscourts.cavc.gov/opinions/smith",
+                transcript_source_type="official_court_opinion",
+                provenance_verified=True,
+                retrieved_url="https://uscourts.cavc.gov/opinions/smith",
+            )
+        ],
+        case_abstracts=[
+            CaseAbstract(
+                case_title="Smith v. Wilkie",
+                court="Court of Appeals for Veterans Claims",
+                claimant_and_conditions="Veteran claimed PTSD.",
+                reasoning_summary="Full reasoning " + ("y" * 400),
+                abstract_complete=True,
+                abstract_source="full_text",
+            )
+        ],
+        provision_impacts=[
+            ProvisionImpact(
+                citation="38 C.F.R. § 4.130",
+                stage="rating_dc_evaluation",
+                legal_effect="clarifying",
+                provenance_anchor="The Board must apply 38 C.F.R. § 4.130.",
+                m21_1_citations=["M21-1, Part V, Subpart ii"],
+            )
+        ],
+    )
+    monkeypatch.setattr(webapp, "analyze_cases_for_claim", lambda *a, **k: analysis)
+    monkeypatch.setattr(webapp, "_save_job", lambda job: None)
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()
+    monkeypatch.setattr(webapp, "_SEM", sem)
+    monkeypatch.setattr(
+        webapp,
+        "_JOBS",
+        {
+            "aud4-domain": {
+                "job_id": "aud4-domain",
+                "issue": "PTSD rating",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }
+        },
+    )
+
+    webapp._run_job("aud4-domain", "PTSD rating", 1, None)
+
+    job = webapp._JOBS["aud4-domain"]
+    assert job["status"] == "done"
+    assert "Surfaced case records (D1):" in job["result"]
+    assert job["result_json"]["surfaced_cases"][0]["docket_number"] == "21-1234"
+    assert job["result_json"]["case_abstracts"][0]["abstract_complete"] is True
+    assert job["result_json"]["provision_impacts"][0]["m21_1_citations"]

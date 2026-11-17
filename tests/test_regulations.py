@@ -8,6 +8,7 @@ import va_legal_agent.regulations as regulations
 from va_legal_agent.__main__ import render_analysis
 from va_legal_agent.config import Settings
 from va_legal_agent.models import (
+    CaseRecord,
     LegalAnalysis,
     RegulationsDocket,
     RegulationsDocument,
@@ -756,3 +757,26 @@ def test_small_helpers_and_cache_error_paths(tmp_path, monkeypatch):
 
     client._cache.set = fail
     client._cache_set("key", {}, {})
+
+
+def test_aud4_regulations_provision_wrapper_preserves_rulemaking_client():
+    case = CaseRecord(
+        title="Provision Case",
+        court="Court of Appeals for Veterans Claims",
+        holding=(
+            "The Board must apply 38 C.F.R. § 3.303 and 38 C.F.R. § 4.14, and the "
+            "examination must satisfy M21-1, Part IV, Subpart i, Chapter 3."
+        ),
+        url="https://uscourts.cavc.gov/opinions/provision-case",
+        source_reliability="official",
+    )
+
+    impacts = regulations.provision_level_impacts([case])
+
+    assert {impact.citation for impact in impacts} >= {
+        "38 C.F.R. § 3.303",
+        "38 C.F.R. § 4.14",
+    }
+    assert any(impact.m21_1_citations for impact in impacts)
+    # The existing docket client remains available and unchanged.
+    assert callable(regulations.RegulationsClient)
