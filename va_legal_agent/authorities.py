@@ -30,6 +30,8 @@ from .config import get_settings
 from .models import (
     AuthorityCheck,
     CaseRecord,
+    GovInfoPublicLaw,
+    GovInfoStatute,
     LegalAnalysis,
     StatutorySupersessionSignal,
 )
@@ -42,7 +44,18 @@ ECFR_FULL_URL = "https://www.ecfr.gov/api/versioner/v1/full/{date}/title-38.xml"
 ECFR_SECTION_URL = "https://www.ecfr.gov/current/title-38/section-{section}"
 FEDERAL_REGISTER_DOCUMENTS_URL = "https://www.federalregister.gov/api/v1/documents.json"
 GOVINFO_SEARCH_URL = "https://api.govinfo.gov/search"
+GOVINFO_HOME_URL = "https://www.govinfo.gov/"
+GOVINFO_DETAILS_URL = "https://www.govinfo.gov/app/details/{package_id}"
+GOVINFO_CONTENT_URL = (
+    "https://www.govinfo.gov/content/pkg/{package_id}/html/{file_id}.htm"
+)
 FR_HOME_URL = "https://www.federalregister.gov/"
+
+_MAX_GOVINFO_RECORDS = 2
+_GOVINFO_TEXT_EXCERPT_LIMIT = 1_200
+_PLAW_PACKAGE_RE = re.compile(r"^PLAW-(\d{1,3})publ-?(\d+)$", re.IGNORECASE)
+_STATUTE_PACKAGE_RE = re.compile(r"^STATUTE-(\d+)$", re.IGNORECASE)
+_STATUTE_PAGE_RE = re.compile(r"-Pg(\d+)", re.IGNORECASE)
 
 # Explicit actions that can make a cited provision no longer current. These
 # are used only to raise a review candidate; an amendment alone is not a
@@ -814,9 +827,18 @@ def statutory_supersession_flags(
 class GovInfoClient:
     """Minimal client for GovInfo's official search API."""
 
-    def __init__(self, api_key: str | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        include_records: bool | None = None,
+    ):
         settings = get_settings()
         self.api_key = (api_key if api_key is not None else settings.govinfo_api_key) or ""
+        self.include_records = (
+            settings.govinfo_legislation_records
+            if include_records is None
+            else include_records
+        )
 
     def search(self, query: str, page_size: int = 5) -> list[dict[str, object]]:
         """Run *query* against GovInfo and return its result rows."""
@@ -851,7 +873,6 @@ class GovInfoClient:
         return [row for row in results if isinstance(row, dict)]
 
 
-GOVINFO_HOME_URL = "https://www.govinfo.gov/"
 _GOVINFO_USCODE_PACKAGE_RE = re.compile(r"USCODE-\d{4}-title38", re.IGNORECASE)
 # GovInfo files Federal Circuit opinions under the 13th-circuit code, not
 # "cafc".
@@ -884,6 +905,218 @@ def _titles_match(expected: str, actual: object) -> bool:
         return False
     actual_without_docket = _GOVINFO_DOCKET_PREFIX_RE.sub("", str(actual or ""))
     return _title_words(actual_without_docket) == expected_words
+
+
+def _govinfo_details_url(package_id: str, granule_id: str = "") -> str:
+    url = GOVINFO_DETAILS_URL.format(package_id=package_id)
+    return f"{url}/{granule_id}" if granule_id else url
+
+
+def _govinfo_text_url(package_id: str, granule_id: str = "") -> str:
+    """Return a stable, public HTML URL for a package or granule."""
+    return GOVINFO_CONTENT_URL.format(
+        package_id=package_id,
+        file_id=granule_id or package_id,
+    )
+
+
+def _govinfo_excerpt(text: str) -> str:
+    normalized = " ".join((text or "").split())
+    if len(normalized) <= _GOVINFO_TEXT_EXCERPT_LIMIT:
+        return normalized
+    return normalized[: _GOVINFO_TEXT_EXCERPT_LIMIT - 3].rstrip() + "..."
+
+
+def _fetch_govinfo_text(url: str) -> str:
+    """Fetch and normalize the public HTML text at a stable GovInfo URL."""
+    try:
+        response = requests.get(
+            url,
+            headers=_headers(),
+            timeout=_timeout(),
+            **http_proxy_kwargs(),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise SearchError(f"GovInfo text request failed: {exc}") from exc
+    soup = BeautifulSoup(getattr(response, "text", "") or "", "html.parser")
+    for tag in soup(["script", "style", "noscript"]):
+        tag.decompose()
+    text = " ".join(soup.get_text(" ").split())
+    if not text:
+        raise SearchError("GovInfo text response contained no readable text.")
+    return text
+
+
+def _apply_govinfo_text(
+    record: GovInfoPublicLaw | GovInfoStatute, text_url: str
+) -> str:
+    """Attach a bounded excerpt; return an error message or an empty string."""
+    if not text_url:
+        record.text_status = "not_available"
+        record.detail = "No stable GovInfo text URL is available for this record."
+        return record.detail
+    try:
+        text = _fetch_govinfo_text(text_url)
+    except SearchError as exc:
+        record.text_status = "unavailable"
+        record.detail = str(exc)
+        return record.detail
+    record.text_excerpt = _govinfo_excerpt(text)
+    record.text_chars = len(text)
+    record.text_status = "retrieved"
+    return ""
+
+
+def _parse_govinfo_public_law(row: dict[str, object]) -> GovInfoPublicLaw | None:
+    package_id = str(row.get("packageId") or "").strip()
+    match = _PLAW_PACKAGE_RE.fullmatch(package_id)
+    if match is None:
+        return None
+    congress = int(match.group(1))
+    number = int(match.group(2))
+    citation = str(row.get("plawcitation") or "").strip()
+    if not citation:
+        citation = f"Pub. L. {congress}-{number}"
+    return GovInfoPublicLaw(
+        package_id=package_id,
+        citation=citation,
+        title=str(row.get("title") or "").strip(),
+        date_issued=str(row.get("dateIssued") or "").strip(),
+        details_url=_govinfo_details_url(package_id),
+        text_url=_govinfo_text_url(package_id),
+    )
+
+
+def _parse_govinfo_statute(row: dict[str, object]) -> GovInfoStatute | None:
+    package_id = str(row.get("packageId") or "").strip()
+    match = _STATUTE_PACKAGE_RE.fullmatch(package_id)
+    if match is None:
+        return None
+    granule_id = str(row.get("granuleId") or "").strip()
+    if granule_id and not granule_id.lower().startswith(
+        package_id.lower() + "-"
+    ):
+        return None
+    if granule_id and any(
+        marker in granule_id.lower()
+        for marker in ("frontmatter", "backmatter")
+    ):
+        return None
+    citation = str(
+        row.get("statutecitation") or row.get("citation") or ""
+    ).strip()
+    if not citation:
+        page_match = _STATUTE_PAGE_RE.search(granule_id)
+        if page_match:
+            citation = f"{int(match.group(1))} Stat. {int(page_match.group(1))}"
+        else:
+            citation = f"{int(match.group(1))} Stat."
+    text_url = (
+        _govinfo_text_url(package_id, granule_id) if granule_id else ""
+    )
+    return GovInfoStatute(
+        package_id=package_id,
+        granule_id=granule_id,
+        citation=citation,
+        title=str(row.get("title") or "").strip(),
+        date_issued=str(row.get("dateIssued") or "").strip(),
+        details_url=_govinfo_details_url(package_id, granule_id),
+        text_url=text_url,
+        text_status="not_retrieved" if text_url else "not_available",
+    )
+
+
+def _govinfo_legislation_rows(
+    client: GovInfoClient, collection: str, section: str
+) -> list[dict[str, object]]:
+    return client.search(
+        f'collection:{collection} uscodecitation:"38 U.S.C. {section}"',
+        page_size=5,
+    )
+
+
+def _enrich_govinfo_legislation(
+    check: AuthorityCheck, section: str, client: GovInfoClient
+) -> None:
+    """Attach Public Law and Statutes at Large records to a verified U.S.C. check."""
+    if not client.include_records:
+        return
+
+    errors: list[str] = []
+    public_laws: list[GovInfoPublicLaw] = []
+    statutes: list[GovInfoStatute] = []
+    searches_succeeded = 0
+
+    try:
+        rows = _govinfo_legislation_rows(client, "PLAW", section)
+        searches_succeeded += 1
+    except SearchError as exc:
+        errors.append(f"Public Laws search unavailable: {exc}")
+        rows = []
+    seen_packages: set[str] = set()
+    for row in rows:
+        record = _parse_govinfo_public_law(row)
+        if record is None or record.package_id in seen_packages:
+            continue
+        seen_packages.add(record.package_id)
+        public_laws.append(record)
+        if len(public_laws) >= _MAX_GOVINFO_RECORDS:
+            break
+
+    try:
+        rows = _govinfo_legislation_rows(client, "STATUTE", section)
+        searches_succeeded += 1
+    except SearchError as exc:
+        errors.append(f"Statutes at Large search unavailable: {exc}")
+        rows = []
+    seen_granules: set[str] = set()
+    for row in rows:
+        record = _parse_govinfo_statute(row)
+        key = f"{record.package_id}:{record.granule_id}" if record else ""
+        if record is None or key in seen_granules:
+            continue
+        seen_granules.add(key)
+        statutes.append(record)
+        if len(statutes) >= _MAX_GOVINFO_RECORDS:
+            break
+
+    for record in public_laws:
+        error = _apply_govinfo_text(record, record.text_url)
+        if error:
+            errors.append(f"{record.citation or record.package_id}: {error}")
+    for statute in statutes:
+        error = _apply_govinfo_text(statute, statute.text_url)
+        if error:
+            errors.append(f"{statute.citation or statute.package_id}: {error}")
+
+    check.public_laws = public_laws
+    check.statutes_at_large = statutes
+    if errors and searches_succeeded:
+        check.records_status = "partial"
+    elif errors:
+        check.records_status = "unavailable"
+    elif public_laws or statutes:
+        check.records_status = "retrieved"
+    else:
+        check.records_status = "not_found"
+
+    count_text = (
+        f"Retrieved {len(public_laws)} Public Law record(s) and "
+        f"{len(statutes)} Statutes at Large record(s)"
+    )
+    if check.records_status == "not_found":
+        check.records_detail = (
+            f"No Public Law or Statutes at Large record citing "
+            f"38 U.S.C. § {section} was found in GovInfo. This does not "
+            "prove that no enacting or amending law exists."
+        )
+    elif errors:
+        check.records_detail = f"{count_text}; {'; '.join(errors)}"
+    else:
+        check.records_detail = (
+            f"{count_text} citing 38 U.S.C. § {section}."
+        )
 
 
 def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
@@ -929,7 +1162,7 @@ def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
             url=GOVINFO_HOME_URL,
         )
     package = str(match.get("packageId") or "")
-    return AuthorityCheck(
+    check = AuthorityCheck(
         authority=authority,
         source="GovInfo",
         status="verified",
@@ -939,6 +1172,8 @@ def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
         ),
         url=_govinfo_package_url(package),
     )
+    _enrich_govinfo_legislation(check, base_section, client)
+    return check
 
 
 def _verify_federal_circuit_case(
@@ -1043,6 +1278,11 @@ def authority_flags(checks: list[AuthorityCheck]) -> list[str]:
             flag = (
                 f"Authority verification unavailable for {check.authority} "
                 f"({check.source}): {check.detail}"
+            )
+        elif check.records_status in {"partial", "unavailable"}:
+            flag = (
+                f"GovInfo legislative records {check.records_status} for "
+                f"{check.authority}: {check.records_detail}"
             )
         else:
             # verified / not_listed / no_recent_documents are informational.

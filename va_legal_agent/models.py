@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field, field_validator
 
@@ -277,6 +278,44 @@ class StatuteOutcomeRow(BaseModel):
     unknown: int = 0
 
 
+class GovInfoPublicLaw(BaseModel):
+    """A GovInfo Public Law record linked to a U.S. Code check.
+
+    ``details_url`` and ``text_url`` are stable GovInfo publication URLs, not
+    API-key-bearing search links. ``text_excerpt`` is bounded; the full text is
+    available at ``text_url``.
+    """
+
+    package_id: str
+    citation: str = ""
+    title: str = ""
+    date_issued: str = ""
+    details_url: str = ""
+    text_url: str = ""
+    text_excerpt: str = ""
+    text_chars: int = 0
+    # "retrieved", "unavailable", "not_available", or "not_retrieved".
+    text_status: str = "not_retrieved"
+    detail: str = ""
+
+
+class GovInfoStatute(BaseModel):
+    """A GovInfo Statutes at Large record linked to a U.S. Code check."""
+
+    package_id: str
+    granule_id: str = ""
+    citation: str = ""
+    title: str = ""
+    date_issued: str = ""
+    details_url: str = ""
+    text_url: str = ""
+    text_excerpt: str = ""
+    text_chars: int = 0
+    # "retrieved", "unavailable", "not_available", or "not_retrieved".
+    text_status: str = "not_retrieved"
+    detail: str = ""
+
+
 class AuthorityCheck(BaseModel):
     """One external verification result for a cited authority."""
 
@@ -287,6 +326,14 @@ class AuthorityCheck(BaseModel):
     status: str
     detail: str = ""
     url: str = ""
+    # Optional GovInfo rulemaking records attached to a verified U.S. Code
+    # check. Empty unless GOVINFO_LEGISLATION_RECORDS is enabled.
+    public_laws: list[GovInfoPublicLaw] = Field(default_factory=list)
+    statutes_at_large: list[GovInfoStatute] = Field(default_factory=list)
+    # "retrieved", "partial", "not_found", or "unavailable". Empty when the
+    # optional legislative-record lookup did not run.
+    records_status: str = ""
+    records_detail: str = ""
 
 
 class StatutorySupersessionSignal(BaseModel):
@@ -1371,6 +1418,149 @@ class CaseExtractionCandidates(BaseModel):
     flags: list[str] = Field(default_factory=list)
 
 
+class CongressAction(BaseModel):
+    """One Congress.gov action on a bill linked to a public law."""
+
+    date: str = ""
+    text: str = ""
+    type: str = ""
+
+
+class CongressPublicLaw(BaseModel):
+    """A public law linked to one cited U.S. Code section.
+
+    ``linked`` means Congress.gov returned the source bill; ``public_law_only``
+    means GovInfo found the law but its associated bill could not be resolved.
+    This is legislative history, not a citator or supersession conclusion.
+    """
+
+    citation: str
+    title: str = ""
+    url: str = ""
+    enacted_date: str = ""
+    bill_citation: str = ""
+    bill_title: str = ""
+    bill_url: str = ""
+    actions: list[CongressAction] = Field(default_factory=list)
+    actions_truncated: bool = False
+    status: str = "linked"
+    detail: str = ""
+
+
+class CRSReport(BaseModel):
+    """A CRS report retrieved from Congress.gov.
+
+    CRS reports are analyst-written secondary sources. ``authority_class`` is
+    fixed to ``secondary`` so consumers cannot mistake them for primary law.
+    """
+
+    report_number: str
+    title: str = ""
+    url: str = ""
+    publish_date: str = ""
+    authority_class: Literal["secondary"] = "secondary"
+    detail: str = "CRS analysis is a secondary source, not primary legal authority."
+
+
+class CongressLink(BaseModel):
+    """Congressional history for one cited U.S. Code section."""
+
+    usc_section: str
+    # "linked", "no_public_law", "unavailable", or "not_assessed".
+    status: str = "not_assessed"
+    public_laws: list[CongressPublicLaw] = Field(default_factory=list)
+    detail: str = ""
+    source: str = "GovInfo/Congress.gov"
+
+
+class FederalRegisterDocument(BaseModel):
+    """A Federal Register document used to locate a rulemaking docket."""
+
+    document_number: str
+    title: str = ""
+    publication_date: str = ""
+    type: str = ""
+    url: str = ""
+    abstract: str = ""
+    action: str = ""
+    docket_ids: list[str] = Field(default_factory=list)
+
+
+class RegulationsPublicComment(BaseModel):
+    """A sampled public comment, never legal authority.
+
+    ``authority_class`` is fixed to ``public_input`` so downstream consumers
+    cannot mistake a comment for a rule, statute, or agency interpretation.
+    """
+
+    comment_id: str = ""
+    title: str = ""
+    posted_date: str = ""
+    excerpt: str = ""
+    authority_class: Literal["public_input"] = "public_input"
+    detail: str = "Public comment: public input, not legal authority."
+
+
+class RegulationsDocument(BaseModel):
+    """A Regulations.gov document mapped from a Federal Register document."""
+
+    document_id: str = ""
+    docket_id: str = ""
+    fr_document_number: str = ""
+    title: str = ""
+    document_type: str = ""
+    posted_date: str = ""
+    comment_start_date: str = ""
+    comment_end_date: str = ""
+    open_for_comment: bool = False
+    url: str = ""
+    object_id: str = ""
+    comment_count: int = 0
+    comments_sampled: int = 0
+    comments: list[RegulationsPublicComment] = Field(default_factory=list)
+    status: str = "mapped"
+    detail: str = ""
+
+
+class RegulationsSupportingDocument(BaseModel):
+    """A Supporting & Related Material document in a docket."""
+
+    document_id: str
+    title: str = ""
+    document_type: str = ""
+    posted_date: str = ""
+    url: str = ""
+
+
+class RegulationsDocket(BaseModel):
+    """A Regulations.gov docket with its mapped rulemaking record."""
+
+    docket_id: str
+    title: str = ""
+    agency_id: str = ""
+    docket_type: str = ""
+    rin: str = ""
+    url: str = ""
+    documents: list[RegulationsDocument] = Field(default_factory=list)
+    supporting_documents: list[RegulationsSupportingDocument] = Field(
+        default_factory=list
+    )
+    status: str = "mapped"
+    detail: str = ""
+
+
+class RegulationsMapping(BaseModel):
+    """Rulemaking context for one cited 38 C.F.R. part."""
+
+    cfr_part: str
+    # "mapped", "no_docket", "unavailable", or "not_assessed".
+    status: str = "not_assessed"
+    fr_documents: list[FederalRegisterDocument] = Field(default_factory=list)
+    dockets: list[RegulationsDocket] = Field(default_factory=list)
+    detail: str = ""
+    source: str = "Federal Register/Regulations.gov"
+
+
 class LegalAnalysis(BaseModel):
     run_id: str = ""
     issue: str
@@ -1410,6 +1600,18 @@ class LegalAnalysis(BaseModel):
     # Human-readable problems derived from ``authority_checks`` (conflicts,
     # unresolved citations, or an unavailable verification source).
     authority_flags: list[str] = Field(default_factory=list)
+    # Advisory legislative-history links for cited 38 U.S.C. sections. These
+    # never change ranking, citator status, or supersession signals.
+    congress_links: list[CongressLink] = Field(default_factory=list)
+    # CRS reports explicitly cited in the analysis, labeled secondary. The
+    # Congress.gov API has no keyword search for CRS reports, so reports are
+    # retrieved by report number rather than guessed from a section citation.
+    congress_crs_reports: list[CRSReport] = Field(default_factory=list)
+    congress_flags: list[str] = Field(default_factory=list)
+    # Advisory rulemaking context for cited 38 C.F.R. parts. Public comments
+    # are labeled public_input and never treated as authority.
+    regulations_mappings: list[RegulationsMapping] = Field(default_factory=list)
+    regulations_flags: list[str] = Field(default_factory=list)
     # Separate advisory signals for statutory/regulatory supersession. These
     # never set a case's ``superseded_by`` or change citator status.
     statutory_supersession_signals: list[StatutorySupersessionSignal] = Field(

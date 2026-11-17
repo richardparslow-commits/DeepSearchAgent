@@ -54,6 +54,16 @@ _ENV_VARS = (
     "AUTHORITY_VERIFICATION",
     "FEDERAL_REGISTER_LOOKBACK_DAYS",
     "GOVINFO_API_KEY",
+    "GOVINFO_LEGISLATION_RECORDS",
+    "CONGRESS_API_KEY",
+    "CONGRESS_CACHE_DIR",
+    "CONGRESS_CACHE_TTL_SECONDS",
+    "CONGRESS_MAX_REQUESTS_PER_RUN",
+    "REGULATIONS_API_KEY",
+    "REGULATIONS_CACHE_DIR",
+    "REGULATIONS_CACHE_TTL_SECONDS",
+    "REGULATIONS_MAX_REQUESTS_PER_RUN",
+    "REGULATIONS_COMMENT_SAMPLE_LIMIT",
     "CITATION_TRAVERSAL",
     "CITATION_TRAVERSE_LIMIT",
     "CITATOR",
@@ -248,6 +258,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.authority_verification is False
     assert settings.federal_register_lookback_days == 365
     assert settings.govinfo_api_key is None
+    assert settings.govinfo_legislation_records is False
     assert settings.citation_traversal is False
     assert settings.citation_traverse_limit == 3
     assert settings.citator is False
@@ -315,6 +326,13 @@ def test_settings_read_from_env(monkeypatch):
     monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
     monkeypatch.setenv("FEDERAL_REGISTER_LOOKBACK_DAYS", "90")
     monkeypatch.setenv("GOVINFO_API_KEY", "gov-123")
+    monkeypatch.setenv("GOVINFO_LEGISLATION_RECORDS", "1")
+    monkeypatch.setenv("CONGRESS_API_KEY", "congress-123")
+    monkeypatch.setenv("REGULATIONS_API_KEY", "regulations-123")
+    monkeypatch.setenv("REGULATIONS_CACHE_DIR", "/tmp/regulations-cache")
+    monkeypatch.setenv("REGULATIONS_CACHE_TTL_SECONDS", "1800")
+    monkeypatch.setenv("REGULATIONS_MAX_REQUESTS_PER_RUN", "80")
+    monkeypatch.setenv("REGULATIONS_COMMENT_SAMPLE_LIMIT", "2")
     monkeypatch.setenv("CITATION_TRAVERSAL", "1")
     monkeypatch.setenv("CITATION_TRAVERSE_LIMIT", "5")
     monkeypatch.setenv("CITATOR", "1")
@@ -369,6 +387,13 @@ def test_settings_read_from_env(monkeypatch):
     assert settings.authority_verification is True
     assert settings.federal_register_lookback_days == 90
     assert settings.govinfo_api_key == "gov-123"
+    assert settings.govinfo_legislation_records is True
+    assert settings.congress_api_key == "congress-123"
+    assert settings.regulations_api_key == "regulations-123"
+    assert settings.regulations_cache_dir == "/tmp/regulations-cache"
+    assert settings.regulations_cache_ttl_seconds == 1800
+    assert settings.regulations_max_requests_per_run == 80
+    assert settings.regulations_comment_sample_limit == 2
     assert settings.citation_traversal is True
     assert settings.citation_traverse_limit == 5
     assert settings.citator is True

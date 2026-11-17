@@ -317,6 +317,32 @@ class Settings:
     # api.data.gov key for GovInfo's official U.S. Code / U.S. Courts
     # Opinions search API. Optional; GovInfo checks are skipped without it.
     govinfo_api_key: str | None = None
+    # Opt-in: attach Public Law and Statutes at Large records (with stable
+    # GovInfo links and bounded text excerpts) to verified U.S. Code checks.
+    # Off by default because it adds GovInfo searches and text downloads.
+    govinfo_legislation_records: bool = False
+    # Optional Congress.gov API key. When set (together with
+    # GOVINFO_API_KEY), cited 38 U.S.C. sections are linked to public laws
+    # and Congress.gov bill actions. The official rate limit is 5,000
+    # requests/hour; CONGRESS_MAX_REQUESTS_PER_RUN is a much lower per-run cap.
+    congress_api_key: str | None = None
+    # Persistent read-through cache for public GovInfo/Congress.gov responses.
+    # The cache never stores API keys or request headers.
+    congress_cache_dir: str = ".congress_cache"
+    congress_cache_ttl_seconds: int = 86_400
+    congress_max_requests_per_run: int = 60
+    # Optional Regulations.gov key. When set, cited 38 C.F.R. parts are mapped
+    # to Federal Register documents, Regulations.gov dockets, supporting
+    # documents, comment counts, and a small sample of public comments.
+    # Read-only: this client never posts comments. Official GET limit is
+    # 1,000 requests/hour; the per-run cap is lower.
+    regulations_api_key: str | None = None
+    regulations_cache_dir: str = ".regulations_cache"
+    regulations_cache_ttl_seconds: int = 86_400
+    regulations_max_requests_per_run: int = 120
+    # Number of public comments retrieved per mapped document (the API still
+    # requires a page size of at least 5; the client slices to this limit).
+    regulations_comment_sample_limit: int = 3
 
     # Multi-hop citation traversal over CourtListener's citation graph.
     # Off by default: it makes extra authenticated API calls per run, so
@@ -535,6 +561,48 @@ class Settings:
                 max_value=3650,
             ),
             govinfo_api_key=os.getenv("GOVINFO_API_KEY") or None,
+            govinfo_legislation_records=env_bool(
+                "GOVINFO_LEGISLATION_RECORDS",
+                d.govinfo_legislation_records,
+            ),
+            congress_api_key=os.getenv("CONGRESS_API_KEY") or None,
+            congress_cache_dir=os.getenv(
+                "CONGRESS_CACHE_DIR", d.congress_cache_dir
+            ),
+            congress_cache_ttl_seconds=env_int(
+                "CONGRESS_CACHE_TTL_SECONDS",
+                d.congress_cache_ttl_seconds,
+                min_value=0,
+                max_value=30 * 24 * 60 * 60,
+            ),
+            congress_max_requests_per_run=env_int(
+                "CONGRESS_MAX_REQUESTS_PER_RUN",
+                d.congress_max_requests_per_run,
+                min_value=1,
+                max_value=500,
+            ),
+            regulations_api_key=os.getenv("REGULATIONS_API_KEY") or None,
+            regulations_cache_dir=os.getenv(
+                "REGULATIONS_CACHE_DIR", d.regulations_cache_dir
+            ),
+            regulations_cache_ttl_seconds=env_int(
+                "REGULATIONS_CACHE_TTL_SECONDS",
+                d.regulations_cache_ttl_seconds,
+                min_value=0,
+                max_value=30 * 24 * 60 * 60,
+            ),
+            regulations_max_requests_per_run=env_int(
+                "REGULATIONS_MAX_REQUESTS_PER_RUN",
+                d.regulations_max_requests_per_run,
+                min_value=1,
+                max_value=500,
+            ),
+            regulations_comment_sample_limit=env_int(
+                "REGULATIONS_COMMENT_SAMPLE_LIMIT",
+                d.regulations_comment_sample_limit,
+                min_value=1,
+                max_value=25,
+            ),
             citation_traversal=env_bool("CITATION_TRAVERSAL", d.citation_traversal),
             citation_traverse_limit=env_int(
                 "CITATION_TRAVERSE_LIMIT", d.citation_traverse_limit

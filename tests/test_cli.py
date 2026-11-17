@@ -2545,6 +2545,17 @@ def test_show_config_redacts_courtlistener_api_key(capsys, monkeypatch):
     assert json.loads(output)["courtlistener_api_key"] == "cl-s...6789"
 
 
+def test_show_config_redacts_regulations_api_key(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv("REGULATIONS_API_KEY", "reg-secret-token-123456789")
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "reg-secret-token-123456789" not in output
+    assert json.loads(output)["regulations_api_key"] == "reg-...6789"
+
+
 @pytest.mark.parametrize(
     "secret", ["short", "abcdefgh", "abcd1234e", "1234567890123456"]
 )

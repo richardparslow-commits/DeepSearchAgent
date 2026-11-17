@@ -33,8 +33,10 @@ plan.retry.txt
 # Web app persisted job state
 .webapp/
 
-# Optional CourtListener response cache
+# Optional CourtListener, Congress.gov, and Regulations.gov response caches
 .courtlistener_cache/
+.congress_cache/
+.regulations_cache/
 
 # OS
 .DS_Store

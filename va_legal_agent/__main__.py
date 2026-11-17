@@ -24,12 +24,15 @@ from .interpretation import detect_claim_elements
 from .models import (
     AuthorityCheck,
     AuthorityQueueEntry,
+    CRSReport,
     CaseExtractionCandidates,
     CitatorCheck,
     ClaimElement,
+    CongressLink,
     Contradiction,
     LegalAnalysis,
     PrincipleFinding,
+    RegulationsMapping,
     SourceAuditProvenance,
     StatuteOutcomeRow,
     StatutorySupersessionSignal,
@@ -296,7 +299,13 @@ def _redacted_settings() -> dict[str, object]:
     """
     data: dict[str, object] = asdict(get_settings())
     data["effective_search_providers"] = resolve_search_providers()
-    for key in ("openai_api_key", "courtlistener_api_key", "govinfo_api_key"):
+    for key in (
+        "openai_api_key",
+        "courtlistener_api_key",
+        "govinfo_api_key",
+        "congress_api_key",
+        "regulations_api_key",
+    ):
         data[key] = _mask_secret(data.get(key))
     # The proxy URL may embed ``user:pass@``, so mask that too.
     data["search_http_proxy"] = _mask_proxy_url(data.get("search_http_proxy"))
@@ -346,14 +355,126 @@ def _quota_line(quota: dict[str, object]) -> str:
 
 
 def _authority_lines(checks: list[AuthorityCheck]) -> list[str]:
-    """Render authority verifications as one line per checked source."""
+    """Render authority verifications and any linked GovInfo records."""
     lines: list[str] = []
     for check in checks:
         detail = f": {check.detail}" if check.detail else ""
         lines.append(
             f"[{check.status}] {check.authority} ({check.source}){detail}"
         )
+        if check.records_status:
+            lines.append(
+                f"  GovInfo records [{check.records_status}]: "
+                f"{check.records_detail}"
+            )
+        for law in check.public_laws:
+            lines.append(
+                f"  Public Law: {law.citation or law.package_id} — "
+                f"{law.title or '(untitled)'}"
+            )
+            if law.details_url:
+                lines.append(f"    Record: {law.details_url}")
+            if law.text_url:
+                lines.append(f"    Text: {law.text_url}")
+            if law.text_excerpt:
+                lines.append(f"    Excerpt: {law.text_excerpt}")
+            elif law.detail:
+                lines.append(f"    {law.detail}")
+        for statute in check.statutes_at_large:
+            lines.append(
+                f"  Statutes at Large: "
+                f"{statute.citation or statute.granule_id or statute.package_id} — "
+                f"{statute.title or '(untitled)'}"
+            )
+            if statute.details_url:
+                lines.append(f"    Record: {statute.details_url}")
+            if statute.text_url:
+                lines.append(f"    Text: {statute.text_url}")
+            if statute.text_excerpt:
+                lines.append(f"    Excerpt: {statute.text_excerpt}")
+            elif statute.detail:
+                lines.append(f"    {statute.detail}")
     return lines
+
+
+def _congress_lines(links: list[CongressLink]) -> list[str]:
+    """Render public-law and bill-action links for cited statutes."""
+    lines: list[str] = []
+    for link in links:
+        detail = f": {link.detail}" if link.detail else ""
+        lines.append(f"[{link.status}] {link.usc_section}{detail}")
+        for law in link.public_laws:
+            line = f"  - {law.citation}"
+            if law.title:
+                line += f" — {law.title}"
+            if law.bill_citation:
+                line += f" ({law.bill_citation})"
+            lines.append(line)
+            if law.bill_url:
+                lines.append(f"    Bill: {law.bill_url}")
+            if law.url:
+                lines.append(f"    Public law: {law.url}")
+            for action in law.actions:
+                date = action.date or "date unknown"
+                lines.append(f"    {date}: {action.text}")
+            if law.actions_truncated:
+                lines.append(
+                    f"    Actions truncated to the first {len(law.actions)}."
+                )
+    return lines
+
+
+def _regulations_lines(mappings: list[RegulationsMapping]) -> list[str]:
+    """Render rulemaking context and explicitly label public comments."""
+    lines: list[str] = []
+    for mapping in mappings:
+        detail = f": {mapping.detail}" if mapping.detail else ""
+        lines.append(
+            f"[{mapping.status}] 38 C.F.R. Part {mapping.cfr_part}{detail}"
+        )
+        for fr_document in mapping.fr_documents:
+            date = fr_document.publication_date or "date unknown"
+            lines.append(
+                f"  FR {fr_document.document_number} ({date}) "
+                f"{fr_document.title or '(untitled)'}"
+            )
+        for docket in mapping.dockets:
+            lines.append(
+                f"  Docket {docket.docket_id}: {docket.title or '(untitled)'}"
+            )
+            if docket.url:
+                lines.append(f"    {docket.url}")
+            for document in docket.documents:
+                lines.append(
+                    f"    Document {document.document_id}: "
+                    f"{document.title or '(untitled)'}"
+                )
+                lines.append(
+                    f"      Public comments: {document.comment_count} "
+                    f"(sampled {document.comments_sampled})"
+                )
+                for comment in document.comments:
+                    date = comment.posted_date or "date unknown"
+                    lines.append(
+                        f"      [public_input] {date}: {comment.excerpt}"
+                    )
+            if docket.supporting_documents:
+                lines.append("    Supporting documents:")
+                for supporting in docket.supporting_documents:
+                    lines.append(
+                        f"      {supporting.document_id}: "
+                        f"{supporting.title or '(untitled)'}"
+                    )
+    return lines
+
+
+def _crs_report_lines(reports: list[CRSReport]) -> list[str]:
+    """Render explicitly cited CRS reports, always marked secondary."""
+    return [
+        f"[secondary] CRS {report.report_number}: {report.title or '(untitled)'}"
+        + (f" — {report.url}" if report.url else "")
+        for report in reports
+    ]
 
 
 def _extraction_candidate_lines(
@@ -915,6 +1036,27 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         _bullets("Authority flags", analysis.authority_flags)
         if analysis.authority_flags
         else [],
+        _bullets("Congressional links", _congress_lines(analysis.congress_links))
+        if analysis.congress_links
+        else [],
+        _bullets(
+            "CRS reports (secondary)",
+            _crs_report_lines(analysis.congress_crs_reports),
+        )
+        if analysis.congress_crs_reports
+        else [],
+        _bullets("Congressional flags", analysis.congress_flags)
+        if analysis.congress_flags
+        else [],
+        _bullets(
+            "Regulations.gov rulemaking context",
+            _regulations_lines(analysis.regulations_mappings),
+        )
+        if analysis.regulations_mappings
+        else [],
+        _bullets("Regulations.gov flags", analysis.regulations_flags)
+        if analysis.regulations_flags
+        else [],
         _bullets(
             "Statutory/regulatory supersession",
             _supersession_lines(analysis.statutory_supersession_signals),
@@ -1032,6 +1174,8 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
         "how_it_affects_va_claims", "top_cases", "deep_summaries",
         "applicable_principles", "contradictions", "next_steps", "strengths",
         "gaps", "citation_flags", "authority_checks", "authority_flags",
+        "congress_links", "congress_crs_reports", "congress_flags",
+        "regulations_mappings", "regulations_flags",
         "extraction_candidates",
         "statutory_supersession_signals", "statutory_supersession_flags",
         "authority_queue", "citator_checks", "citator_flags",
@@ -1060,6 +1204,20 @@ def _analysis_to_csv(analysis: LegalAnalysis) -> str:
             sort_keys=True,
         ),
         " | ".join(analysis.authority_flags),
+        json.dumps(
+            [link.model_dump() for link in analysis.congress_links],
+            sort_keys=True,
+        ),
+        json.dumps(
+            [report.model_dump() for report in analysis.congress_crs_reports],
+            sort_keys=True,
+        ),
+        " | ".join(analysis.congress_flags),
+        json.dumps(
+            [mapping.model_dump() for mapping in analysis.regulations_mappings],
+            sort_keys=True,
+        ),
+        " | ".join(analysis.regulations_flags),
         json.dumps(
             [
                 group.model_dump()

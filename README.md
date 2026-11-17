@@ -15,10 +15,12 @@ This project is designed to search widely for relevant court and board decisions
 - U.S. Court of Appeals for the Federal Circuit
 - U.S. Supreme Court
 - Board of Veterans' Appeals (BVA)
+- Congress.gov public laws and bill actions (optional legislative history)
+- Regulations.gov dockets and supporting documents, with sampled public comments (optional rulemaking context; comments are public input, not authority)
 
 ## Project status (handoff)
 
-State as of August 2026: **1134 tests at 100% line + branch coverage**, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of August 2026: **2267 tests**, with 100% line + branch coverage on the new Regulations.gov module, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -201,7 +203,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (1134 tests) runs in about eleven seconds, so run it after
+The full suite (2267 tests) runs in under twenty seconds, so run it after
 every change:
 
 ```bash
@@ -397,6 +399,44 @@ When `AUTHORITY_VERIFICATION=1`, cited provisions also get a separate supersessi
 
 Flags appear separately in `statutory_supersession_flags` and text/CSV output. The existing `authority_checks` and `authority_flags` are unchanged; the new layer never changes a case's `superseded_by`, `status`, ranking, or `good_law` result.
 
+### GovInfo Public Laws and Statutes at Large
+
+With `AUTHORITY_VERIFICATION=1`, `GOVINFO_API_KEY`, and `GOVINFO_LEGISLATION_RECORDS=1`, every verified 38 U.S.C. check also carries the Public Law and Statutes at Large records that cite that section. The lookup is optional and off by default because it adds two GovInfo searches plus up to four text downloads per section. Without `GOVINFO_API_KEY` or with the flag off, the existing U.S. Code verification is unchanged.
+
+The client searches GovInfo's `PLAW` and `STATUTE` collections with `uscodecitation:"38 U.S.C. {section}"` and retains up to two records from each collection. Matching records are attached directly to the existing `AuthorityCheck` as `public_laws` and `statutes_at_large`; `records_status` is one of `retrieved`, `partial`, `not_found`, or `unavailable`, and `records_detail` explains the result. A `not_found` result is not proof that no enacting or amending law exists.
+
+Each record exposes a stable GovInfo details URL (`https://www.govinfo.gov/app/details/...`) and a stable public HTML text URL under `https://www.govinfo.gov/content/pkg/...`. The client fetches that HTML and stores a bounded 1,200-character `text_excerpt` plus `text_chars`; the full official text remains available at `text_url`. A text or source failure leaves the record and links in place, marks `text_status=unavailable`, and makes the overall record status `partial` rather than invalidating the U.S. Code check. These records are primary-source context only: they do not change ranking, citator status, or `superseded_by`.
+
+### Congressional legislative-history links
+
+With `AUTHORITY_VERIFICATION=1`, `CONGRESS_API_KEY`, and `GOVINFO_API_KEY` set, the analysis also emits `congress_links` for cited 38 U.S.C. sections. The layer is advisory: it never changes case ranking, `superseded_by`, statutory-supersession signals, or citator status.
+
+The Congress.gov API does not expose a U.S. Code citation index. To avoid guessing which bill produced a section, the client uses GovInfo's documented `uscodecitation` public-law search as the crosswalk, then retrieves the public law's associated bill, actions, and metadata from Congress.gov. A link reports one of:
+
+- `linked` — at least one public law was found and, where a bill citation was available, Congress.gov supplied the bill and actions.
+- `no_public_law` — the official GovInfo search returned no public law citing the section. This is not proof that no enacting law exists.
+- `unavailable` — a source request failed or the per-run request cap was reached.
+- `not_assessed` — a key is absent; no assertion is made about legislative history.
+
+Each `congress_links` entry carries the cited section, the public-law citation and GovInfo link, the associated bill citation/title/URL, and up to 12 bill actions (`actions_truncated` marks a longer list). CRS reports explicitly cited by report number are exposed in `congress_crs_reports` with `authority_class="secondary"`. The Congress.gov API has no keyword search for CRS reports, so the client never infers report relevance from a section citation.
+
+Responses are cached in `CONGRESS_CACHE_DIR` (default `.congress_cache`) for `CONGRESS_CACHE_TTL_SECONDS`. Cache entries contain public payloads and sanitized request metadata, never `CONGRESS_API_KEY` or `GOVINFO_API_KEY`. `CONGRESS_MAX_REQUESTS_PER_RUN` (default 60) bounds requests independently of the cache. The official Congress.gov rate limit is **5,000 requests/hour**, verified in the [Library of Congress API documentation](https://github.com/LibraryOfCongress/api.congress.gov#rate-limit); the per-run cap is deliberately far below it. Missing keys and source failures produce `not_assessed`/`unavailable` records and `congress_flags` rather than aborting the analysis.
+
+### Regulations.gov rulemaking context
+
+With `AUTHORITY_VERIFICATION=1` and `REGULATIONS_API_KEY` set, cited 38 C.F.R. parts are mapped to rulemaking records in `regulations_mappings`. This layer is advisory and read-only: it never posts a comment, never changes case ranking or citator status, and never treats public comments as legal authority.
+
+The client starts from the Federal Register API, searching up to the three most recent `RULE` and `PRORULE` documents affecting the cited title-38 part within `FEDERAL_REGISTER_LOOKBACK_DAYS`. Each Federal Register document number is then passed directly to Regulations.gov's documented `filter[frDocNum]` document search; the client does not guess a docket from Federal Register metadata. A mapping reports one of:
+
+- `mapped` — at least one Federal Register document mapped to a Regulations.gov docket. The docket includes metadata and up to 10 Supporting & Related Material documents; each mapped document includes its dates, comment status, total comment count, and a small sample of comments.
+- `no_docket` — the Federal Register search returned no qualifying rule, or no returned document mapped to a docket. This is not proof that no rulemaking exists.
+- `unavailable` — a source request failed or the per-run request cap was reached.
+- `not_assessed` — `REGULATIONS_API_KEY` is absent; no assertion is made about rulemaking history.
+
+Comment totals come from the Regulations.gov comments response `meta.totalElements`, not from a field on the document record. Up to `REGULATIONS_COMMENT_SAMPLE_LIMIT` comments are sampled (default 3, requested with the API's minimum page size of 5). Every sampled comment carries `authority_class="public_input"`; author and other personal fields are not persisted. Text output labels each sample `[public_input]`.
+
+Responses are cached in `REGULATIONS_CACHE_DIR` (default `.regulations_cache`) for `REGULATIONS_CACHE_TTL_SECONDS`. Cache entries contain public payloads and request parameters, never `REGULATIONS_API_KEY` or request headers. `REGULATIONS_MAX_REQUESTS_PER_RUN` (default 120) bounds live requests independently of the cache. The official Regulations.gov GET limit is **1,000 requests/hour**, verified in the [Regulations.gov API FAQ](https://www.regulations.gov/faq?anchor=regulatory); the per-run cap is deliberately far below it. Missing keys and source failures produce `not_assessed`/`unavailable` records and `regulations_flags` rather than aborting the analysis.
+
 ### Persisted evidence and response snapshots
 
 Set `SNAPSHOT_DIR` (or pass `--snapshot-dir`) to keep the evidence behind each citator result and the public CourtListener payloads it came from. Snapshots are written only when `CITATOR=1` and `COURTLISTENER_API_KEY` is set.
@@ -486,7 +526,17 @@ Environment variables (see `.env.example`; loaded automatically via python-doten
 | `CAVC_PANEL_VALIDATION` | `0` | Cross-check CAVC decisions against the court's official Panel Opinions list. Panel-listed dockets are treated as precedential; a Rule 30(a) marker plus panel listing is reported as a conflict, while a Rule 30(a) docket absent from the list is confirmed non-precedential. Off by default; enabling it adds one list fetch per analysis |
 | `AUTHORITY_VERIFICATION` | `0` | Verify cited 38 C.F.R. sections against eCFR, look up recent Federal Register rules affecting each cited CFR part, and — when `GOVINFO_API_KEY` is set — cross-check 38 U.S.C. sections against exact title-38 section granules and Federal Circuit cases against exact `USCOURTS-ca13` packages. Results appear under Authority checks/Authority flags. Cited provisions also get separate `statutory_supersession_signals` and flags; these never change case `superseded_by` or citator status |
 | `FEDERAL_REGISTER_LOOKBACK_DAYS` | `365` | How many days back the Federal Register lookup searches for rules affecting a cited CFR part or provision (1–3650) |
-| `GOVINFO_API_KEY` | – | Optional api.data.gov key for GovInfo's official U.S. Code (`USCODE`) and U.S. Courts Opinions (`USCOURTS`) search API. Required only for the GovInfo portion of authority verification; leave empty to skip it |
+| `GOVINFO_API_KEY` | – | Optional api.data.gov key for GovInfo's official U.S. Code (`USCODE`) and U.S. Courts Opinions (`USCOURTS`) search API. Required only for the GovInfo portion of authority verification; leave empty to skip it. Also supplies the public-law `uscodecitation` crosswalk for `congress_links` |
+| `GOVINFO_LEGISLATION_RECORDS` | `0` | Opt-in: attach Public Law and Statutes at Large records from GovInfo's `PLAW`/`STATUTE` collections to verified 38 U.S.C. checks under `authority_checks.public_laws` and `.statutes_at_large`. Includes stable GovInfo links and a 1,200-character text excerpt; adds two searches and up to four text downloads per section. Off by default; requires `AUTHORITY_VERIFICATION=1` and `GOVINFO_API_KEY` |
+| `CONGRESS_API_KEY` | – | Optional Congress.gov API key. When `AUTHORITY_VERIFICATION=1` and `GOVINFO_API_KEY` is also set, cited 38 U.S.C. sections are linked to public laws and Congress.gov bill actions under `congress_links`. Empty disables the layer; it never affects ranking or citator status |
+| `CONGRESS_CACHE_DIR` | `.congress_cache` | Persistent read-through cache for public GovInfo/Congress.gov responses. Entries are shared across runs and never contain API keys or request headers. Empty disables persistence |
+| `CONGRESS_CACHE_TTL_SECONDS` | `86400` | Lifetime of a congressional cache entry in seconds (0–2592000). Expired entries are treated as misses; `0` disables cache reads and writes |
+| `CONGRESS_MAX_REQUESTS_PER_RUN` | `60` | Per-analysis cap on live GovInfo/Congress.gov requests (1–500). Cache hits do not count. The official Congress.gov limit is 5,000 requests/hour |
+| `REGULATIONS_API_KEY` | – | Optional Regulations.gov API key for read-only rulemaking context. When `AUTHORITY_VERIFICATION=1`, cited 38 C.F.R. parts are mapped to Federal Register documents, dockets, supporting documents, comment counts, and sampled public comments under `regulations_mappings`. Empty disables the layer; it never affects ranking or citator status |
+| `REGULATIONS_CACHE_DIR` | `.regulations_cache` | Persistent read-through cache for public Federal Register/Regulations.gov responses. Entries are shared across runs and never contain the API key or request headers. Empty disables persistence |
+| `REGULATIONS_CACHE_TTL_SECONDS` | `86400` | Lifetime of a Regulations.gov cache entry in seconds (0–2592000). Expired entries are treated as misses; `0` disables cache reads and writes |
+| `REGULATIONS_MAX_REQUESTS_PER_RUN` | `120` | Per-analysis cap on live Federal Register/Regulations.gov requests (1–500). Cache hits do not count. The official Regulations.gov GET limit is 1,000 requests/hour |
+| `REGULATIONS_COMMENT_SAMPLE_LIMIT` | `3` | Public comments sampled per mapped document (1–25), labeled `public_input` and never treated as authority |
 | `CITATION_TRAVERSAL` | `0` | Multi-hop citation traversal: follow CourtListener citation trails from the strongest cases found and merge the discovered opinions before final ranking (`1`/`true`/`yes`/`on` enables). Off by default because it makes extra authenticated API calls per run |
 | `CITATION_TRAVERSE_LIMIT` | `3` | How many top cases seed the citation traversal |
 | `CITATOR` | `0` | Conservative CourtListener citator for the prioritized authority queue: resolve each selected target's full cluster and all parallel citations, review forward citing opinions across every sub-opinion, extract explicit target-specific negative treatment, and report coverage. The queue prioritizes higher court tiers, resolvable, live, and precedential authorities without changing ranking. Only lead/majority/combined/unanimous `Published` opinions can set `negative`; separate, plurality, nonprecedential, and unknown-status findings are gated and force `unknown`. `good_law` means only no authoritative negative treatment in reviewed citing opinions. Same-docket decisions and later citing opinions are separate advisory signals; appellate history requires a validated human record. Advisory only; does not affect ranking or `superseded_by`. Off by default; requires `COURTLISTENER_API_KEY` |

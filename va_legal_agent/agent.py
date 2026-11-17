@@ -20,6 +20,7 @@ from .authorities import (
     verify_analysis_supersession,
 )
 from .citator import run_citator
+from .congress import verify_analysis_congress
 from .config import get_settings
 from .deep_read import deep_read_cases
 from .extraction import extract_quote_candidates
@@ -45,6 +46,7 @@ from .providers import (
     traverse_citations,
 )
 from .ranking import _parse_year, rank_cases, select_with_court_floor
+from .regulations import verify_analysis_regulations
 from .reliability import classify_source
 from .search import SearchError
 from .snapshots import SnapshotStore
@@ -1314,6 +1316,13 @@ def analyze_cases_for_claim(
         analysis.statutory_supersession_flags = statutory_supersession_flags(
             analysis.statutory_supersession_signals
         )
+        congress = verify_analysis_congress(analysis, cases)
+        analysis.congress_links = congress.links
+        analysis.congress_crs_reports = congress.crs_reports
+        analysis.congress_flags = congress.flags
+        regulations = verify_analysis_regulations(analysis, cases)
+        analysis.regulations_mappings = regulations.mappings
+        analysis.regulations_flags = regulations.flags
     if settings.citator:
         history_records = []
         history_flags: list[str] = []
