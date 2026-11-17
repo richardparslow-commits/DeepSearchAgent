@@ -36,6 +36,12 @@ from .models import (
     group_source_audit_provenances,
 )
 from .planning import decompose_issue, plan_queries
+from .provenance_compare import (
+    SIDECAR_VERSION,
+    compare_provenance_sidecars,
+    load_provenance_sidecar,
+    render_comparison_text,
+)
 from .providers import (
     courtlistener_daily_budget,
     courtlistener_minute_budget,
@@ -1157,7 +1163,7 @@ def _provenance_sidecar_payload(analysis: LegalAnalysis) -> dict[str, object]:
 
     warnings = list(analysis.source_provenance_warnings)
     return {
-        "version": 1,
+        "version": SIDECAR_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_id": analysis.run_id,
         "issue": analysis.issue,
@@ -2035,6 +2041,28 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--compare-provenance",
+        dest="compare_provenance",
+        nargs=2,
+        metavar=("SIDECAR_A", "SIDECAR_B"),
+        default=None,
+        help=(
+            "Compare two source-audit provenance sidecars and report "
+            "configuration drift, code drift, data drift, and unrecorded "
+            "audits. Writes text unless --comparison-format json is set."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-format",
+        dest="comparison_format",
+        choices=("text", "json"),
+        default="text",
+        help=(
+            "Output format for --compare-provenance (default: text). "
+            "Use --output-file to write it to a file."
+        ),
+    )
+    parser.add_argument(
         "--adjudication-queue",
         dest="adjudication_queue",
         default=None,
@@ -2207,6 +2235,49 @@ def main() -> None:
     args = parser.parse_args()
 
     _configure_logging(args.log_level, _resolve_log_format(args.log_format))
+
+    if args.compare_provenance:
+        if _sidecar_requested(args.provenance_sidecar):
+            parser.error(
+                "--compare-provenance cannot be combined with "
+                "--provenance-sidecar."
+            )
+        if (
+            args.show_config
+            or args.dry_run
+            or args.batch_dry_run
+            or args.auto_run
+        ):
+            parser.error(
+                "--compare-provenance cannot be combined with --show-config, "
+                "--dry-run, --batch-dry-run, or --auto-run."
+            )
+        if args.output_file:
+            output_path = Path(args.output_file).resolve()
+            if output_path in {
+                Path(path).resolve()
+                for path in args.compare_provenance
+            }:
+                parser.error(
+                    "--output-file must differ from both provenance sidecars."
+                )
+        try:
+            comparison = compare_provenance_sidecars(
+                load_provenance_sidecar(args.compare_provenance[0]),
+                load_provenance_sidecar(args.compare_provenance[1]),
+            )
+        except ValueError as exc:
+            parser.error(f"could not compare provenance sidecars: {exc}")
+        comparison_output = (
+            json.dumps(comparison, indent=2, ensure_ascii=False)
+            if args.comparison_format == "json"
+            else render_comparison_text(comparison)
+        )
+        try:
+            _emit_output(comparison_output, args.output_file)
+        except OSError as exc:
+            parser.error(f"could not write comparison output: {exc}")
+        return
 
     # Surface misconfigured SEARCH_PROVIDERS early — including --show-config
     # runs — so typos are visible before any search happens.
