@@ -16,6 +16,7 @@ from va_legal_agent.models import (
 from va_legal_agent.snapshots import (
     SnapshotStore,
     SnapshottingCourtListenerProvider,
+    _normalize_source_url,
 )
 
 
@@ -27,6 +28,61 @@ def _manifest(store: SnapshotStore) -> list[dict[str, object]]:
         for line in store.manifest.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_normalize_source_url_canonicalizes_identity_fields():
+    assert _normalize_source_url("HTTPS://Example.TEST:443/opinion/1/#") == (
+        "https://example.test/opinion/1"
+    )
+    assert _normalize_source_url("http://Example.TEST:80/opinion/1/") == (
+        "http://example.test/opinion/1"
+    )
+    assert _normalize_source_url(
+        "https://example.test/opinion/1/?a=1&b=2"
+    ) == "https://example.test/opinion/1?a=1&b=2"
+    assert _normalize_source_url("https://example.test:8443/opinion/1/") == (
+        "https://example.test:8443/opinion/1"
+    )
+    assert _normalize_source_url(None) == ""
+
+
+def test_record_keeps_distinct_source_urls_for_same_payload(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    official = store.record(
+        "courtlistener.test",
+        {"a": 1},
+        source_url="https://uscourts.cavc.gov/opinions/smith",
+    )
+    secondary = store.record(
+        "courtlistener.test",
+        {"a": 1},
+        source_url="https://lawfirm.example/smith-summary",
+    )
+
+    assert official.id != secondary.id
+    rows = _manifest(store)
+    assert len(rows) == 2
+    assert {row["source_url"] for row in rows} == {
+        "https://uscourts.cavc.gov/opinions/smith",
+        "https://lawfirm.example/smith-summary",
+    }
+
+
+def test_record_deduplicates_canonical_url_variants(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    first = store.record(
+        "courtlistener.test",
+        {"a": 1},
+        source_url="HTTPS://Example.TEST:443/opinion/1/#",
+    )
+    second = store.record(
+        "courtlistener.test",
+        {"a": 1},
+        source_url="https://example.test/opinion/1",
+    )
+
+    assert first.id == second.id
+    assert len(_manifest(store)) == 1
 
 
 def test_record_writes_content_addressed_payload_and_deduplicates(tmp_path):

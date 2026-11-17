@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .models import CitatorCheck, LegalAnalysis
 
@@ -34,6 +35,59 @@ def _safe_kind(kind: str) -> str:
     if not cleaned or cleaned in {".", ".."}:
         raise ValueError("snapshot kind must contain safe characters")
     return cleaned
+
+
+def _normalize_source_url(url: str | None) -> str:
+    """Canonicalize a snapshot's source URL for deduplication.
+
+    The URL is part of the snapshot identity: the same payload retrieved from
+    an official opinion and from a secondary commentary page must not collapse
+    into one manifest entry. Scheme and host are case-insensitive, default
+    ports and empty fragments are not meaningful, and a trailing slash on a
+    non-root path is normalized. Path, query, and fragment content is otherwise
+    preserved so distinct documents remain distinct.
+    """
+    if not isinstance(url, str):
+        return ""
+    value = url.strip()
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return value
+    if not parts.scheme and not parts.netloc:
+        return value
+    host = parts.hostname or ""
+    if not host:
+        return value
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    if port is not None and (
+        (parts.scheme.lower() == "http" and port == 80)
+        or (parts.scheme.lower() == "https" and port == 443)
+    ):
+        port = None
+
+    host_display = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    userinfo = ""
+    if parts.username is not None:
+        userinfo = parts.username
+        if parts.password is not None:
+            userinfo += f":{parts.password}"
+        userinfo += "@"
+    elif parts.password is not None:
+        userinfo = f":{parts.password}@"
+    netloc = f"{userinfo}{host_display}"
+    if port is not None:
+        netloc += f":{port}"
+
+    path = parts.path.rstrip("/")
+    return urlunsplit(
+        (parts.scheme.lower(), netloc, path, parts.query, parts.fragment)
+    )
 
 
 @dataclass(frozen=True)
@@ -127,8 +181,9 @@ class SnapshotStore:
         serialized = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, default=str
         )
+        normalized_source_url = _normalize_source_url(source_url)
         digest = hashlib.sha256(
-            f"{safe_kind}\0{serialized}".encode("utf-8")
+            f"{safe_kind}\0{normalized_source_url}\0{serialized}".encode("utf-8")
         ).hexdigest()
         snapshot_id = digest[:32]
         path = self._payload_path(safe_kind, snapshot_id)

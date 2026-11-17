@@ -2590,6 +2590,34 @@ def test_show_config_redacts_openai_api_key(capsys, monkeypatch):
     assert json.loads(output)["openai_api_key"] == "sk-1...cdef"
 
 
+def test_show_config_masks_openai_base_url_userinfo(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL", "https://alice:s3cr3t@api.example.com/v1"
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "alice" not in output
+    assert "s3cr3t" not in output
+    assert (
+        json.loads(output)["openai_base_url"]
+        == "https://[REDACTED]@api.example.com/v1"
+    )
+
+
+def test_show_config_keeps_clean_openai_base_url(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+    main()
+
+    assert json.loads(capsys.readouterr().out)["openai_base_url"] == (
+        "https://api.openai.com/v1"
+    )
+
+
 def test_show_config_redacts_courtlistener_api_key(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["va-legal-agent", "--show-config"])
     monkeypatch.setenv("COURTLISTENER_API_KEY", "cl-secret-token-123456789")
