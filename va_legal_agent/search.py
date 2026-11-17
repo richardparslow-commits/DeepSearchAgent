@@ -18,6 +18,7 @@ from curl_cffi.requests.exceptions import (
 )
 
 from .config import get_settings
+from .redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ class SearchError(RuntimeError):
         kind: str = "",
         retryable: bool | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(redact_secrets(message))
         self.kind = kind
         self.retryable = retryable
 

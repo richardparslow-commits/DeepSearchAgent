@@ -59,6 +59,7 @@ from flask import (
 from va_legal_agent.__main__ import render_analysis
 from va_legal_agent.agent import analyze_cases_for_claim
 from va_legal_agent.config import get_settings
+from va_legal_agent.redaction import redact_secrets, sanitize_exception
 
 _APP_DIR = Path(__file__).resolve().parent
 STATE_DIR = Path(os.environ.get("WEBAPP_STATE_DIR", str(_APP_DIR / ".webapp")))
@@ -186,6 +187,8 @@ def _load_jobs() -> None:
             continue
         if not isinstance(job, dict):
             continue
+        if isinstance(job.get("error"), str):
+            job["error"] = redact_secrets(job["error"])
         corrected = job.get("status") == "running"
         if corrected:
             job["status"] = "error"
@@ -239,12 +242,14 @@ def _run_job(
             )
             _save_job(job)
     except Exception as exc:  # noqa: BLE001 - surface any failure to the page
+        sanitize_exception(exc)
+        safe_error = redact_secrets(f"{type(exc).__name__}: {exc}")
         with _LOCK:
             job = _JOBS[job_id]
             job.update(
                 {
                     "status": "error",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "error": safe_error,
                     "finished_at": _now_iso(),
                 }
             )
@@ -354,6 +359,8 @@ def status(job_id: str):
             job = dict(job)
     if job is None:
         return jsonify({"error": "unknown run"}), 404
+    if isinstance(job.get("error"), str):
+        job["error"] = redact_secrets(job["error"])
     return jsonify(job)
 
 
@@ -368,7 +375,11 @@ def runs():
                 "status": job.get("status"),
                 "started_at": job.get("started_at"),
                 "finished_at": job.get("finished_at"),
-                "error": job.get("error"),
+                "error": (
+                    redact_secrets(job["error"])
+                    if isinstance(job.get("error"), str)
+                    else job.get("error")
+                ),
             }
             for job in _JOBS.values()
         ]

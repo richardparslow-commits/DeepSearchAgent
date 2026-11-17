@@ -41,6 +41,7 @@ from .models import (
     CaseRecord,
     LegalAnalysis,
 )
+from .redaction import redact_secrets, sanitize_exception
 from .search import SearchError, http_proxy_kwargs
 
 CONGRESS_API_BASE = "https://api.congress.gov/v3"
@@ -61,7 +62,6 @@ _BILL_CITATION_RE = re.compile(
     re.IGNORECASE,
 )
 _CRS_REPORT_RE = re.compile(r"\b(R\d{4,5})\b")
-_API_KEY_QUERY_RE = re.compile(r"(api_key=)[^&\s]+", re.IGNORECASE)
 _ACTION_LIMIT = 12
 _MAX_PUBLIC_LAWS = 3
 _MAX_CRS_REPORTS = 2
@@ -132,11 +132,6 @@ def _congress_number(
     return int(match.group(1))
 
 
-def _redacted_error(exc: Exception) -> str:
-    """Keep request errors useful without echoing credential query values."""
-    return _API_KEY_QUERY_RE.sub(r"\1***", str(exc))
-
-
 def _url(value: object) -> str:
     text = str(value or "").strip()
     if not text:
@@ -152,8 +147,8 @@ class CongressClient:
     ``CONGRESS_API_KEY`` is the opt-in switch. ``GOVINFO_API_KEY`` is also
     required because the Congress.gov API has no U.S. Code citation index; the
     official GovInfo public-law search supplies that crosswalk. Neither key is
-    written to the cache: Congress.gov uses an ``X-Api-Key`` header, and
-    GovInfo's query key is excluded from cache metadata by the shared cache.
+    written to the cache: both services use an ``X-Api-Key`` header, and the
+    shared cache excludes credential metadata.
     """
 
     def __init__(
@@ -276,7 +271,9 @@ class CongressClient:
             response.raise_for_status()
             payload = response.json()
         except (requests.RequestException, ValueError) as exc:
-            detail = _redacted_error(exc)
+            secrets = (self.api_key, self.govinfo_api_key)
+            sanitize_exception(exc, secrets)
+            detail = redact_secrets(str(exc), secrets)
             raise SearchError(f"{source_name} request failed: {detail}") from exc
         if not isinstance(payload, dict):
             raise SearchError(f"{source_name} returned a non-object JSON response.")
@@ -307,7 +304,7 @@ class CongressClient:
         return self._request_json(
             "POST",
             GOVINFO_SEARCH_URL,
-            params={"api_key": self.govinfo_api_key},
+            headers={"X-Api-Key": self.govinfo_api_key},
             json_body=body,
             cache_key="govinfo:public-law-search",
             cache_params={"query": query, "page_size": _MAX_PUBLIC_LAWS},
@@ -318,7 +315,7 @@ class CongressClient:
         return self._request_json(
             "GET",
             GOVINFO_PACKAGE_SUMMARY_URL.format(package=package),
-            params={"api_key": self.govinfo_api_key},
+            headers={"X-Api-Key": self.govinfo_api_key},
             cache_key=f"govinfo:summary:{package}",
             cache_params={"package": package},
             source_name="GovInfo",

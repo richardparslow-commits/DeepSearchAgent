@@ -6,8 +6,12 @@ import json
 import logging
 
 import pytest
+import requests
 
+from audit_invariants import assert_exception_chain_redacted
 from va_legal_agent.__main__ import (
+    _emit_failure_event,
+    _format_exception,
     _configure_logging,
     _mask_proxy_url,
     _mask_secret,
@@ -1045,6 +1049,49 @@ def test_auto_run_analysis_failure_retains_type_and_traceback(monkeypatch, caplo
             "traceback": row["traceback"],
         }
     ]
+
+
+def test_failure_output_redacts_secret_from_traceback_and_json(capsys, caplog):
+    """A 401 URL key must not survive CLI formatting or JSON logging."""
+    secret = "SUPERSECRET123"
+
+    try:
+        try:
+            raise requests.HTTPError(
+                "401 Client Error: Unauthorized for url: "
+                f"https://api.govinfo.gov/search?api_key={secret}"
+            )
+        except requests.HTTPError as cause:
+            raise RuntimeError("analysis failed") from cause
+    except RuntimeError as exc_info:
+        error = exc_info
+
+    formatted = _format_exception(error)
+    assert secret not in formatted
+    assert_exception_chain_redacted(error, secret)
+
+    with caplog.at_level(logging.ERROR, logger="va_legal_agent.events"):
+        _emit_failure_event("tinnitus", error, "run-aud4-001")
+
+    event = [
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "analysis_failed"
+    ][-1]
+    assert secret not in event.getMessage()
+    assert secret not in event.traceback
+    assert secret not in event.error
+
+    from va_legal_agent.__main__ import _JsonFormatter
+
+    payload = _JsonFormatter().format(event)
+    assert secret not in payload
+
+    _configure_logging("ERROR", "json")
+    _emit_failure_event("tinnitus", error, "run-aud4-001")
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
 
 
 def test_auto_run_passes_batch_run_id_to_per_issue_analyses(capsys, monkeypatch):

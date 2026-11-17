@@ -6,6 +6,7 @@ import pytest
 import requests
 
 import va_legal_agent.congress as congress
+from audit_invariants import assert_exception_chain_redacted
 from va_legal_agent.__main__ import render_analysis
 from va_legal_agent.config import Settings
 from va_legal_agent.models import CRSReport, LegalAnalysis
@@ -156,8 +157,10 @@ def test_link_section_links_public_law_bill_and_actions(tmp_path, monkeypatch):
     assert link.public_laws[0].actions_truncated is False
     assert client.requests_made == 4
     assert calls[0][0] == "POST"
-    assert calls[0][2]["api_key"] == "govinfo-key"
-    assert calls[1][2]["api_key"] == "govinfo-key"
+    assert calls[0][2] is None
+    assert calls[0][4]["X-Api-Key"] == "govinfo-key"
+    assert calls[1][2] is None
+    assert calls[1][4]["X-Api-Key"] == "govinfo-key"
     assert calls[2][0] == "GET"
     assert calls[2][4]["X-Api-Key"] == "congress-key"
     assert "38 U.S.C. 1110" in calls[0][3]["query"]
@@ -564,7 +567,37 @@ def test_source_errors_redact_api_key_query_values(tmp_path, monkeypatch):
 
     assert link.status == "unavailable"
     assert "super-secret" not in link.detail
-    assert "api_key=***" in link.detail
+    assert "api_key=[REDACTED]" in link.detail
+
+
+def test_401_chained_exception_does_not_leak_govinfo_key(tmp_path, monkeypatch):
+    secret = "SUPERSECRET123"
+
+    class UnauthorizedResponse:
+        def raise_for_status(self):
+            raise requests.HTTPError(
+                "401 Client Error: Unauthorized for url: "
+                f"https://api.govinfo.gov/search?api_key={secret}",
+                response=self,
+            )
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(
+        congress.requests, "post", lambda *args, **kwargs: UnauthorizedResponse()
+    )
+
+    with pytest.raises(congress.SearchError) as exc_info:
+        _client(tmp_path)._request_json(
+            "POST",
+            congress.GOVINFO_SEARCH_URL,
+            json_body={},
+            cache_key="aud4-001-repro",
+            source_name="GovInfo",
+        )
+
+    assert_exception_chain_redacted(exc_info.value, secret)
 
 
 def test_non_object_source_response_is_unavailable(tmp_path, monkeypatch):

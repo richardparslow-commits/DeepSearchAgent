@@ -10,6 +10,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import requests
+
+from audit_invariants import assert_exception_chain_redacted
 
 pytest.importorskip("flask")
 
@@ -191,6 +194,53 @@ def test_load_jobs_skips_non_object_state(isolated_client, tmp_path: Path) -> No
     webapp._load_jobs()
 
     assert webapp._JOBS == {}
+
+
+def test_job_error_redacts_chained_api_key(
+    isolated_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 401 URL key must not reach the persisted job or status response."""
+    secret = "SUPERSECRET123"
+    raised: list[BaseException] = []
+
+    def fail(*args, **kwargs):
+        try:
+            raise requests.HTTPError(
+                "401 Client Error: Unauthorized for url: "
+                f"https://api.govinfo.gov/search?api_key={secret}"
+            )
+        except requests.HTTPError as cause:
+            error = RuntimeError("analysis failed")
+            error.__cause__ = cause
+            raised.append(error)
+            raise error
+
+    monkeypatch.setattr(webapp, "analyze_cases_for_claim", fail)
+    monkeypatch.setattr(webapp, "_save_job", lambda job: None)
+    sem = threading.BoundedSemaphore(1)
+    sem.acquire()
+    monkeypatch.setattr(webapp, "_SEM", sem)
+    monkeypatch.setattr(
+        webapp,
+        "_JOBS",
+        {
+            "aud4-001": {
+                "job_id": "aud4-001",
+                "issue": "tinnitus",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }
+        },
+    )
+
+    webapp._run_job("aud4-001", "tinnitus", 1, None)
+
+    assert raised
+    assert_exception_chain_redacted(raised[0], secret)
+    assert secret not in webapp._JOBS["aud4-001"]["error"]
+    response = isolated_client.get("/api/status/aud4-001")
+    assert response.status_code == 200
+    assert secret not in response.get_data(as_text=True)
 
 
 def test_foreign_origin_is_rejected(isolated_client) -> None:

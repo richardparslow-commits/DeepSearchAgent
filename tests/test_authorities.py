@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 import va_legal_agent.authorities as auth
+from audit_invariants import assert_exception_chain_redacted
 from va_legal_agent.models import AuthorityCheck, CaseRecord, LegalAnalysis
 from va_legal_agent.search import SearchError
 from va_legal_agent.topics import COURT_CAVC, COURT_FEDERAL_CIRCUIT
@@ -190,12 +191,12 @@ def test_govinfo_search_requires_key(monkeypatch):
         auth.GovInfoClient(api_key="").search("collection:uscode")
 
 
-def test_govinfo_search_posts_query_and_key(monkeypatch):
+def test_govinfo_search_posts_query_and_key_header(monkeypatch):
     monkeypatch.setenv("GOVINFO_API_KEY", "demo-key")
     captured = {}
 
     def fake_post(url, params=None, json=None, headers=None, timeout=None, **kwargs):
-        captured.update(url=url, params=params, body=json)
+        captured.update(url=url, params=params, body=json, headers=headers)
         return FakeResponse(payload={"results": [{"packageId": "USCODE-2024-title38"}]})
 
     monkeypatch.setattr(auth.requests, "post", fake_post)
@@ -204,9 +205,33 @@ def test_govinfo_search_posts_query_and_key(monkeypatch):
 
     assert results[0]["packageId"] == "USCODE-2024-title38"
     assert captured["url"] == auth.GOVINFO_SEARCH_URL
-    assert captured["params"] == {"api_key": "demo-key"}
+    assert captured["params"] is None
+    assert captured["headers"]["X-Api-Key"] == "demo-key"
+    assert "demo-key" not in captured["url"]
     assert captured["body"]["query"].startswith("collection:uscode")
     assert captured["body"]["offsetMark"] == "*"
+
+
+def test_govinfo_401_does_not_leak_key_in_exception_chain(monkeypatch):
+    secret = "SUPERSECRET123"
+
+    class UnauthorizedResponse(FakeResponse):
+        def raise_for_status(self):
+            raise self._error
+
+    response = UnauthorizedResponse()
+    response._error = auth.requests.HTTPError(
+        "401 Client Error: Unauthorized for url: "
+        f"https://api.govinfo.gov/search?api_key={secret}",
+        response=response,
+    )
+    monkeypatch.setattr(auth.requests, "post", lambda *args, **kwargs: response)
+
+    with pytest.raises(SearchError) as exc_info:
+        auth.GovInfoClient(api_key=secret).search("collection:uscode")
+
+    assert_exception_chain_redacted(exc_info.value, secret)
+    assert "GovInfo search failed" in str(exc_info.value)
 
 
 def test_verify_analysis_authorities_skips_when_disabled(monkeypatch):
