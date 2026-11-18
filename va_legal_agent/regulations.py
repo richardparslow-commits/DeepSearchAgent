@@ -200,7 +200,7 @@ class RegulationsClient:
             return None
         try:
             return self._cache.get("regulations", key, params)
-        except OSError:
+        except (OSError, ValueError):
             return None
 
     def _cache_set(
@@ -210,7 +210,7 @@ class RegulationsClient:
             return
         try:
             self._cache.set("regulations", key, payload, params=params)
-        except OSError:
+        except (OSError, ValueError):
             pass
 
     def _request_json(
@@ -452,6 +452,10 @@ class RegulationsClient:
         document.comment_count = _as_int(meta.get("totalElements"))
         comments: list[RegulationsPublicComment] = []
         for item in _as_list(payload.get("data")):
+            # Enforce the sample limit before appending so a limit of 0
+            # yields no comments rather than one.
+            if len(comments) >= self.comment_sample_limit:
+                break
             if not isinstance(item, dict):
                 continue
             attributes = _as_dict(item.get("attributes"))
@@ -468,8 +472,6 @@ class RegulationsClient:
                     ),
                 )
             )
-            if len(comments) >= self.comment_sample_limit:
-                break
         document.comments = comments
         document.comments_sampled = len(comments)
         if "totalElements" not in meta:

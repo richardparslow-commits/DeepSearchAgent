@@ -38,10 +38,12 @@ python -m va_legal_agent --show-config     # prints resolved settings as JSON
 
 ### Where to run it
 
-This is a CLI/library — there is no server, container image, or service unit in
-the repo — so "running the app" means invoking the CLI on any machine with
-**Python 3.11+** and **outbound internet** (the search providers are external
-APIs). In practice:
+The primary interface is a CLI/library; the repo also ships an optional local
+web interface (`webapp.py`, Flask served by Waitress on port 8080 by default,
+configurable via `PORT`). There is no container image or service unit in the
+repo, so "running the app" means invoking the CLI (or starting `webapp.py`
+locally) on any machine with **Python 3.11+** and **outbound internet** (the
+search providers are external APIs). In practice:
 
 - **Interactive research (preferred): the project root on a desktop machine,
   inside the project venv** — exactly the setup this repo already has
@@ -229,10 +231,10 @@ you change code.
 
 ## 9. Worked examples (with expected output)
 
-The snippets below are real output captured from this repository's configured
-`.env` (`SEARCH_PROVIDERS=courtlistener,bva`, reliability block applied, OpenAI
-key present). Your numbers — quota remaining, wall estimates, masked key tails —
-will differ; the structure is what to expect.
+The snippets below are real output captured from this repository with its
+default settings (no `.env` overrides: `SEARCH_PROVIDERS=duckduckgo`, no API
+keys configured). Your numbers — quota remaining, wall estimates, masked key
+tails — will differ; the structure is what to expect.
 
 ### Example 1 — Inspect the resolved configuration
 
@@ -247,61 +249,85 @@ python -m va_legal_agent --show-config
   "max_fetch_bytes": 20971520,
   "search_http_proxy": "",
   "batch_state_dir": "",
-  "search_max_workers": 1,
-  "search_delay_seconds": 3.0,
+  "search_max_workers": 4,
+  "search_delay_seconds": 0.5,
   "search_retry_attempts": 2,
   "search_backoff_base_seconds": 1.0,
-  "search_backoff_max_seconds": 60.0,
-  "search_min_interval_seconds": 1.0,
+  "search_backoff_max_seconds": 10.0,
+  "search_min_interval_seconds": 0.0,
   "search_max_wall_seconds": 0.0,
   "search_max_refinement_rounds": 3,
-  "search_providers": "courtlistener,bva",
+  "search_providers": "duckduckgo",
   "search_pages_per_query": 1,
-  "search_pages_per_query_by_provider": {
-    "courtlistener": 1,
-    "bva": 1
-  },
+  "search_pages_per_query_by_provider": {},
   "search_query_variants": 3,
-  "search_query_variants_by_provider": {
-    "courtlistener": 0,
-    "bva": 0
-  },
+  "search_query_variants_by_provider": {},
   "search_exclude_terms": "",
-  "search_max_rpm_by_provider": {
-    "courtlistener": 5,
-    "bva": 3
-  },
+  "search_max_rpm_by_provider": {},
   "search_bva_sitemap_scan_limit": 200,
   "search_bva_local_index_dir": ".bva_index",
+  "search_bva_local_index_years": 5,
   "search_bva_local_index_max_files": 0,
   "search_bva_local_index_max_age_hours": 24,
-  "courtlistener_api_key": "8484...1826",
+  "courtlistener_api_key": null,
+  "courtlistener_cache_dir": "",
+  "courtlistener_cache_ttl_seconds": 86400,
   "courtlistener_usage_guard": true,
+  "courtlistener_semantic_gap_search": false,
+  "courtlistener_oral_argument_lookup": false,
+  "cavc_panel_validation": false,
+  "authority_verification": false,
+  "federal_register_lookback_days": 365,
+  "govinfo_api_key": null,
+  "govinfo_legislation_records": false,
+  "congress_api_key": null,
+  "congress_cache_dir": ".congress_cache",
+  "congress_cache_ttl_seconds": 86400,
+  "congress_max_requests_per_run": 60,
+  "regulations_api_key": null,
+  "regulations_cache_dir": ".regulations_cache",
+  "regulations_cache_ttl_seconds": 86400,
+  "regulations_max_requests_per_run": 120,
+  "regulations_comment_sample_limit": 3,
   "citation_traversal": false,
   "citation_traverse_limit": 3,
-  "search_max_results": 30,
+  "citator": false,
+  "citator_max_cases": 10,
+  "citator_max_citing_opinions": 5,
+  "citator_max_pages": 1,
+  "citator_as_of_date": "",
+  "citator_source_validity": false,
+  "citator_source_validity_mode": "extract",
+  "citator_target_cluster_audit": false,
+  "citator_source_adaptive_allocation": false,
+  "appellate_history_file": "",
+  "snapshot_dir": "",
+  "search_max_results": 10,
   "enrich_case_limit": 5,
   "interpret_case_limit": 3,
   "principle_scan_limit": 5,
-  "openai_api_key": "sk-w...2W3I",
-  "openai_model": "qwen3.8-max",
-  "openai_base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-  "openai_timeout_seconds": 180.0,
-  "openai_max_tokens": 1500,
+  "openai_api_key": null,
+  "openai_model": "gpt-4o-mini",
+  "openai_base_url": null,
+  "openai_timeout_seconds": 60.0,
+  "openai_max_tokens": 700,
   "llm_reasoning": true,
   "llm_reasoning_limit": 10,
+  "llm_extraction": false,
   "deep_read": false,
   "deep_read_limit": 3,
   "deep_read_pages": 0,
   "deep_chunk_chars": 6000,
   "effective_search_providers": [
-    "courtlistener",
-    "bva"
+    "duckduckgo"
   ]
 }
 ```
 
-Note the masked keys (`courtlistener_api_key`, `openai_api_key`), and
+Note the masked keys (`courtlistener_api_key`, `openai_api_key`,
+`govinfo_api_key`, `congress_api_key`, `regulations_api_key` — `null` here
+because none are configured; long values are shown as `first4...last4` and
+values of 16 characters or fewer are masked completely), and
 `effective_search_providers` next to the raw `search_providers` value — this is
 how you confirm what actually runs and spot a typo'd provider.
 

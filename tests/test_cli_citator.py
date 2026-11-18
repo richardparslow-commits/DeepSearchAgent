@@ -680,7 +680,7 @@ def test_citator_text_renders_source_invalidator_checks():
 
     text = render_analysis(_analysis(check), "text")
 
-    assert "invalidator 301 (Later v. Secretary); rejected; not binding" in text
+    assert "invalidator 301 (Later v. Secretary); unreviewed; not binding" in text
     assert "invalidator status not_checked" in text
     assert "invalidator court is lower than the source court" in text
     assert "binding status unknown" in text

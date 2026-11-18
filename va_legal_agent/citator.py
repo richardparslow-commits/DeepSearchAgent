@@ -106,6 +106,7 @@ _CONFIDENCE_GAP_PENALTIES = {
     "citing_date_missing": 0.15,
     "page_cap": 0.15,
     "count_mismatch": 0.20,
+    "count_malformed": 0.25,
     "no_forward_citations": 0.20,
     "pagination_cursor_missing": 0.20,
     "pagination_cursor_repeated": 0.20,
@@ -146,7 +147,7 @@ _REAFFIRMANCE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\breaffirm(?:ed|s|ing|ance|ation)\b", re.I), "reaffirmed"),
     (re.compile(r"\badher(?:ed|es|ing|ence)\s+to\b", re.I), "adhered to"),
     (
-        re.compile(r"\bdeclin(?:ed|es|ing)\s+to\s+overrule\b", re.I),
+        re.compile(r"\bdeclin(?:e|ed|es|ing)\s+to\s+overrule\b", re.I),
         "declined to overrule",
     ),
 )
@@ -155,7 +156,7 @@ _REAFFIRMANCE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # narrow to avoid treating docket numbers or regulations as case citations.
 _CITATION_RE = re.compile(
     r"\b\d{4}\s+WL\s+\d+\b"
-    r"|\b\d{1,3}\s+(?:Vet\.?\s*App\.?|F\.?\s*(?:2d|3d|4th|App'x|Supp\.?\s*2d)?"
+    r"|\b\d{1,4}\s+(?:Vet\.?\s*App\.?|F\.?\s*(?:2d|3d|4th|App['’]x|Supp\.?\s*(?:2d|3d))?"
     r"|S\.?\s*Ct\.?|U\.?\s*S\.?|L\.?\s*Ed\.?(?:\s*2d)?|Ct\.?\s*Cl\.?"
     r"|Fed\.?\s*Cir\.?|B\.?\s*R\.?)\s+\d+\b",
     re.I,
@@ -261,7 +262,7 @@ _ADVOCACY_ATTRIBUTION_RE = re.compile(
     re.I,
 )
 _PASSIVE_PARTY_RE = re.compile(
-    rf"^\s*by\s+(?:the\s+)?{_PARTY_SUBJECT}\b", re.I
+    rf"^\s*by\s+(?:the\s+)?(?:{_PARTY_SUBJECT}|{_SEPARATE_SPEAKER})\b", re.I
 )
 _MODAL = r"(?:would|could|should|might|may)"
 _SEPARATE_VOICE_RE = re.compile(
@@ -300,15 +301,20 @@ _PASSIVE_TARGET_RE = re.compile(
 _SENTENCE_BOUNDARY = re.compile(r"[.!?](?=\s|$)")
 _ABBREVIATIONS = {
     "app",
+    "app'x",
+    "app’x",
     "cir",
+    "cl",
     "co",
     "corp",
     "ct",
     "dep't",
     "dr",
+    "ed",
     "f.2d",
     "f.3d",
     "f.supp",
+    "fed",
     "inc",
     "jr",
     "l.ed",
@@ -323,6 +329,7 @@ _ABBREVIATIONS = {
     "sec'y",
     "sr",
     "st",
+    "supp",
     "u.s",
     "vet",
     "vet.app",
@@ -682,8 +689,8 @@ def _select_lookup_row(
     """Pick the one lookup row matching *citation*, or None when ambiguous."""
     if not results:
         return None
-    if len(results) == 1:
-        return results[0]
+    # Even a single row must actually match the wanted citation; a lone
+    # non-matching row is a different case, not an unambiguous hit.
     wanted = _normalize_citation(citation)
     matches = [
         row
@@ -1508,11 +1515,11 @@ def _sentence_bounds(text: str, position: int) -> tuple[int, int]:
 
 def _is_negated(sentence: str, term_start: int) -> bool:
     """Whether a negative term is itself negated (e.g. 'not overruled')."""
-    prefix = sentence[max(0, term_start - 40) : term_start].lower()
+    prefix = sentence[max(0, term_start - 80) : term_start].lower()
     return bool(
         re.search(
-            r"\b(?:not|never|without|no\s+longer|declined\s+to|refused\s+to|"
-            r"failed\s+to)\b(?:\W+\w+){0,3}\W*$",
+            r"\b(?:not|never|without|no\s+longer|declin(?:e|ed|es|ing)\s+to|"
+            r"refus(?:e|ed|es|ing)\s+to|fail(?:s|ed|ing)?\s+to)\b(?:\W+\w+){0,12}\W*$",
             prefix,
         )
     )
@@ -1524,19 +1531,36 @@ def _is_non_verb_negative(
     """Whether a matched negative term is a noun or adjective, not a verb."""
     lowered = phrase.casefold()
     if treatment == "questioned" and lowered in {"question", "questions"}:
-        return True
-    if treatment == "limited" and re.match(
-        r"\s+to\s+(?:the\s+)?(?:question|issue|extent|scope|whether)\b",
-        sentence[verb_end:],
-        re.I,
-    ):
-        return True
+        # A determiner after the word ("question the doctrine") marks the
+        # verb form taking an object — real treatment. "question whether…"
+        # is likewise a verb taking a clause object. Without a determiner
+        # ("the question presented") it is the noun, not treatment.
+        return not re.match(
+            r"\s+(?:the|a|an|this|that)\b", sentence[verb_end:], re.I
+        )
+    if treatment == "limited":
+        # "limited to the question whether…" restricts the grant of review,
+        # not the precedent's authority — a non-verb negative.
+        if re.match(
+            r"\s+to\s+(?:the\s+)?(?:question|issue)s?\s+whether\b",
+            sentence[verb_end:],
+            re.I,
+        ):
+            return True
+        if re.match(
+            r"\s+to\s+(?:the\s+)?(?:question|issue)s?\s+(?:presented|before|of)\b",
+            sentence[verb_end:],
+            re.I,
+        ):
+            # "limited to the question presented" states the holding's scope —
+            # a real limitation, not the noun "limit".
+            return False
     return False
 
 
 def _scope_for(treatment: str, sentence: str) -> str:
     """Classify the scope stated for a negative treatment."""
-    if re.search(r"\bin part\b", sentence, re.I):
+    if re.search(r"\bin part\b|\bto the extent\b|\bto that extent\b|\binsofar\b", sentence, re.I):
         return "part"
     if treatment in {
         "overruled",
@@ -2434,6 +2458,7 @@ def _source_invalidator_check(
             citing_court=finding.citing_court,
             citing_date=finding.citing_date,
             citing_url=finding.citing_url,
+            review_status="reviewed",
             treatment=finding.treatment,
             scope=finding.scope,
             authoritative=finding.authoritative,
@@ -3282,7 +3307,14 @@ def _apply_source_validity_enforcement(check: CitatorCheck) -> None:
         for finding in check.negative_treatments
         if not blocked(finding.source_opinion_id)
     ]
-    if check.status in {"negative", "good_law"} and not remaining:
+    # Only a status that rests on the blocked treatments is downgraded: a
+    # negative finding, or a good_law finding whose as-of date was carried
+    # over from those treatments. A clean good_law check with no negative
+    # treatments must not be demoted because unrelated sources failed.
+    if check.negative_treatments and not remaining and (
+        check.status == "negative"
+        or (check.status == "good_law" and check.good_law_as_of)
+    ):
         check.status = "unknown"
         check.good_law_as_of = ""
         reasons.insert(

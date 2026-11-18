@@ -52,7 +52,9 @@ def _identity(case: CaseRecord) -> tuple[str, ...]:
     """Return a stable identity key for duplicate authority records."""
     opinion_id = (case.courtlistener_opinion_id or "").strip()
     if opinion_id:
-        return ("opinion", opinion_id)
+        # Multi-opinion clusters arrive as "101,102"; the first id names the
+        # same cluster as a bare "101", so dedupe on the leading id.
+        return ("opinion", opinion_id.split(",")[0])
     citation = " ".join((case.citation or "").split()).casefold()
     date = (case.decision_date or "").strip()
     if citation and date:

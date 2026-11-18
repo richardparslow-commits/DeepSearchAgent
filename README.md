@@ -20,7 +20,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of August 2026: **2267 tests**, with 100% line + branch coverage on the new Regulations.gov module, ruff clean, and the mutation kill-property enforced on every module. CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of November 2026: **2434 tests**, with 100% line + branch coverage on the new Regulations.gov module, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 15 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -35,10 +35,10 @@ State as of August 2026: **2267 tests**, with 100% line + branch coverage on the
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 864 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2434 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
-| Mutation kill-property | `make mutate-check` | every module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
+| Mutation kill-property | `make mutate-check` | every in-scope module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
 | CI (pushes + PRs) | `.github/workflows/ci.yml`, Python 3.11–3.14 | green |
 | Mutation gate | `.github/workflows/mutation.yml`, on every code push + cron 03:00 UTC + `workflow_dispatch` | green |
 
@@ -203,7 +203,7 @@ See Configuration for the full settings table, the Retry and exhaustion chain se
 
 ## Running tests
 
-The full suite (2267 tests) runs in under twenty seconds, so run it after
+The full suite (2434 tests) runs in about twenty seconds, so run it after
 every change:
 
 ```bash
@@ -217,7 +217,7 @@ make test-w          # full suite with warnings promoted to errors
 make lint            # ruff static checks (pyflakes + pycodestyle rules)
 make lint-fix        # auto-fix what ruff can
 make coverage        # full suite with a per-module coverage report
-make mutate          # mutation-testing pass (mutmut) over every module
+make mutate          # mutation-testing pass (mutmut) over every in-scope module
 make mutate-check    # full mutation pass + the kill-property baseline gate
 make test ARGS="-k telemetry"   # pass pytest args through
 make smoke             # one real query per configured provider (manual network check)
@@ -238,8 +238,10 @@ mutant's diff to `/tmp/mutmut_survivors_<module>.txt`. A survivor is either a
 provably-equivalent mutation (log-message text, default args, unreachable
 fallbacks — expected and acceptable) or a real gap that needs a stronger
 test. The current suite kills every non-equivalent mutant: survivors are
-limited to equivalent ones. `models.py` contains only Pydantic declarations,
-so it is outside the mutation scope. Run the pass after adding features or
+limited to equivalent ones. The mutation scope is the 15 modules paired with
+test slices in the Makefile's `MUTATE_MODULES`; `models.py` contains only
+Pydantic declarations and the newer domain/citator layers are not yet paired,
+so they are outside the mutation scope. Run the pass after adding features or
 tests to keep that property, and triage survivors with `python
 scripts/mutmut_pass.py <module> <test_file>` for a single module.
 

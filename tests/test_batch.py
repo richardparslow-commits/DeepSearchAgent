@@ -192,14 +192,14 @@ def test_summary_rolls_up_search_telemetry(state_dir):
     summary = tracker.summary()
     ddg = summary["search_telemetry"]["duckduckgo"]
     assert ddg == {
-        "queries_issued": 16, "results": 60, "deduped": 7, "failures": 3,
+        "queries_issued": 16, "results": 60, "deduped": 7, "excluded": 0, "failures": 3,
         "variants": {
             'tinnitus "5107"': {"results": 50, "failures": 3},
             'tinnitus "Compensation"': {"results": 10, "failures": 0},
         },
     }
     cl = summary["search_telemetry"]["courtlistener"]
-    assert cl == {"queries_issued": 8, "results": 12, "deduped": 0, "failures": 1, "variants": {}}
+    assert cl == {"queries_issued": 8, "results": 12, "deduped": 0, "excluded": 0, "failures": 1, "variants": {}}
 
 
 def test_summary_telemetry_skips_courtlistener_quota_records(state_dir):
@@ -234,6 +234,7 @@ def test_summary_telemetry_skips_courtlistener_quota_records(state_dir):
             "queries_issued": 8,
             "results": 3,
             "deduped": 1,
+            "excluded": 0,
             "failures": 0,
             "variants": {},
         }

@@ -47,6 +47,7 @@ from .providers import (
     traverse_citations,
 )
 from .ranking import _parse_year, rank_cases, select_with_court_floor
+from .redaction import redact_secrets
 from .regulations import verify_analysis_regulations
 from .reliability import (
     classify_authority_tier,
@@ -704,7 +705,9 @@ def research_issue(
         [task.query for task in initial],
         telemetry,
         deep_read=bool(deep_read if deep_read is not None else _settings.deep_read),
-        deep_read_limit=deep_read_limit or _settings.deep_read_limit,
+        deep_read_limit=(
+            deep_read_limit if deep_read_limit is not None else _settings.deep_read_limit
+        ),
     )
     done.update(task.id for task in initial)
     round_cases, errors, budget_exhausted = _fanout_search(
@@ -740,7 +743,9 @@ def research_issue(
             [task.query for task in ready],
             telemetry,
             deep_read=bool(deep_read if deep_read is not None else _settings.deep_read),
-            deep_read_limit=deep_read_limit or _settings.deep_read_limit,
+            deep_read_limit=(
+                deep_read_limit if deep_read_limit is not None else _settings.deep_read_limit
+            ),
             semantic_queries=1 if _semantic_gap_enabled() else 0,
         )
         logger.info(
@@ -938,7 +943,9 @@ def fetch_cases_for_issue(
         queries,
         telemetry,
         deep_read=bool(deep_read if deep_read is not None else get_settings().deep_read),
-        deep_read_limit=deep_read_limit or get_settings().deep_read_limit,
+        deep_read_limit=(
+            deep_read_limit if deep_read_limit is not None else get_settings().deep_read_limit
+        ),
     )
     cases, errors, budget_exhausted = _fanout_search(
         queries, claim_issue, max_results, telemetry, deadline, max_wall_seconds
@@ -1043,9 +1050,13 @@ def enrich_top_cases(cases: list[CaseRecord], limit: int | None = None) -> list[
                 extraction = extract_quote_candidates(source_text)
             except Exception as exc:  # noqa: BLE001 - candidates are best-effort
                 logger.warning(
-                    "Quote-first extraction failed for %s: %s", case.url, exc
+                    "Quote-first extraction failed for %s: %s",
+                    case.url,
+                    redact_secrets(str(exc)),
                 )
-                case.extraction_flags = [f"LLM extraction failed: {exc}"]
+                case.extraction_flags = [
+                    f"LLM extraction failed: {redact_secrets(str(exc))}"
+                ]
                 continue
             for candidate in extraction.candidates:
                 deterministic = str(getattr(case, candidate.field, "") or "")
@@ -1350,9 +1361,18 @@ def _build_analysis(
                     "verification_notes": list(
                         case.deep_summary_verification_notes
                     ),
-                    "verified_holding": case.holding or case.snippet,
                 }
             )
+            # A provenance-verified summary exports its holding (or snippet)
+            # as verified. An unverified summary never promotes its own text,
+            # but a real source holding is still surfaced as verified so the
+            # reader can compare it against the unverified model text.
+            if case.deep_summary_provenance_verified:
+                entry["verified_holding"] = case.holding or case.snippet
+            elif case.holding:
+                entry["verified_holding"] = case.holding
+            else:
+                entry["unverified_snippet"] = case.snippet
         deep_summaries.append(entry)
     # Quote-backed extraction proposals ride along with the surfaced cases so
     # reviewers can inspect them. They are deliberately not merged into any

@@ -71,12 +71,12 @@ _SENSITIVE_NAMES = frozenset(
 # (``%3D``).  The name is decoded before the sensitivity check, so
 # ``api%5Fkey`` is handled as ``api_key``.
 _QUERY_PAIR_RE = re.compile(
-    r"(?i)([?&])([^=&\s'\"#]+)(=|%3D)([^&\s'\"#]*)"
+    r"(?i)([?&#])([^=&\s'\"#]+)(=|%3D)([^&\s'\"#]*)"
 )
 
 # Credentials embedded in a URL authority (``https://user:pass@host``).
 _USERINFO_RE = re.compile(
-    r"(?i)([a-z][a-z0-9+.-]*://)(?!\[REDACTED\]@)([^/\s@]+)@"
+    r"(?i)([a-z][a-z0-9+.-]*://)(?!\[REDACTED\]@)([^/\s]+)@"
 )
 
 

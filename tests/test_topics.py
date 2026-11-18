@@ -85,17 +85,22 @@ def test_topics_have_unique_names_and_primary_phrases():
 def test_aud4_statute_hint_table_covers_vba_provision_families():
     from va_legal_agent.topics import STATUTE_HINTS
 
-    keys = {key for key, _hint in STATUTE_HINTS}
-    expected = {
+    # AUD5 TG10: pin the exact key set (a subset check silently tolerated
+    # dropped families) and require every hint to name its own provision.
+    keys = [key for key, _hint in STATUTE_HINTS]
+    assert len(keys) == len(set(keys))
+    assert set(keys) == {
         "1110",
         "1131",
         "1154",
         "1155",
         "5103",
         "5103A",
+        "5104",
         "5107",
         "5110",
         "7104",
+        "7105",
         "7252",
         "7261",
         "3.102",
@@ -104,6 +109,7 @@ def test_aud4_statute_hint_table_covers_vba_provision_families():
         "3.156",
         "3.159",
         "3.2501",
+        "3.2600",
         "3.2601",
         "3.303",
         "3.304",
@@ -116,6 +122,8 @@ def test_aud4_statute_hint_table_covers_vba_provision_families():
         "3.400",
         "4.1",
         "4.2",
+        "4.7",
+        "4.10",
         "4.14",
         "4.16",
         "4.20",
@@ -129,4 +137,10 @@ def test_aud4_statute_hint_table_covers_vba_provision_families():
         "4.126",
         "4.130",
     }
-    assert expected <= keys
+    for key, hint in STATUTE_HINTS:
+        assert hint
+        if key == "4.1":
+            # The Part 4 overview hint names the part, not a single section.
+            assert "Part 4" in hint
+        else:
+            assert f"§ {key}" in hint

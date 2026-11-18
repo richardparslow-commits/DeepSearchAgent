@@ -18,10 +18,13 @@ the workflows share case records but never alter each other's status.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -372,6 +375,26 @@ def load_queue(path: str | Path) -> AdjudicationQueue:
     return AdjudicationQueue.model_validate(payload)
 
 
+@contextmanager
+def _exclusive_lock(path: str | Path) -> Iterator[None]:
+    """Hold an advisory lock across a queue read-modify-write operation.
+
+    The lock file is intentionally persistent. Removing it while another
+    process has it open would let a third process lock a different inode
+    and bypass the lock.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.with_suffix(target.suffix + ".lock").open(
+        "a", encoding="utf-8"
+    ) as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def record_decision(
     path: str | Path,
     item_id: str,
@@ -393,19 +416,23 @@ def record_decision(
     if not rationale:
         raise ValueError("rationale is required")
 
-    queue = load_queue(path)
-    item = next((candidate for candidate in queue.items if candidate.id == item_id), None)
-    if item is None:
-        raise KeyError(f"unknown adjudication item: {item_id}")
-    if item.review.status != "pending":
-        item.history.append(item.review.model_copy(deep=True))
-    item.review = AdjudicationReview(
-        status=decision,
-        reviewer=reviewer,
-        reviewed_at=reviewed_at or _now(),
-        rationale=rationale,
-    )
-    save_queue(queue, path)
+    with _exclusive_lock(path):
+        queue = load_queue(path)
+        item = next(
+            (candidate for candidate in queue.items if candidate.id == item_id),
+            None,
+        )
+        if item is None:
+            raise KeyError(f"unknown adjudication item: {item_id}")
+        if item.review.status != "pending":
+            item.history.append(item.review.model_copy(deep=True))
+        item.review = AdjudicationReview(
+            status=decision,
+            reviewer=reviewer,
+            reviewed_at=reviewed_at or _now(),
+            rationale=rationale,
+        )
+        save_queue(queue, path)
     return item
 
 

@@ -81,7 +81,9 @@ def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
     assert guidance.senior_rater_dro.dta_error_returns
     assert guidance.senior_rater_dro.cue_analysis
     assert any("3.105(a)" in item for item in guidance.senior_rater_dro.cue_analysis)
-    assert any("George" in item for item in guidance.senior_rater_dro.cue_analysis)
+    # George v. McDonough guidance is corpus-gated (AUD5-030): it appears only
+    # when a retrieved case actually discusses George, so it is not a universal
+    # invariant. The § 3.105(a) baseline above always holds.
     assert guidance.senior_rater_dro.precedent_m21_conflict_resolution
     assert guidance.qrs.second_signature_checkpoints
     assert guidance.qrs.nqr_qrt_error_calls
@@ -146,6 +148,11 @@ def assert_aud4_domain_invariants(analysis: LegalAnalysis) -> None:
         assert abstract.source_text_chars >= 0
         assert abstract.abstract_source in {"full_text", "record_metadata"}
         if abstract.abstract_complete:
+            # AUD5 TG7: completeness must mean full-text provenance with real
+            # substantive content, not merely "any one field is non-empty"
+            # (which mirrored the producer's demotion rule and proved nothing).
+            assert abstract.abstract_source == "full_text"
+            assert abstract.source_text_chars > 0
             assert any(
                 (
                     abstract.procedural_history,

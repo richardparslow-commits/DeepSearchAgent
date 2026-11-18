@@ -1635,7 +1635,9 @@ def test_fetch_case_details_meta_with_empty_content(monkeypatch):
     assert details["holding"] == ""  # empty meta content stays empty
 
 
-def test_fetch_case_details_rejects_oversized_body(monkeypatch):
+def test_fetch_case_details_accepts_body_exactly_at_cap(monkeypatch):
+    # AUD5 TG12: the old name claimed rejection while the body asserted the
+    # at-cap acceptance boundary; the rejection case lives in the next test.
     monkeypatch.setenv("MAX_FETCH_BYTES", "10")
     monkeypatch.setattr(
         "va_legal_agent.fetch.cffi_requests.get",

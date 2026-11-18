@@ -1007,7 +1007,7 @@ def test_analyze_cases_flows_llm_reasoning_contradictions(monkeypatch):
                 case_b="Jones v. McDonough",
             )
         ],
-        synthesis="Smith controls; Jones is distinguishable.",
+        synthesis="Smith v. Wilkie requires service connection evidence.",
     )
     monkeypatch.setattr(
         "va_legal_agent.interpretation.reason_cases",
@@ -1017,7 +1017,7 @@ def test_analyze_cases_flows_llm_reasoning_contradictions(monkeypatch):
     analysis = analyze_cases_for_claim("service connection")
 
     assert analysis.interpretation_source == "llm"
-    assert analysis.how_it_affects_va_claims == "Smith controls; Jones is distinguishable."
+    assert analysis.how_it_affects_va_claims == "Smith v. Wilkie requires service connection evidence."
     assert analysis.likely_applicable_principles == [
         "Service connection requires a nexus (Smith v. Wilkie)."
     ]

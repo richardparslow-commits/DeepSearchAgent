@@ -110,3 +110,38 @@ def test_sanitize_exception_handles_a_cyclic_cause_chain():
     sanitize_exception(error, (secret,))
 
     assert secret not in str(error)
+
+
+def test_sanitize_exception_handles_a_mutual_cycle_with_distinct_secrets():
+    # AUD5 row-4: a two-node cycle where each node carries its OWN secret in a
+    # different chain slot (explicit cause vs implicit context). A traversal
+    # that only follows __cause__, or that stops at the first revisit, would
+    # leave one secret behind.
+    secret_a = "SECRET-ALPHA-123"
+    secret_b = "SECRET-BRAVO-456"
+    error_a = RuntimeError(f"outer failed with {secret_a}")
+    error_b = ValueError(f"inner failed with {secret_b}")
+    error_a.__cause__ = error_b
+    error_b.__context__ = error_a
+
+    sanitize_exception(error_a, (secret_a, secret_b))
+
+    assert secret_a not in str(error_a)
+    assert secret_b not in str(error_b)
+    assert REDACTED in str(error_a)
+    assert REDACTED in str(error_b)
+
+
+def test_sanitize_exception_scrubs_secret_bearing_implicit_context():
+    # Implicit chaining (`raise ... during handling`) stores the secret-bearing
+    # exception in __context__ with __cause__ unset; it must still be scrubbed.
+    secret = "SUPERSECRET123"
+    inner = requests.HTTPError(f"401 for url: https://api.example/?api_key={secret}")
+    outer = RuntimeError("search failed")
+    outer.__context__ = inner
+    assert outer.__cause__ is None
+
+    sanitize_exception(outer, (secret,))
+
+    assert secret not in str(inner)
+    assert f"api_key={REDACTED}" in str(inner)

@@ -849,7 +849,7 @@ def test_build_analysis_uses_llm_reasoning_when_available(monkeypatch):
                 case_b="Jones v. McDonough",
             )
         ],
-        synthesis="Smith controls; Jones is distinguishable.",
+        synthesis="Smith v. Wilkie requires service connection evidence.",
     )
     captured: dict[str, object] = {}
 
@@ -871,7 +871,7 @@ def test_build_analysis_uses_llm_reasoning_when_available(monkeypatch):
 
     assert result.interpretation_source == "llm"
     # The reconciling synthesis replaces the lighter narrative.
-    assert result.how_it_affects_va_claims == "Smith controls; Jones is distinguishable."
+    assert result.how_it_affects_va_claims == "Smith v. Wilkie requires service connection evidence."
     # LLM-reconciled principles (with inline citations) back the report.
     assert result.likely_applicable_principles == [
         "Service connection requires a nexus opinion (Smith v. Wilkie)."
@@ -899,14 +899,14 @@ def test_build_analysis_reasoning_without_synthesis_uses_narrative(monkeypatch):
     )
     monkeypatch.setattr(
         "va_legal_agent.interpretation.interpret_cases",
-        lambda issue, claim_type, cases: "LLM narrative.",
+        lambda issue, claim_type, cases: "Service connection requires evidence (Smith v. Wilkie).",
     )
 
     result = build_interpretive_analysis(
         "service connection", "Compensation", [_case("Smith v. Wilkie", snippet="service connection")]
     )
 
-    assert result.how_it_affects_va_claims == "LLM narrative."
+    assert result.how_it_affects_va_claims == "Service connection requires evidence (Smith v. Wilkie)."
     assert result.likely_applicable_principles == ["A principle (Smith v. Wilkie)."]
 
 
@@ -1667,6 +1667,54 @@ def test_low_confidence_label_is_exact():
         [_case("Doe v. VA", court="Board of Veterans' Appeals")],
     )
 
+    assert result.coverage_confidence == "low"
+
+
+def test_secondary_binding_corpus_caps_confidence_at_medium(monkeypatch):
+    # A binding-court label on a secondary page is not high-confidence primary
+    # authority: even a large, well-covered corpus caps at medium (AUD5 TG1).
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.6, 0.4), 2)
+    cases = [
+        _case(f"Case {i}", holding="holding") for i in range(10)
+    ]
+    for case in cases:
+        case.source_reliability = "secondary"
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == pytest.approx(0.60)
+    assert result.coverage_confidence == "medium"
+
+
+def test_secondary_binding_corpus_below_volume_floor_is_low(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.6, 0.4), 2)
+    cases = [_case(f"Case {i}", holding="holding") for i in range(3)]
+    for case in cases:
+        case.source_reliability = "secondary"
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    # Three binding cases meet the volume floor via the binding-count arm.
+    assert result.coverage_confidence == "medium"
+
+    # Two cases and two binding cases fall below both floors.
+    thin = cases[:2]
+    result = build_interpretive_analysis("service connection", "Compensation", thin)
+    assert result.coverage_confidence == "low"
+
+
+def test_secondary_binding_corpus_below_coverage_floor_is_low(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _install_confidence_coverage(monkeypatch, _confidence_specs(0.2, 0.8), 2)
+    cases = [_case(f"Case {i}", holding="holding") for i in range(10)]
+    for case in cases:
+        case.source_reliability = "secondary"
+
+    result = build_interpretive_analysis("service connection", "Compensation", cases)
+
+    assert result.coverage_score == pytest.approx(0.20)
     assert result.coverage_confidence == "low"
 
 

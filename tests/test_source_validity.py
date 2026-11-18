@@ -2934,7 +2934,9 @@ def test_source_audit_ledger_derives_minimum_bottleneck_summary():
     }
 
 
-def test_source_audit_ledger_bottleneck_summary_rejects_invalid_opinion_ids():
+def test_source_audit_ledger_bottleneck_summary_skips_invalid_opinion_ids():
+    # A duplicate row is a data-quality notice, not a coverage bottleneck:
+    # the first complete row for the id stands and the later row is skipped.
     duplicate = SourceAuditLedger(
         opinion_audits=[
             _opinion_audit_row("201"),
@@ -2945,12 +2947,12 @@ def test_source_audit_ledger_bottleneck_summary_rejects_invalid_opinion_ids():
             ),
         ]
     )
-    with pytest.raises(ValueError, match="duplicate opinion_id"):
-        duplicate.opinion_audit_bottlenecks()
+    assert duplicate.opinion_audit_bottlenecks() == {}
 
+    # An empty opinion id is skipped so a malformed row cannot break
+    # serialization of the whole ledger.
     empty = SourceAuditLedger(opinion_audits=[_opinion_audit_row("")])
-    with pytest.raises(ValueError, match="non-empty opinion_id"):
-        empty.opinion_audit_bottlenecks()
+    assert empty.opinion_audit_bottlenecks() == {}
 
 
 def test_opinion_bottleneck_reasons_exhaustive_state_matrix():

@@ -17,29 +17,43 @@ You are helping with **DeepSearchAgent**, a Python CLI and library that research
 7. **Rank** — `ranking.py`: authority-tier dominant, then composite score (relevance 60%, recency 25%, completeness 15%), with per-court representation floor.
 8. **Output** — `__main__.py` renders JSON/text/CSV to stdout. Logs + events to stderr.
 
-## Module map (~8,000 lines of package code, ~20,000 lines of tests)
+## Module map (~26,000 lines of package code, ~45,000 lines of tests)
 
 | Module | Lines | Purpose |
 |--------|-------|---------|
-| `__main__.py` | 1,483 | CLI: args, output rendering, batch/auto-run orchestration |
-| `agent.py` | 1,024 | Core pipeline: `analyze_cases_for_claim`, research loop, citation traversal |
-| `providers.py` | 1,759 | Five search backends, query adaptation, telemetry, budget guards |
-| `fetch.py` | 832 | Case detail extraction from HTML/PDF/TXT |
-| `interpretation.py` | 546 | Structured guidance, coverage scoring, contradiction detection |
-| `config.py` | 350 | Typed `Settings` dataclass — every knob from env |
-| `search.py` | 277 | Base DuckDuckGo provider, retry/backoff/pacing |
-| `deep_read.py` | 225 | Chunked map-reduce full-text ingestion |
-| `planning.py` | 211 | Deterministic issue decomposition and gap-refinement |
-| `llm.py` | 233 | OpenAI-compatible client for narrative + reasoning |
-| `ranking.py` | 167 | Authority-tier + composite-score ranking |
-| `topics.py` | 182 | Topic vocabulary, statute hints, court constants |
-| `impact.py` | 204 | Per-case impact analysis |
-| `models.py` | 161 | Pydantic models: `LegalAnalysis`, `CaseRecord`, etc. |
+| `citator.py` | 3,822 | Citator: citing opinions, treatment classification, source validity, history status |
+| `__main__.py` | 3,108 | CLI: args, output rendering, batch/auto-run orchestration |
+| `providers.py` | 2,803 | Five search backends, query adaptation, telemetry, budget guards |
+| `models.py` | 1,967 | Pydantic models: `LegalAnalysis`, `CaseRecord`, `SurfacedCaseRecord`, `CaseAbstract`, etc. |
+| `va_domain.py` | 1,634 | VA domain layer: provision registry, case abstracts, provision impacts, role guidance |
+| `agent.py` | 1,560 | Core pipeline: `analyze_cases_for_claim`, research loop, citation traversal, enrichment |
+| `authorities.py` | 1,308 | Authority verification: official-source checks, panel validation, GovInfo |
+| `fetch.py` | 1,060 | Case detail extraction from HTML/PDF/TXT |
+| `interpretation.py` | 759 | Structured guidance, coverage scoring, contradiction detection |
+| `config.py` | 755 | Typed `Settings` dataclass — every knob from env |
+| `regulations.py` | 613 | Regulations.gov client: dockets, documents, sampled comments |
+| `congress.py` | 586 | Congress.gov client: public laws and bill actions |
+| `llm.py` | 540 | OpenAI-compatible client for narrative + reasoning, schema-validated |
+| `adjudication.py` | 531 | RVSR / Senior Rater-DRO / QRS adjudication workflows |
+| `search.py` | 497 | Base DuckDuckGo provider, retry/backoff/pacing |
+| `provenance_compare.py` | 450 | Provenance comparison between sources and model claims |
+| `snapshots.py` | 426 | Analysis snapshots with content-hash manifests |
+| `authority_queue.py` | 407 | Human-review queue for authority verification |
+| `appellate_history.py` | 341 | Appellate-history ingestion and history-status merge |
+| `extraction.py` | 329 | Quote-first LLM extraction of holdings |
+| `impact.py` | 325 | Per-case impact analysis |
+| `redaction.py` | 321 | Secret redaction for URLs, logs, exception chains |
+| `courtlistener_cache.py` | 320 | On-disk CourtListener response cache with TTL |
+| `deep_read.py` | 304 | Chunked map-reduce full-text ingestion |
+| `topics.py` | 262 | Topic vocabulary, statute hints, court constants |
+| `planning.py` | 255 | Deterministic issue decomposition and gap-refinement |
+| `ranking.py` | 190 | Authority-tier + composite-score ranking |
+| `reliability.py` | 179 | Source classification and authority tiers |
+| `batch.py` | 168 | Batch state tracking |
 | `queries.py` | 105 | Query variant derivation, provider-specific adaptation |
-| `reliability.py` | 63 | Source classification |
-| `batch.py` | 131 | Batch state tracking |
 | `__init__.py` | 7 | `load_dotenv()` |
-| `webapp.py` | 603 | Flask + Waitress web interface (project root, outside the package) |
+
+`webapp.py` (770 lines, project root, outside the package) is the Flask + Waitress web interface.
 
 ## Configuration surface
 

@@ -300,7 +300,7 @@ def test_crs_reports_dedupe_cap_and_errors(tmp_path, monkeypatch):
     client = _client(tmp_path)
 
     reports = client.crs_reports_for_text(
-        "See CRS R12345, R12345, R67890, and R99999."
+        "See CRS R12345, CRS R12345, CRS R67890, and CRS R99999."
     )
 
     assert [report.report_number for report in reports] == ["R12345", "R99999"]

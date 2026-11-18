@@ -235,6 +235,11 @@ def env_bool(name: str, default: bool) -> bool:
         return True
     if raw in {"0", "false", "no", "off"}:
         return False
+    if raw:
+        logger.warning(
+            "%s=%r is not a recognized boolean; using default %r.",
+            name, raw, default,
+        )
     return default
 
 
@@ -517,7 +522,7 @@ class Settings:
         d = cls()
         return cls(
             request_timeout_seconds=env_int("REQUEST_TIMEOUT_SECONDS", d.request_timeout_seconds),
-            user_agent=os.getenv("USER_AGENT", d.user_agent),
+            user_agent=(os.getenv("USER_AGENT") or "").strip() or d.user_agent,
             max_fetch_bytes=env_int("MAX_FETCH_BYTES", d.max_fetch_bytes),
             search_http_proxy=os.getenv("SEARCH_HTTP_PROXY", d.search_http_proxy),
             batch_state_dir=os.getenv("BATCH_STATE_DIR") or d.batch_state_dir,

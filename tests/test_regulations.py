@@ -759,7 +759,7 @@ def test_small_helpers_and_cache_error_paths(tmp_path, monkeypatch):
     client._cache_set("key", {}, {})
 
 
-def test_aud4_regulations_provision_wrapper_preserves_rulemaking_client():
+def test_aud4_regulations_provision_wrapper_preserves_rulemaking_client(tmp_path):
     case = CaseRecord(
         title="Provision Case",
         court="Court of Appeals for Veterans Claims",
@@ -778,5 +778,9 @@ def test_aud4_regulations_provision_wrapper_preserves_rulemaking_client():
         "38 C.F.R. § 4.14",
     }
     assert any(impact.m21_1_citations for impact in impacts)
-    # The existing docket client remains available and unchanged.
-    assert callable(regulations.RegulationsClient)
+    # AUD5 TG11: the wrapper must leave the docket client constructible and
+    # functional, not merely present as a callable name.
+    client = _client(tmp_path)
+    assert isinstance(client, regulations.RegulationsClient)
+    client._note_error("docket lookup failed")
+    assert client.errors == ["docket lookup failed"]

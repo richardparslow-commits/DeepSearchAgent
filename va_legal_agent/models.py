@@ -734,7 +734,8 @@ class SourceInvalidatorCheck(BaseModel):
     citing_url: str = ""
     # reviewed, gated, unreviewed, metadata_failed, metadata_unavailable,
     # text_failed, text_empty, target_not_located, or out_of_scope.
-    review_status: str = "reviewed"
+    # A check that never reached the audit must not claim to be reviewed.
+    review_status: str = "unreviewed"
     # Only meaningful for a reviewed/gated finding.
     treatment: str = ""
     scope: str = ""
@@ -750,6 +751,16 @@ class SourceInvalidatorCheck(BaseModel):
     reason_code: str = "not_checked"
     reason: str = ""
 
+    @field_validator("review_status")
+    @classmethod
+    def _known_review_status(cls, value: str) -> str:
+        if value not in SOURCE_INVALIDATOR_REVIEW_STATUSES:
+            raise ValueError(
+                "review_status must be one of "
+                f"{sorted(SOURCE_INVALIDATOR_REVIEW_STATUSES)!r}"
+            )
+        return value
+
 
 class SourceOpinionAudit(BaseModel):
     """Coverage accounting for one opinion in a source cluster.
@@ -760,24 +771,24 @@ class SourceOpinionAudit(BaseModel):
     """
 
     opinion_id: str
-    opinion_index: int = 0
-    candidate_allocation: int = 0
+    opinion_index: int = Field(default=0, ge=0)
+    candidate_allocation: int = Field(default=0, ge=0)
     fetch_attempted: bool = False
     reported_count_known: bool = False
     # True when the API count was present but not a non-negative integer.
     reported_count_malformed: bool = False
     # Raw reported count when valid. It can be lower than the number of IDs
     # collected when the provider underreports its own count.
-    forward_citations_reported: int = 0
-    citing_ids_collected: int = 0
+    forward_citations_reported: int = Field(default=0, ge=0)
+    citing_ids_collected: int = Field(default=0, ge=0)
     # IDs contributed to the cluster for the first time by this opinion.
-    citing_ids_new_to_cluster: int = 0
+    citing_ids_new_to_cluster: int = Field(default=0, ge=0)
     # IDs already collected from an earlier opinion in the same cluster.
-    citing_ids_duplicate_across_cluster: int = 0
+    citing_ids_duplicate_across_cluster: int = Field(default=0, ge=0)
     # Duplicate usable rows and unusable rows within this opinion's pages.
-    duplicate_rows_ignored: int = 0
-    invalid_rows_ignored: int = 0
-    pages_fetched: int = 0
+    duplicate_rows_ignored: int = Field(default=0, ge=0)
+    invalid_rows_ignored: int = Field(default=0, ge=0)
+    pages_fetched: int = Field(default=0, ge=0)
     complete: bool = False
     truncated: bool = False
     page_limit_reached: bool = False
@@ -1089,23 +1100,15 @@ class SourceAuditLedger(BaseModel):
         Rows are returned in source-cluster order. Gap codes, zero allocation,
         row/cursor caps, unknown reported counts, and malformed rows are
         highlighted. Duplicate-only rows remain data-quality notices rather
-        than coverage bottlenecks.
-
-        Raises:
-            ValueError: If a row has an empty opinion id or two rows share one.
+        than coverage bottlenecks. Rows with an empty or duplicate opinion id
+        are skipped so a malformed row can never break serialization of the
+        whole ledger.
         """
         bottlenecks: dict[str, list[str]] = {}
         seen_opinion_ids: set[str] = set()
         for row in self.opinion_audits:
-            if not row.opinion_id:
-                raise ValueError(
-                    "opinion_audits rows must have a non-empty opinion_id"
-                )
-            if row.opinion_id in seen_opinion_ids:
-                raise ValueError(
-                    "duplicate opinion_id in opinion_audits: "
-                    f"{row.opinion_id!r}"
-                )
+            if not row.opinion_id or row.opinion_id in seen_opinion_ids:
+                continue
             seen_opinion_ids.add(row.opinion_id)
             reasons = _opinion_bottleneck_reasons(row)
             if reasons:
@@ -1797,6 +1800,10 @@ class SurfacedCaseRecord(BaseModel):
             elif self.source_reliability == "official":
                 self.authority_tier = "official_primary_persuasive"
                 self.is_official_authority = True
+        # A secondary tier can never carry the official-authority badge, even
+        # when a producer set the flag manually.
+        if self.authority_tier in {"secondary", "secondary_summary"}:
+            self.is_official_authority = False
         return self
 
     @property

@@ -22,6 +22,7 @@ from curl_cffi.const import CurlOpt
 from curl_cffi.requests.exceptions import RequestException as CffiRequestException
 
 from .config import get_settings
+from .redaction import redact_url
 from .search import http_proxy_kwargs
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ def _require_http_url(url: str) -> None:
     """Reject non-HTTP(S) URLs before any network client sees them."""
     parsed = urlsplit(url)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        raise FetchError(f"Refusing to fetch non-HTTP(S) URL: {url!r}")
+        raise FetchError(f"Refusing to fetch non-HTTP(S) URL: {redact_url(url)!r}")
 
 
 # Redirects are followed manually so every hop can be validated before the
@@ -161,7 +162,7 @@ def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Respon
             # compatible without treating a missing close as a fetch error.
             getattr(response, "close", lambda: None)()
             if not location:
-                raise FetchError(f"Redirect from {current_url} has no Location header")
+                raise FetchError(f"Redirect from {redact_url(current_url)} has no Location header")
             current_url = urljoin(current_url, location)
             # Validate before issuing the next request, not after the body is
             # downloaded. A private hop must never receive a request at all.
@@ -169,7 +170,7 @@ def _fetch_with_redirects(url: str, timeout: int) -> tuple["cffi_requests.Respon
             continue
         response.raise_for_status()
         return response, current_url
-    raise FetchError(f"Exceeded {_MAX_REDIRECTS} redirects while fetching {url}")
+    raise FetchError(f"Exceeded {_MAX_REDIRECTS} redirects while fetching {redact_url(url)}")
 
 
 _MONTHS = (
@@ -513,7 +514,9 @@ def _merge_statute_families(usc: list[str], cfr: list[str], limit: int) -> list[
     lose the regulations entirely, even though VA claims are decided under
     both.  When both families are present and the cap binds, reserve up to a
     third of the slots for C.F.R. (at least one, never the last remaining
-    slot).
+    slot).  The one-third reservation is deliberate policy, not a bug: U.S.C.
+    keeps the majority of slots because statutes outrank regulations in the
+    authority hierarchy.
     """
     if not cfr or len(usc) + len(cfr) <= limit:
         return (usc + cfr)[:limit]
@@ -699,7 +702,7 @@ def extract_citation_treatments(text: str) -> list[dict[str, str]]:
             # Scan a window around the hit for the nearest case name.
             start = max(0, idx - _TREATMENT_WINDOW)
             end = min(len(text), idx + len(term) + _TREATMENT_WINDOW)
-            window = text[start:end + 1]
+            window = text[start:end]
             # Find ALL case names in the window, then pick the nearest one
             # (smallest distance from the treatment word).
             case_hits = [
@@ -868,6 +871,10 @@ def extract_holding_sentence(text: str) -> str:
     Backward-compatible wrapper around :func:`extract_holding_sentences` that
     returns only the first holding, preserving the original single-return
     contract for callers that haven't been upgraded yet.
+
+    .. deprecated::
+        Retained for existing test callers only; new code should use
+        :func:`extract_holding_sentences` directly.
     """
     holdings = extract_holding_sentences(text)
     return holdings[0] if holdings else ""
@@ -902,7 +909,7 @@ def _read_response_body(response: "requests.Response", max_bytes: int) -> bytes:
     content_length = response.headers.get("Content-Length")
     if content_length and content_length.isdigit() and int(content_length) > max_bytes:
         raise FetchError(
-            f"Refusing to download {content_length} bytes from {response.url}: "
+            f"Refusing to download {content_length} bytes from {redact_url(str(response.url))}: "
             f"exceeds the {max_bytes}-byte cap."
         )
     chunks: list[bytes] = []
@@ -912,7 +919,9 @@ def _read_response_body(response: "requests.Response", max_bytes: int) -> bytes:
             continue
         received += len(chunk)
         if received > max_bytes:
-            raise FetchError(f"Response from {response.url} exceeds the {max_bytes}-byte cap.")
+            raise FetchError(
+                f"Response from {redact_url(str(response.url))} exceeds the {max_bytes}-byte cap."
+            )
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -931,9 +940,15 @@ def fetch_full_text(url: str, timeout: int | None = None, max_pages: int = 0) ->
     timeout = timeout or settings.request_timeout_seconds
     try:
         response, final_url = _fetch_with_redirects(url, timeout)
-        content = _read_response_body(response, settings.max_fetch_bytes)
+        try:
+            content = _read_response_body(response, settings.max_fetch_bytes)
+        except BaseException:
+            # The size cap raises FetchError, which the outer network-error
+            # handler does not catch; close the streamed body before it escapes.
+            getattr(response, "close", lambda: None)()
+            raise
     except (requests.RequestException, CffiRequestException) as exc:
-        raise FetchError(f"Failed to fetch {url}: {exc}") from exc
+        raise FetchError(f"Failed to fetch {redact_url(url)}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")
     url_path = final_url.lower().split("?")[0]
@@ -961,9 +976,13 @@ def fetch_case_details_and_text(
     timeout = timeout or settings.request_timeout_seconds
     try:
         response, final_url = _fetch_with_redirects(url, timeout)
-        content = _read_response_body(response, settings.max_fetch_bytes)
+        try:
+            content = _read_response_body(response, settings.max_fetch_bytes)
+        except BaseException:
+            getattr(response, "close", lambda: None)()
+            raise
     except (requests.RequestException, CffiRequestException) as exc:
-        raise FetchError(f"Failed to fetch {url}: {exc}") from exc
+        raise FetchError(f"Failed to fetch {redact_url(url)}: {exc}") from exc
 
     content_type = response.headers.get("Content-Type", "")
     url_path = final_url.lower().split("?")[0]

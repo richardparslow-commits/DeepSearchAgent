@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -102,15 +103,23 @@ class BatchTracker:
         scores: list[float] = []
         for outcome in completed:
             raw = outcome.get("coverage_score")
-            if raw is None:
+            if raw is None or isinstance(raw, bool):
                 continue
             try:
-                scores.append(float(raw))
+                value = float(raw)
             except (TypeError, ValueError):
                 logger.warning(
                     "Skipping non-numeric coverage_score in batch state for %s",
                     self.run_id,
                 )
+                continue
+            if not math.isfinite(value):
+                logger.warning(
+                    "Skipping non-finite coverage_score in batch state for %s",
+                    self.run_id,
+                )
+                continue
+            scores.append(value)
         return {
             "run_id": self.run_id,
             "total": len(outcomes),

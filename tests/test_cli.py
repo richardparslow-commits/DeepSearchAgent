@@ -790,7 +790,7 @@ def test_batch_dry_run_no_daily_row_degrades(capsys, monkeypatch, tmp_path):
 def _auto_run_fake_batch(rows_spec):
     """A batch_dry_run replacement returning the given rows, one per issue."""
 
-    def _fake(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def _fake(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         return (
             [
                 {
@@ -862,7 +862,7 @@ def test_auto_run_deferred_backlog_fails_without_waiting(
     monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         return (
             [
@@ -904,7 +904,7 @@ def test_auto_run_abort_keeps_pending_and_waits(capsys, monkeypatch, tmp_path):
     ran = []
     calls = []
 
-    def fake_batch(issues, claim_type="legal", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="legal", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         verdict = "proceed" if len(calls) > 1 else "abort"
         return ([
@@ -996,7 +996,7 @@ def test_auto_run_analysis_failure_retains_type_and_traceback(monkeypatch, caplo
 
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         return (
             [
                 {
@@ -1191,7 +1191,7 @@ def test_auto_run_json_summary_deferred_and_aborted(capsys, monkeypatch, tmp_pat
     ran = []
     calls = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         # Pass 1: the first issue runs, the rest are deferred by the cap.
         # Pass 2: everything fits (reset happened) and proceeds.
@@ -1281,7 +1281,7 @@ def test_auto_run_iteration_guard_bounds_planning(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "courtlistener")
     calls = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         rows = [
             {
@@ -1343,7 +1343,7 @@ def test_auto_run_wait_is_capped(monkeypatch):
     calls = []
     sleeps: list[float] = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         verdict = "abort" if len(calls) == 1 else "proceed"
         return (
@@ -1400,7 +1400,7 @@ def test_auto_run_repeated_quota_stall_terminates(monkeypatch):
     calls = []
     sleeps: list[float] = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         return (
             [
@@ -1452,7 +1452,7 @@ def test_auto_run_usage_failure_retries_then_stops_with_pending(monkeypatch):
     usage_calls = []
     sleeps = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         return (
             [
@@ -1502,7 +1502,7 @@ def test_auto_run_retries_transient_usage_failure_after_bounded_wait(monkeypatch
     usage_calls = []
     sleeps = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         verdict = "abort" if len(calls) == 1 else "proceed"
         return (
@@ -1560,7 +1560,7 @@ def test_auto_run_without_courtlistener_skips_usage_lookup(monkeypatch):
     monkeypatch.setenv("SEARCH_PROVIDERS", "duckduckgo")
     calls = []
 
-    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None):
+    def fake_batch(issues, claim_type="Compensation", max_results=10, max_batch_requests=None, **kwargs):
         calls.append(list(issues))
         return (
             [
@@ -4080,7 +4080,7 @@ def test_cli_analysis_json_includes_search_telemetry(capsys, monkeypatch):
 
     data = json.loads(capsys.readouterr().out)
     assert data["search_telemetry"]["duckduckgo"] == {
-        "queries_issued": 8, "results": 40, "deduped": 5, "failures": 1,
+        "queries_issued": 8, "results": 40, "deduped": 5, "excluded": 0, "failures": 1,
         "variants": {'tinnitus "5107"': {"results": 40, "failures": 1}},
     }
     # Low-recall provider flagged in JSON, without needing the text renderer.
@@ -4635,9 +4635,18 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
     text = render_analysis(analysis, "text")
     assert "Surfaced case records (D1):" in text
     assert "docket: 21-1234" in text
+    # AUD5 TG5: every D1 metadata field reaches the text renderer, not just
+    # docket/panel/citator.
+    assert "citation: 33 Vet.App. 10" in text
+    assert "decided: 2024-01-02" in text
+    assert "status: precedential_panel" in text
     assert "panel: SMITH and JONES (panel)" in text
     assert "citator: good_law" in text
+    assert "confidence: high; as of: 2025-08-01" in text
+    assert "history: good_law_as_of" in text
+    assert "transcript: https://lawfirm.example/smith" in text
     assert "secondary_summary" in text
+    assert "provenance verified: False" in text
     assert "WARNING: Transcript source is secondary_summary" in text
     assert "Structured case abstracts:" in text
     assert "Provision-level VBA impacts:" in text
@@ -4646,9 +4655,19 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
     assert "Senior Rater / DRO operational playbook:" in text
 
     data = json.loads(render_analysis(analysis, "json"))
-    assert data["surfaced_cases"][0]["docket_number"] == "21-1234"
-    assert data["surfaced_cases"][0]["panel_status"] == "panel"
-    assert data["surfaced_cases"][0]["citator_status"] == "good_law"
+    surfaced = data["surfaced_cases"][0]
+    assert surfaced["docket_number"] == "21-1234"
+    assert surfaced["reporter_citation"] == "33 Vet.App. 10"
+    assert surfaced["decision_date"] == "2024-01-02"
+    assert surfaced["precedential_status"] == "precedential_panel"
+    assert surfaced["panel"] == "SMITH and JONES"
+    assert surfaced["panel_status"] == "panel"
+    assert surfaced["history_status"] == "good_law_as_of"
+    assert surfaced["citator_status"] == "good_law"
+    assert surfaced["citator_confidence"] == "high"
+    assert surfaced["citator_as_of"] == "2025-08-01"
+    assert surfaced["retrieved_url"] == "https://lawfirm.example/smith"
+    assert surfaced["provenance_verified"] is False
     assert data["case_abstracts"][0]["reasoning_summary"].endswith("x" * 50)
     assert data["provision_impacts"][0]["m21_1_citations"]
     assert data["rvsr_guidance"]["rating_codesheet_actions"]
@@ -4656,9 +4675,22 @@ def test_aud4_text_csv_json_render_full_d1_abstract_impact_and_role_guidance():
 
     rows = list(csv.reader(io.StringIO(render_analysis(analysis, "csv"))))
     row = dict(zip(rows[0], rows[1]))
-    assert json.loads(row["surfaced_cases"])[0]["docket_number"] == "21-1234"
-    assert json.loads(row["provision_impacts"])[0]["citation"] == "38 C.F.R. § 3.303"
-    assert json.loads(row["rvsr_guidance"])["evidence_review_checklist"]
+    # AUD5 TG6: CSV columns carry the full structured payloads, not just ids.
+    csv_surfaced = json.loads(row["surfaced_cases"])[0]
+    assert csv_surfaced["docket_number"] == "21-1234"
+    assert csv_surfaced["reporter_citation"] == "33 Vet.App. 10"
+    assert csv_surfaced["citator_as_of"] == "2025-08-01"
+    csv_impact = json.loads(row["provision_impacts"])[0]
+    assert csv_impact["citation"] == "38 C.F.R. § 3.303"
+    assert csv_impact["stage"] == "rating_dc_evaluation"
+    assert csv_impact["legal_effect"] == "clarifying"
+    assert json.loads(row["rvsr_guidance"])["evidence_review_checklist"] == [
+        "Review the complete claims file."
+    ]
+    assert json.loads(row["senior_rater_guidance"])["cue_analysis"] == [
+        "Apply 38 C.F.R. § 3.105(a)."
+    ]
+    assert json.loads(row["case_abstracts"])[0]["disposition"] == "Vacated and remanded."
 
 
 def test_aud4_real_cavc_fixture_renders_every_required_layer():

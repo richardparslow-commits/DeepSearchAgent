@@ -12,6 +12,9 @@
 verbatim (the conversation was condensed and no copy existed in the repo), so IDs were
 re-issued and every claim was re-executed against the current tree on 2026-11-13. Where a
 finding is marked **FIXED**, the fix and its regression test are already in the tree.
+The **Totals** table records the line counts verified at that regeneration; the tree has
+since grown (see `docs/audit-pass5.md` for current counts), so treat these counts as
+historical evidence, not a current measurement.
 
 **Method:** each finding was reproduced by executing the exact call shown under **Evidence**
 with `.venv/bin/python`; the observed output is quoted, not paraphrased. Findings are limited
@@ -22,7 +25,7 @@ to claims that could be executed. No claim below is inferred from reading alone.
 | File | Total lines verified | Findings | Fixed | Open |
 |---|---:|---:|---:|---:|
 | `va_legal_agent/__init__.py` | 7 | 0 | 0 | 0 |
-| `va_legal_agent/__main__.py` | 1613 | 6 | 1 | 5 |
+| `va_legal_agent/__main__.py` | 1483 | 6 | 1 | 5 |
 | `va_legal_agent/config.py` | 350 | 2 | 0 | 2 |
 | `va_legal_agent/models.py` | 161 | 2 | 0 | 2 |
 | `va_legal_agent/llm.py` | 233 | 2 | 0 | 2 |
@@ -30,7 +33,7 @@ to claims that could be executed. No claim below is inferred from reading alone.
 | `va_legal_agent/search.py` | 277 | 3 | 0 | 3 |
 | `va_legal_agent/fetch.py` | 797 | 9 | 5 | 4 |
 | `va_legal_agent/deep_read.py` | 225 | 2 | 0 | 2 |
-| **Total** | **5422** | **32** | **7** | **25** |
+| **Total** | **5292** | **32** | **7** | **25** |
 
 Severity: **8 High, 16 Medium, 8 Low** (including the seven fixed items).
 

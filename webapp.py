@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -57,7 +58,7 @@ from flask import (
     request,
 )
 
-from va_legal_agent.__main__ import render_analysis
+from va_legal_agent.__main__ import _configure_logging, render_analysis
 from va_legal_agent.agent import analyze_cases_for_claim
 from va_legal_agent.config import get_settings
 from va_legal_agent.redaction import redact_secrets, sanitize_exception
@@ -112,6 +113,10 @@ def _now_iso() -> str:
 
 
 def _job_path(job_id: str) -> Path:
+    # Job ids are uuid4 hex; reject anything else so a crafted id can never
+    # traverse out of STATE_DIR (e.g. "../../etc/passwd").
+    if not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise ValueError(f"invalid job id: {job_id!r}")
     return STATE_DIR / f"{job_id}.json"
 
 
@@ -176,7 +181,9 @@ def _prune() -> None:
         _JOBS.pop(oldest, None)
         try:
             _job_path(oldest).unlink()
-        except OSError:
+        except (OSError, ValueError):
+            # A legacy/invalid id has no safe on-disk path; dropping it from
+            # memory is enough and must not abort pruning.
             pass
 
 
@@ -205,7 +212,12 @@ def _load_jobs() -> None:
         if job.get("job_id"):
             _JOBS[job["job_id"]] = job
             if corrected:
-                _save_job(job)
+                try:
+                    _save_job(job)
+                except ValueError:
+                    # A legacy/invalid id cannot be persisted to a safe path;
+                    # keep the in-memory correction rather than abort startup.
+                    pass
     _prune()
 
 
@@ -296,7 +308,11 @@ def _run_job(
                     "finished_at": _now_iso(),
                 }
             )
-            _save_job(job)
+            try:
+                _save_job(job)
+            except OSError:
+                # Persistence is best-effort; the in-memory job is complete.
+                pass
     except Exception as exc:  # noqa: BLE001 - surface any failure to the page
         sanitize_exception(exc)
         safe_error = redact_secrets(f"{type(exc).__name__}: {exc}")
@@ -309,7 +325,12 @@ def _run_job(
                     "finished_at": _now_iso(),
                 }
             )
-            _save_job(job)
+            try:
+                _save_job(job)
+            except OSError:
+                # Persistence is best-effort; never mask the run's error or
+                # leak the concurrency permit behind a disk failure.
+                pass
     finally:
         _SEM.release()
 
@@ -461,6 +482,9 @@ def runs():
 
 
 def _serve(host: str, port: int) -> None:
+    # Install the CLI's redacting log formatter so provider/LLM warnings
+    # emitted during web runs never print raw secrets to the server log.
+    _configure_logging("INFO")
     try:
         from waitress import serve
     except ImportError:
@@ -606,7 +630,15 @@ _INDEX_HTML = """<!doctype html>
       btn.disabled = false;
       return;
     }
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      statusEl.className = 'error';
+      statusEl.textContent = 'Invalid server response (HTTP ' + res.status + ')';
+      btn.disabled = false;
+      return;
+    }
     if (!res.ok) {
       statusEl.className = 'error';
       statusEl.textContent = data.error || ('HTTP ' + res.status);
@@ -624,8 +656,16 @@ _INDEX_HTML = """<!doctype html>
 
   async function poll(runId) {
     statusEl.textContent = 'Running\u2026';
-    const res = await fetch('/api/status/' + runId);
-    const data = await res.json();
+    let res, data;
+    try {
+      res = await fetch('/api/status/' + runId);
+      data = await res.json();
+    } catch (e) {
+      statusEl.className = 'error';
+      statusEl.textContent = 'Status check failed: ' + e;
+      btn.disabled = false;
+      return;
+    }
     if (data.status === 'running') {
       setTimeout(() => poll(runId), 2000);
       return;
@@ -653,7 +693,9 @@ _INDEX_HTML = """<!doctype html>
   function esc(value) {
     const d = document.createElement('div');
     d.textContent = value == null ? '' : String(value);
-    return d.innerHTML;
+    // innerHTML escapes <, > and & but not quotes; esc() output is also
+    // interpolated into attribute values, so escape quotes explicitly.
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   function shortId(id) { return (id || '').slice(0, 8); }

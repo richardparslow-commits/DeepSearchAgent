@@ -302,23 +302,24 @@ def _throttle(provider: str | None = None) -> None:
     if global_interval <= 0 and provider_interval <= 0:
         return
     global _last_request_monotonic, _last_request_by_provider
+    # Reserve this worker's slot under the lock, then sleep outside it:
+    # sleeping while holding the lock would serialize every worker's wait
+    # behind one another instead of pacing each worker's own slot.
     with _interval_lock:
         now = time.monotonic()
+        slot = now
         if global_interval > 0 and _last_request_monotonic is not None:
-            wait = global_interval - (now - _last_request_monotonic)
-            if wait > 0:
-                time.sleep(wait)
-                now = time.monotonic()
+            slot = max(slot, _last_request_monotonic + global_interval)
         if provider is not None and provider_interval > 0:
             last = _last_request_by_provider.get(provider)
             if last is not None:
-                wait = provider_interval - (now - last)
-                if wait > 0:
-                    time.sleep(wait)
-                    now = time.monotonic()
-            _last_request_by_provider[provider] = now
+                slot = max(slot, last + provider_interval)
+            _last_request_by_provider[provider] = slot
         if global_interval > 0:
-            _last_request_monotonic = now
+            _last_request_monotonic = slot
+    wait = slot - now
+    if wait > 0:
+        time.sleep(wait)
 
 
 def http_proxy_kwargs() -> dict[str, dict[str, str]]:

@@ -400,7 +400,8 @@ def test_aud4_vba_adjudication_workflows_cover_rvsr_hlr_cue_and_qrs():
             "The Board must address an inadequate examination under 38 C.F.R. "
             "§ 3.159, a DRO CUE finding under 38 C.F.R. § 3.105(a), and an HLR "
             "under 38 C.F.R. § 3.2601. A staged rating is required under "
-            "Fenderson v. West."
+            "Fenderson v. West. George v. McDonough bars treating a later "
+            "change in interpretation as CUE."
         ),
         url="https://uscourts.cavc.gov/opinions/cue",
         source_reliability="official",

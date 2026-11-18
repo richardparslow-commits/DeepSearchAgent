@@ -61,7 +61,9 @@ _BILL_CITATION_RE = re.compile(
     r"H\.?\s*Con\.?\s*Res\.?|S\.?\s*Con\.?\s*Res\.?)\s*(\d+)$",
     re.IGNORECASE,
 )
-_CRS_REPORT_RE = re.compile(r"\b(R\d{4,5})\b")
+# Require the "CRS" prefix: bare R-numbers are also docket identifiers
+# (e.g. "Docket R12345") and must not be treated as CRS report citations.
+_CRS_REPORT_RE = re.compile(r"\bCRS\s+(?:Report\s+)?(R\d{4,5})\b", re.IGNORECASE)
 _ACTION_LIMIT = 12
 _MAX_PUBLIC_LAWS = 3
 _MAX_CRS_REPORTS = 2
@@ -205,7 +207,7 @@ class CongressClient:
             return None
         try:
             return self._cache.get("congress", key, params)
-        except OSError:
+        except (OSError, ValueError):
             return None
 
     def _cache_set(
@@ -220,7 +222,7 @@ class CongressClient:
                 payload,
                 params=params,
             )
-        except OSError:
+        except (OSError, ValueError):
             # The live response is still usable when persistence fails.
             pass
 

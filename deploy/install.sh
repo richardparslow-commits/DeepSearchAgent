@@ -135,9 +135,13 @@ fi
 # 5. systemd units or cron line.
 if [[ "$MODE" == "systemd" ]]; then
     echo "==> Installing systemd units"
-    sed "s|__TARGET__|$TARGET|g; s|__USER__|$USER_NAME|g" \
+    # Escape sed replacement metacharacters so a target path or user name
+    # containing |, & or \ cannot corrupt the generated unit files.
+    ESCAPED_TARGET="$(printf '%s' "$TARGET" | sed -e 's/[\\|&]/\\&/g')"
+    ESCAPED_USER="$(printf '%s' "$USER_NAME" | sed -e 's/[\\|&]/\\&/g')"
+    sed "s|__TARGET__|$ESCAPED_TARGET|g; s|__USER__|$ESCAPED_USER|g" \
         "$ROOT/deploy/va-legal-agent-batch.service" > "/etc/systemd/system/va-legal-agent-batch.service"
-    sed "s|__TARGET__|$TARGET|g; s|__USER__|$USER_NAME|g" \
+    sed "s|__TARGET__|$ESCAPED_TARGET|g; s|__USER__|$ESCAPED_USER|g" \
         "$ROOT/deploy/va-legal-agent-batch.timer" > "/etc/systemd/system/va-legal-agent-batch.timer"
     systemctl daemon-reload
     systemctl enable --now va-legal-agent-batch.timer

@@ -158,7 +158,9 @@ def fetch_cavc_panel_dockets() -> set[str]:
         )
         response.raise_for_status()
     except requests.RequestException as exc:
-        raise SearchError(f"CAVC Panel Opinions list unavailable: {exc}") from exc
+        raise SearchError(
+            f"CAVC Panel Opinions list unavailable: {redact_secrets(str(exc))}"
+        ) from exc
     dockets = parse_cavc_panel_dockets(response.text)
     if not dockets:
         raise SearchError(
@@ -190,7 +192,7 @@ def validate_cavc_panel_cases(cases: list[CaseRecord]) -> list[AuthorityCheck]:
                 authority="CAVC Panel Opinions list",
                 source="CAVC",
                 status="unavailable",
-                detail=str(exc),
+                detail=redact_secrets(str(exc)),
                 url=CAVC_PANEL_OPINIONS_URL,
             )
         ]
@@ -331,6 +333,8 @@ def _ecfr_current_date() -> str:
     )
     response.raise_for_status()
     payload = response.json()
+    if not isinstance(payload, dict):
+        raise SearchError("eCFR titles response was not a JSON object.")
     for title in payload.get("titles", []):
         if int(title.get("number", 0) or 0) == 38:
             current = (
@@ -371,7 +375,7 @@ def verify_cfr_section(section: str) -> AuthorityCheck:
             authority=authority,
             source="eCFR",
             status="unavailable",
-            detail=str(exc),
+            detail=redact_secrets(str(exc)),
             url=ECFR_SECTION_URL.format(section=section),
         )
 
@@ -382,7 +386,7 @@ def verify_cfr_section(section: str) -> AuthorityCheck:
             authority=authority,
             source="eCFR",
             status="unavailable",
-            detail=f"eCFR returned unparseable XML: {exc}",
+            detail=f"eCFR returned unparseable XML: {redact_secrets(str(exc))}",
             url=ECFR_SECTION_URL.format(section=section),
         )
     found = False
@@ -456,11 +460,14 @@ def verify_federal_register_part(
             authority=authority,
             source="Federal Register",
             status="unavailable",
-            detail=str(exc),
+            detail=redact_secrets(str(exc)),
             url="https://www.federalregister.gov/",
         )
 
-    results = payload.get("results") or []
+    raw_results = payload.get("results") or []
+    # Non-dict rows carry no document metadata; treating them as documents
+    # would fabricate a "verified" finding from malformed data.
+    results = [row for row in raw_results if isinstance(row, dict)]
     if not results:
         return AuthorityCheck(
             authority=authority,
@@ -570,7 +577,7 @@ def verify_cfr_supersession(
             authority_type="regulation",
             source="Federal Register",
             status="unavailable",
-            detail=str(exc),
+            detail=redact_secrets(str(exc)),
             url=FR_HOME_URL,
         )
 
@@ -968,7 +975,7 @@ def _apply_govinfo_text(
         text = _fetch_govinfo_text(text_url)
     except SearchError as exc:
         record.text_status = "unavailable"
-        record.detail = str(exc)
+        record.detail = redact_secrets(str(exc))
         return record.detail
     record.text_excerpt = _govinfo_excerpt(text)
     record.text_chars = len(text)
@@ -1060,7 +1067,7 @@ def _enrich_govinfo_legislation(
         rows = _govinfo_legislation_rows(client, "PLAW", section)
         searches_succeeded += 1
     except SearchError as exc:
-        errors.append(f"Public Laws search unavailable: {exc}")
+        errors.append(f"Public Laws search unavailable: {redact_secrets(str(exc))}")
         rows = []
     seen_packages: set[str] = set()
     for row in rows:
@@ -1076,7 +1083,7 @@ def _enrich_govinfo_legislation(
         rows = _govinfo_legislation_rows(client, "STATUTE", section)
         searches_succeeded += 1
     except SearchError as exc:
-        errors.append(f"Statutes at Large search unavailable: {exc}")
+        errors.append(f"Statutes at Large search unavailable: {redact_secrets(str(exc))}")
         rows = []
     seen_granules: set[str] = set()
     for row in rows:
@@ -1143,7 +1150,7 @@ def _verify_us_code(section: str, client: GovInfoClient) -> AuthorityCheck:
             authority=authority,
             source="GovInfo",
             status="unavailable",
-            detail=str(exc),
+            detail=redact_secrets(str(exc)),
             url=GOVINFO_HOME_URL,
         )
     granule_suffix = f"sec{base_section}".lower()
@@ -1200,7 +1207,7 @@ def _verify_federal_circuit_case(
             authority=authority,
             source="GovInfo",
             status="unavailable",
-            detail=str(exc),
+            detail=redact_secrets(str(exc)),
             url=GOVINFO_HOME_URL,
         )
     match = next(

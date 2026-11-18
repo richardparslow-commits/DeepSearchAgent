@@ -50,7 +50,9 @@ OFFICIAL_DOMAINS: tuple[str, ...] = (
 )
 
 # Official agency guidance lives on va.gov but is not a court decision.
-_AGENCY_GUIDANCE_HOSTS = ("va.gov", "benefits.va.gov", "va.gov/vetapp")
+# Entries are hostnames only: "va.gov/vetapp" is a path, never a hostname,
+# so it could never match and only obscured the intent.
+_AGENCY_GUIDANCE_HOSTS = ("va.gov", "benefits.va.gov")
 
 
 def _hostname(url: str) -> str:
@@ -121,6 +123,11 @@ def classify_authority_tier(
         return AUTHORITY_PERSUASIVE, True
 
     host = _hostname(url)
+    if host == "courtlistener.com" or host.endswith(".courtlistener.com"):
+        # CourtListener mirrors court opinions without an official court
+        # label here; it is persuasive (official mirror), never agency
+        # guidance.
+        return AUTHORITY_PERSUASIVE, True
     if host == "va.gov" or host.endswith(".va.gov"):
         # va.gov hosts both BVA decisions and agency guidance. A court label
         # already returned above; everything else is agency material.

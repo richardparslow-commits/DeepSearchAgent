@@ -22,6 +22,7 @@ from .llm import (
     interpret_cases,
     reason_cases,
     validate_llm_synthesis_provenance,
+    validate_text_provenance,
 )
 from .models import (
     AdjudicationRoleGuidance,
@@ -655,6 +656,18 @@ def build_interpretive_analysis(
     elif not reasoning_attempted:
         llm_text = interpret_cases(claim_issue, claim_type, cases[:interpret_limit])
 
+    # The narrative call must pass the same provenance gate as the reasoning
+    # synthesis; an unanchored narrative falls back to the template text.
+    narrative_provenance_failed = False
+    if llm_text:
+        narrative_failures = validate_text_provenance(
+            llm_text, cases[: settings.llm_reasoning_limit]
+        )
+        if narrative_failures:
+            provenance_warnings.extend(narrative_failures)
+            llm_text = None
+            narrative_provenance_failed = True
+
     # The deterministic principles are the always-on baseline; the reasoning
     # pass overrides them (its principles carry inline citations) when the LLM
     # is available and returns content.
@@ -675,7 +688,13 @@ def build_interpretive_analysis(
         contradictions = deterministic_contradictions
         source = "llm" if llm_text else "template"
 
-    provenance_gate_applied = raw_reasoning is not None
+    # The gate is "applied" whenever a reasoning pass ran and its output was
+    # sanitized. Rejections surface as warnings (and the rejected content is
+    # already stripped), so their presence does not mean the gate was skipped;
+    # only a failed narrative gate leaves unvalidated text unadopted.
+    provenance_gate_applied = (
+        raw_reasoning is not None and not narrative_provenance_failed
+    )
 
     # ── Coverage confidence ─────────────────────────────────────────────
     # Volume alone is not confidence. High confidence requires a binding,

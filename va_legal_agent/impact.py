@@ -125,8 +125,11 @@ def _impact_text(case: CaseRecord) -> str:
             )
             if part
         )
+    # Only a provenance-verified deep summary is source-derived; an
+    # unverified one may be fabricated and must not feed impact scanning.
+    summary = case.deep_summary if case.deep_summary_provenance_verified else ""
     return (
-        f"{case.title} {case.snippet} {case.holding} {case.deep_summary} "
+        f"{case.title} {case.snippet} {case.holding} {summary} "
         f"{abstract_text}"
     ).lower()
 

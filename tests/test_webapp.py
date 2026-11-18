@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -211,16 +212,17 @@ def test_prune_keeps_running_jobs(
     isolated_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pruning over the cap must not evict a job whose thread is still running."""
+    running_id = uuid.uuid4().hex
     jobs: dict[str, dict[str, object]] = {
-        "running-oldest": {
-            "job_id": "running-oldest",
+        running_id: {
+            "job_id": running_id,
             "issue": "tinnitus",
             "status": "running",
             "started_at": "2026-01-01T00:00:00+00:00",
         }
     }
     for index in range(webapp._MAX_JOBS):
-        job_id = f"done-{index}"
+        job_id = uuid.uuid4().hex
         jobs[job_id] = {
             "job_id": job_id,
             "issue": "tinnitus",
@@ -232,7 +234,7 @@ def test_prune_keeps_running_jobs(
     webapp._prune()
 
     assert len(webapp._JOBS) == webapp._MAX_JOBS
-    response = isolated_client.get("/api/status/running-oldest")
+    response = isolated_client.get(f"/api/status/{running_id}")
     assert response.status_code == 200
     assert response.get_json()["status"] == "running"
 
@@ -241,11 +243,12 @@ def test_load_jobs_persists_restart_correction(
     isolated_client, tmp_path: Path
 ) -> None:
     """A restarted running job must be corrected on disk, not just in memory."""
-    persisted = tmp_path / "restart.json"
+    job_id = uuid.uuid4().hex
+    persisted = tmp_path / f"{job_id}.json"
     persisted.write_text(
         json.dumps(
             {
-                "job_id": "restart",
+                "job_id": job_id,
                 "issue": "tinnitus",
                 "status": "running",
                 "started_at": "2026-01-01T00:00:00+00:00",
@@ -256,7 +259,7 @@ def test_load_jobs_persists_restart_correction(
 
     webapp._load_jobs()
 
-    response = isolated_client.get("/api/status/restart")
+    response = isolated_client.get(f"/api/status/{job_id}")
     assert response.status_code == 200
     body = response.get_json()
     assert body["status"] == "error"
@@ -558,7 +561,20 @@ def test_webapp_job_persists_structured_d1_payload(
     assert "Quality Review (QRS) Checkpoints:" in job["result"]
     assert "Official Court Transcript / Primary Authority" in job["result"]
     assert job["result_json"]["impact_profile"]["nuance"]
-    assert job["result_json"]["adjudication_guidance"]["qrs"]["nqr_qrt_error_calls"]
+    # AUD5 TG13: the role-workflow JSON carries the actual guidance content,
+    # not just non-empty lists under the right keys.
+    guidance = job["result_json"]["adjudication_guidance"]
+    assert guidance["rvsr"]["rating_codesheet_actions"] == ["Apply Diagnostic Code 9411."]
+    assert guidance["rvsr"]["reasons_for_decision_requirements"] == [
+        "Address 38 U.S.C. § 5104(b)."
+    ]
+    assert guidance["senior_rater_dro"]["hlr_de_novo_actions"] == [
+        "Conduct de novo review under 38 C.F.R. § 3.2601."
+    ]
+    assert guidance["senior_rater_dro"]["cue_analysis"] == [
+        "Apply 38 C.F.R. § 3.105(a) and George v. McDonough."
+    ]
+    assert guidance["qrs"]["nqr_qrt_error_calls"] == ["Call a duty-to-assist error."]
     assert job["result_json"]["source_reliability_summary"]["official_count"] == 1
     assert "Official Court Transcript / Primary Authority" in webapp._INDEX_HTML
     assert "Secondary Summary / Non-Binding Source" in webapp._INDEX_HTML

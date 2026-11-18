@@ -387,6 +387,7 @@ def _evaluate(case: dict[str, Any], check: object) -> dict[str, Any]:
         and fn == 0
         and strict_tp == tp
         and status_safe
+        and check.status == case["expected_status"]
     )
     return {
         "id": case["id"],

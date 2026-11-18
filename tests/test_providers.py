@@ -724,6 +724,7 @@ def test_search_all_returns_empty_when_no_results_no_errors(monkeypatch):
             "queries_issued": 1,
             "results": 0,
             "deduped": 0,
+            "excluded": 0,
             "failures": 0,
             "variants": {"tinnitus": {"results": 0, "failures": 0}},
         }
@@ -2076,7 +2077,17 @@ def test_bva_sitemap_search_uses_minimized_issue_for_matching(monkeypatch):
         'site:bva.va.gov "service connection for tinnitus" "Compensation" '
         "veterans compensation"
     )
-    assert results
+    # AUD5 TG8: assert the matched decisions' content, not mere truthiness.
+    # The canned ".txt" body serves every leaf URL, so all three match, in
+    # the leaf's most-recent-lastmod-first order (ties keep sitemap order).
+    assert [r["url"] for r in results] == [
+        "https://www.va.gov/vetapp26/Files4/A26042155.txt",
+        "https://www.va.gov/vetapp26/Files1/26000002.txt",
+        "https://www.va.gov/vetapp26/Files1/26000001.txt",
+    ]
+    assert results[0]["title"] == "A26042155"
+    assert results[0]["court"] == "Board of Veterans' Appeals"
+    assert "service connection for tinnitus" in results[0]["snippet"]
 
 
 def test_bva_sitemap_search_statute_only_query_matches(monkeypatch):
@@ -2094,7 +2105,13 @@ def test_bva_sitemap_search_statute_only_query_matches(monkeypatch):
     )
 
     results = BvaSitemapProvider().search('"1110"')
-    assert results
+    # AUD5 TG8: the statute-only match must surface the citing decisions.
+    assert [r["url"] for r in results] == [
+        "https://www.va.gov/vetapp26/Files4/A26042155.txt",
+        "https://www.va.gov/vetapp26/Files1/26000002.txt",
+        "https://www.va.gov/vetapp26/Files1/26000001.txt",
+    ]
+    assert "1110" in results[0]["snippet"]
 
 
 def test_bva_sitemap_search_non_txt_url_keeps_title(monkeypatch):
@@ -2186,11 +2203,26 @@ def test_bva_snippet_window_width_is_exactly_300():
 
 
 def test_bva_current_year_code_matches_calendar_year(monkeypatch):
-    from datetime import datetime, timezone
+    import datetime as dt
 
-    # % 101 would produce a different two-digit code for 2026 (6 vs 26); the
-    # code must always equal the UTC calendar year mod 100.
-    assert BvaSitemapProvider()._current_year_code() == f"{datetime.now(timezone.utc).year % 100:02d}"
+    # AUD5 TG9: pin a frozen UTC clock instead of re-deriving the expected
+    # value from the live clock (which only proved the code tracks *some*
+    # year). 2026 % 100 == 26 while % 101 == 6, and 2004 pins zero-padding.
+    class _FrozenDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 8, 4, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr("va_legal_agent.providers.datetime", _FrozenDateTime)
+    assert BvaSitemapProvider()._current_year_code() == "26"
+
+    class _Frozen2004(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2004, 1, 1, tzinfo=tz)
+
+    monkeypatch.setattr("va_legal_agent.providers.datetime", _Frozen2004)
+    assert BvaSitemapProvider()._current_year_code() == "04"
 
 
 def test_bva_sitemap_search_caps_at_max_results(monkeypatch):
@@ -5589,12 +5621,19 @@ class TestBvaLocalConcurrency:
 
 
 def test_bva_local_meta_timestamp_has_timezone(tmp_path):
+    before = datetime.now(timezone.utc)
     _bva_local_write_meta(str(tmp_path), "2026-08-15")
+    after = datetime.now(timezone.utc)
 
     with open(_bva_local_meta_path(str(tmp_path))) as fh:
         meta = json.load(fh)
 
-    assert datetime.fromisoformat(meta["build_time"]).tzinfo is not None
+    # AUD5 TG14: awareness alone would pass for any offset or a stale clock;
+    # the stamp must be the actual UTC build moment, and the payload kept.
+    build_time = datetime.fromisoformat(meta["build_time"])
+    assert build_time.utcoffset() == timedelta(0)
+    assert before <= build_time <= after
+    assert meta["most_recent_lastmod"] == "2026-08-15"
 
 
 def test_bva_local_build_timestamp_has_timezone(monkeypatch, tmp_path):
@@ -5603,16 +5642,21 @@ def test_bva_local_build_timestamp_has_timezone(monkeypatch, tmp_path):
         lambda url: "tinnitus body",
     )
 
+    before = datetime.now(timezone.utc)
     _bva_local_build(
         str(tmp_path),
         [("https://va.gov/vetapp26/Files4/26000001.txt", "2026-08-15")],
         0,
     )
+    after = datetime.now(timezone.utc)
 
     with open(_bva_local_meta_path(str(tmp_path))) as fh:
         meta = json.load(fh)
 
-    assert datetime.fromisoformat(meta["build_time"]).tzinfo is not None
+    build_time = datetime.fromisoformat(meta["build_time"])
+    assert build_time.utcoffset() == timedelta(0)
+    assert before <= build_time <= after
+    assert meta["most_recent_lastmod"] == "2026-08-15"
 
 
 def test_fresh_naive_build_time_is_not_rebuilt(monkeypatch, tmp_path):

@@ -25,6 +25,7 @@ from .fetch import (
 )
 from .llm import call_openai, llm_enabled
 from .models import ExtractionCandidate
+from .redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -309,8 +310,8 @@ def extract_quote_candidates(
         )
         return result
     except Exception as exc:  # noqa: BLE001 - LLM output is an optional enhancement
-        logger.warning("LLM extraction failed: %s", exc)
-        result.flags.append(f"LLM extraction failed: {exc}")
+        logger.warning("LLM extraction failed: %s", redact_secrets(str(exc)))
+        result.flags.append(f"LLM extraction failed: {redact_secrets(str(exc))}")
         return result
     if not response or not response.strip():
         result.flags.append("LLM extraction returned no response.")

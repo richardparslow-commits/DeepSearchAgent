@@ -204,6 +204,15 @@ PROVISION_REGISTRY: tuple[ProvisionSpec, ...] = (
         m21_1=(M21_HLR_CUE,),
         source_url=_usc("7261"),
     ),
+    ProvisionSpec(
+        "38 U.S.C. § 5109A",
+        "statute",
+        STAGE_APPELLATE,
+        "clarifying",
+        aliases=("5109A",),
+        m21_1=(M21_HLR_CUE,),
+        source_url=_usc("5109A"),
+    ),
     # ── 38 C.F.R. Part 3 (Adjudication) ────────────────────────────────────
     ProvisionSpec(
         "38 C.F.R. § 3.102",
@@ -512,6 +521,16 @@ PROVISION_REGISTRY: tuple[ProvisionSpec, ...] = (
         m21_1=(M21_RATING,),
         source_url=_cfr("4", "4.130"),
     ),
+    # ── 38 C.F.R. Part 20 (Board of Veterans' Appeals) ─────────────────────
+    ProvisionSpec(
+        "38 C.F.R. § 20.1403(e)",
+        "regulation_part20",
+        STAGE_APPELLATE,
+        "clarifying",
+        aliases=("20.1403",),
+        m21_1=(M21_HLR_CUE,),
+        source_url=_cfr("20", "20.1403"),
+    ),
 )
 
 # ---------------------------------------------------------------------------
@@ -527,23 +546,13 @@ _SECTION_RE = re.compile(
     r"(?im)^[ \t]*(?:[IVXLCDM]+\.(?:[A-Z]\.)?|[A-Z]\.)[ \t]+"
     r"([A-Z][A-Z0-9 ,'’\-]{2,80})[ \t]*$"
 )
-_USC_RE = re.compile(
-    r"38\s*U\.?\s*S\.?\s*C\.?\s*(?:§{1,2}|sections?)\s*"
-    r"([0-9]{3,4})(?:\s*\(([a-zA-Z0-9]+)\))?",
-    re.IGNORECASE,
-)
-_CFR_RE = re.compile(
-    r"38\s*C\.?\s*F\.?\s*R\.?\s*(?:§{1,2}|sections?)\s*"
-    r"([0-9]+\.[0-9]+)(?:\s*\(([a-zA-Z0-9]+)\))?",
-    re.IGNORECASE,
-)
 _DC_RE = re.compile(
-    r"\b(?:DC|Diagnostic\s+Code)\s*(\d{4})(?:\s*-\s*(\d{4}))?\b",
+    r"\b(?:DC|Diagnostic\s+Code)\s*([5-9]\d{3})(?:\s*-\s*([5-9]\d{3}))?\b",
     re.IGNORECASE,
 )
 _M21_RE = re.compile(
     r"M21-1(?:,\s*Part\s+[IVXL]+)?(?:,\s*Subpart\s+[ivxl]+)?"
-    r"(?:,\s*Chapter\s+\d+)?(?:,\s*Sections?\s+[A-Za-z0-9\-]+)?",
+    r"(?:,\s*Chapter\s+\d+)?(?:,\s*Sections?\s+[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*)?",
     re.IGNORECASE,
 )
 _STAGED_RE = re.compile(
@@ -802,8 +811,10 @@ def build_case_abstract(
                 case.court,
                 case.snippet,
                 case.holding,
-                case.impact,
-                case.deep_summary,
+                # case.impact is derived output, not source text; re-ingesting
+                # it would let a fabricated impact seed the abstract. Only a
+                # provenance-verified deep summary may contribute.
+                case.deep_summary if case.deep_summary_provenance_verified else "",
             )
             if part
         )
@@ -868,7 +879,7 @@ def _case_text(case: CaseRecord) -> str:
             case.title,
             case.snippet,
             case.holding,
-            case.deep_summary,
+            case.deep_summary if case.deep_summary_provenance_verified else "",
             abstract_text,
         )
         if part
@@ -876,20 +887,33 @@ def _case_text(case: CaseRecord) -> str:
 
 
 def _sentence_for(text: str, start: int, end: int) -> str:
-    left = max(text.rfind(".", 0, start), text.rfind(";", 0, start))
-    right_candidates = [pos for pos in (text.find(".", end), text.find(";", end)) if pos >= 0]
-    right = min(right_candidates) if right_candidates else len(text)
+    # Sentence boundaries require terminal punctuation followed by whitespace
+    # and a capital/paren or end-of-text, so decimal dots inside citations
+    # ("§ 4.16") never truncate the quote.
+    left_match = None
+    for boundary in re.finditer(r"[.;](?=\s+[A-Z(]|\s*$)", text[:start]):
+        left_match = boundary
+    left = left_match.end() - 1 if left_match else -1
+    right_match = re.search(r"[.;](?=\s+[A-Z(]|\s*$)", text[end:])
+    right = end + right_match.start() if right_match else len(text) - 1
     quote = text[left + 1 : right + 1].strip()
     return re.sub(r"\s+", " ", quote)
 
 
 def _effect_for(sentence: str, spec: ProvisionSpec, *, m21: bool = False) -> str:
     lower = sentence.lower()
-    if re.search(
+    # Bare modals ("cannot", "may not", "does not permit") only signal
+    # invalidation when the sentence actually names the manual/provision/rule
+    # being invalidated; "The court cannot say" is not an invalidating holding.
+    strong_invalid = re.search(
         r"\b(impermissible|invalid|unlawful|unconstitutional|not persuasive|"
-        r"contrary to|reject(?:s|ed)?|cannot|may not|does not permit)\b",
+        r"contrary to|reject(?:s|ed)?)\b",
         lower,
-    ):
+    )
+    modal_invalid = re.search(r"\b(cannot|may not|does not permit)\b", lower) and re.search(
+        r"\b(m21|manual|provision|rule|regulation)\b", lower
+    )
+    if strong_invalid or modal_invalid:
         return "invalidating_m21_1_rule" if m21 else "narrowing"
     if re.search(r"\b(expand|broader|more generous|entitled to|requires? (?:va|the board) to)\b", lower):
         return "expanding"
@@ -916,13 +940,21 @@ def _impact(
 ) -> ProvisionImpact:
     source_url = spec.source_url or (case.url if case else "")
     host = (urlparse(source_url).hostname or "").lower()
-    verified = bool(host) and (
+    host_verified = bool(host) and (
         classify_source(source_url) == RELIABILITY_OFFICIAL
         or any(
             host == domain or host.endswith("." + domain)
             for domain in PRIMARY_SOURCE_DOMAINS
         )
     )
+    # Host membership alone is not provenance: the anchor must actually carry
+    # the provision citation (or, for doctrine impacts, a real quote rather
+    # than the citation-placeholder fallback).
+    anchor_confirmed = bool(quote.strip()) and (
+        re.search(re.escape(citation or spec.citation), quote, re.IGNORECASE) is not None
+        or quote.strip() != spec.citation
+    )
+    verified = host_verified and anchor_confirmed
     return ProvisionImpact(
         citation=citation or spec.citation,
         authority_type=spec.authority_type,
@@ -964,23 +996,32 @@ def extract_provision_impacts(
     for spec in PROVISION_REGISTRY:
         # Match the full canonical citation first, then its numbered alias
         # only when explicitly attached to title 38 (avoid bare "4.2" noise).
-        pattern = re.compile(re.escape(spec.citation), re.IGNORECASE)
+        # The trailing boundary stops "§ 4.1" matching inside "§ 4.16" and
+        # "§ 5103" inside "§ 5103A".
+        pattern = re.compile(re.escape(spec.citation) + r"(?![0-9A-Za-z])", re.IGNORECASE)
         match = pattern.search(cleaned)
         if match is None and spec.aliases:
             alias = spec.aliases[0]
             if spec.citation.startswith("38 U.S.C."):
                 alias_pattern = re.compile(
                     rf"38\s*U\.?\s*S\.?\s*C\.?\s*(?:§{{1,2}}|sections?)\s*{re.escape(alias)}"
-                    r"(?:\s*\(([a-zA-Z0-9]+)\))?",
+                    r"(?![0-9A-Za-z])(?:\s*\(([a-zA-Z0-9]+)\))?",
                     re.IGNORECASE,
                 )
             else:
                 alias_pattern = re.compile(
                     rf"38\s*C\.?\s*F\.?\s*R\.?\s*(?:§{{1,2}}|sections?)\s*{re.escape(alias)}"
-                    r"(?:\s*\(([a-zA-Z0-9]+)\))?",
+                    r"(?![0-9A-Za-z])(?:\s*\(([a-zA-Z0-9]+)\))?",
                     re.IGNORECASE,
                 )
             match = alias_pattern.search(cleaned)
+            if match is not None:
+                # A cited subsection must match the registry spec's own
+                # subsection: "§ 5107(a)" is not the § 5107(b) benefit-of-the-
+                # doubt provision.
+                subsection = (match.group(1) or "").strip()
+                if subsection and not spec.citation.endswith(f"({subsection})"):
+                    match = None
         if match is None:
             continue
         quote = _sentence_for(cleaned, match.start(), match.end())
@@ -1060,7 +1101,7 @@ def extract_provision_impacts(
         lower = quote.lower()
         if "part iv" in lower or "examination" in lower or "exam" in lower:
             stage = STAGE_DEVELOPMENT
-        elif "part x" in lower or "cue" in lower or "higher-level" in lower:
+        elif re.search(r"\bpart x\b", lower) or "cue" in lower or "higher-level" in lower:
             stage = STAGE_APPELLATE
         elif "part iii" in lower or "duty to assist" in lower or "notice" in lower:
             stage = STAGE_INTAKE
@@ -1309,13 +1350,16 @@ def _history_status(*values: str) -> str:
     text = " ".join(value.lower() for value in values if value)
     for status in (
         "superseded_by_statute",
+        "abrogated",
+        "superseded",
         "overruled",
         "reversed",
         "vacated",
+        "questioned",
         "affirmed",
         "good_law",
     ):
-        if status in text:
+        if re.search(rf"\b{re.escape(status)}\b", text):
             return status
     return "unknown"
 
@@ -1330,7 +1374,7 @@ def _relevant_cases(cases: list[CaseRecord], *terms: str) -> list[CaseRecord]:
     matches: list[CaseRecord] = []
     for case in cases:
         haystack = _case_text(case).lower()
-        if any(term in haystack for term in lowered):
+        if any(re.search(rf"\b{re.escape(term)}\b", haystack) for term in lowered):
             matches.append(case)
     return matches
 
@@ -1353,7 +1397,6 @@ def _authority_refs(cases: list[CaseRecord], limit: int = 4) -> list[str]:
 def build_rvsr_guidance(issue: str, cases: list[CaseRecord]) -> RvsrGuidance:
     """Build a concrete RVSR playbook, not a generic research prompt."""
     refs = _authority_refs(cases)
-    ref_text = "; ".join(refs) if refs else "the retrieved authorities"
     mental = _has(cases, "ptsd", "mental", "psychiatric", "4.130", "3.304", "tbi", "traumatic brain")
     musculoskeletal = _has(cases, "musculoskeletal", "range of motion", "4.40", "4.45", "4.59", "knee", "spine")
     tdiu = _has(cases, "tdiu", "individual unemployability", "4.16")
@@ -1474,7 +1517,7 @@ def build_rvsr_guidance(issue: str, cases: list[CaseRecord]) -> RvsrGuidance:
         exam_development_triggers=exam_triggers,
         rating_codesheet_actions=codesheet,
         reasons_for_decision_requirements=reasons,
-        source_authorities=refs or [ref_text],
+        source_authorities=refs or ["(no retrieved authorities — procedural guidance only)"],
     )
 
 
@@ -1525,10 +1568,13 @@ def build_senior_rater_guidance(issue: str, cases: list[CaseRecord]) -> SeniorRa
         "changed the outcome.",
         "Do not find CUE merely because the prior adjudicator weighed the evidence differently; "
         "a disagreement about weighing is not CUE.",
-        "Distinguish a later change in judicial interpretation from CUE: under *George v. "
-        "McDonough*, a prospective change in law is not a clear and unmistakable error in the "
-        "earlier decision.",
     ]
+    if _has(cases, "george"):
+        cue_steps.append(
+            "Distinguish a later change in judicial interpretation from CUE: under *George v. "
+            "McDonough*, a prospective change in law is not a clear and unmistakable error in the "
+            "earlier decision."
+        )
     if cue:
         cue_steps.append(
             "The retrieved authority addresses CUE or DRO revision; document the CUE analysis "
@@ -1583,5 +1629,5 @@ def build_senior_rater_guidance(issue: str, cases: list[CaseRecord]) -> SeniorRa
         cue_analysis=cue_steps,
         precedent_conflict_resolution=precedent_steps,
         quality_review_checkpoints=quality,
-        source_authorities=refs or ["the retrieved authorities"],
+        source_authorities=refs or ["(no retrieved authorities — procedural guidance only)"],
     )

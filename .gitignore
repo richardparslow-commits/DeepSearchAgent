@@ -10,7 +10,6 @@ dist/
 .mutmut-cache/
 mutants/
 .coverage
-.mutmut-cache
 
 # AI tooling state
 .freebuff/

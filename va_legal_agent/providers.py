@@ -343,6 +343,10 @@ def _map_courtlistener_opinion(item: dict) -> dict[str, str] | None:
     if not url:
         return None
     citations = item.get("citation") or []
+    # Some responses carry a single citation string instead of a list;
+    # indexing it directly would yield the first character ("1").
+    if isinstance(citations, str):
+        citations = [citations]
     citation = ""
     if citations:
         first = citations[0]
@@ -737,6 +741,12 @@ class CourtListenerProvider:
             entry = self._cache.get_entry(*cache_target)
             if entry is not None:
                 self._record_cache_hit(entry)
+                if not isinstance(entry.response, dict):
+                    raise SearchError(
+                        f"CourtListener cache entry for {url} is not a JSON object",
+                        kind="malformed_response",
+                        retryable=False,
+                    )
                 return entry.response
             self._record_cache_miss()
         settings = get_settings()
@@ -806,6 +816,12 @@ class CourtListenerProvider:
                         url,
                         exc,
                     )
+            if not isinstance(data, dict):
+                raise SearchError(
+                    f"CourtListener returned a non-object JSON payload for {url}",
+                    kind="malformed_response",
+                    retryable=False,
+                )
             return data
         kind, retryable = (
             classify_search_error(last_error)
@@ -1589,6 +1605,7 @@ def traverse_citations(
 
 
 _bva_session: cffi_requests.Session | None = None
+_bva_session_lock = threading.Lock()
 
 
 def _get_bva_session() -> cffi_requests.Session:
@@ -1603,7 +1620,9 @@ def _get_bva_session() -> cffi_requests.Session:
     """
     global _bva_session
     if _bva_session is None:
-        _bva_session = cffi_requests.Session(impersonate="chrome")
+        with _bva_session_lock:
+            if _bva_session is None:
+                _bva_session = cffi_requests.Session(impersonate="chrome")
     return _bva_session
 
 
@@ -1777,7 +1796,12 @@ class BVAProvider:
         except CffiRequestException as exc:
             raise SearchError(f"BVA search failed for query: {query}: {exc}") from exc
 
-        if response.status_code == 202 or "anomaly" in response.text.lower():
+        # A genuine results page can legitimately mention "anomaly" (e.g. a
+        # congenital-anomaly claim); only treat it as a challenge when the
+        # results payload is absent.
+        if response.status_code == 202 or (
+            "anomaly" in response.text.lower() and '"resultsData"' not in response.text
+        ):
             raise SearchError(
                 f"BVA search returned a rate-limit/anomaly challenge page for query: {query}. "
                 "Slow down requests or raise SEARCH_DELAY_SECONDS."
@@ -1818,6 +1842,9 @@ _SITEMAP_INDEX_URL = "https://www.va.gov/sitemap_bva.xml"
 # per run (they are stable within a run), and decision bodies are cached per
 # URL so repeated queries over the same recent window don't re-fetch files.
 _bva_sitemap_cache: dict[str, object] = {}
+# Decision bodies are large; bound the per-URL text cache so a long run over
+# many recent decisions cannot grow memory without limit.
+_BVA_TEXT_CACHE_MAX = 512
 # Stopwords dropped when tokenizing the issue phrase for decision matching;
 # the remaining significant tokens must all appear in a decision's text.
 _BVA_MATCH_STOPWORDS = frozenset(
@@ -1926,6 +1953,9 @@ def _fetch_bva_decision_text(url: str) -> str:
         response.raise_for_status()
     except requests.RequestException as exc:
         raise SearchError(f"BVA decision fetch failed for {url}: {exc}") from exc
+    text_keys = [key for key in _bva_sitemap_cache if key.startswith("text:")]
+    while len(text_keys) >= _BVA_TEXT_CACHE_MAX:
+        _bva_sitemap_cache.pop(text_keys.pop(0), None)
     _bva_sitemap_cache[f"text:{url}"] = response.text
     return response.text
 
@@ -2053,6 +2083,7 @@ class BvaSitemapProvider:
         if not leaf:
             raise SearchError("No BVA decisions indexed; the va.gov sitemap is unavailable.")
         scan_limit = max(settings.search_bva_sitemap_scan_limit, 1)
+        page = max(page, 1)
         window = leaf[(page - 1) * scan_limit : page * scan_limit]
         results: list[dict[str, str]] = []
         for url, _lastmod in window:
@@ -2127,7 +2158,11 @@ def _bva_local_meta_path(directory: str, year: int | None = None) -> str:
 def _bva_local_write_meta(
     directory: str, most_recent_lastmod: str, year: int | None = None
 ) -> None:
-    """Write the build-time metadata after a successful shard build."""
+    """Write the build-time metadata after a successful shard build.
+
+    Retained as a standalone helper for existing test callers; production
+    builds write meta inside :func:`_bva_local_build`.
+    """
     meta = {
         "build_time": datetime.now(timezone.utc).isoformat(),
         "most_recent_lastmod": most_recent_lastmod,
@@ -2210,10 +2245,10 @@ def _bva_local_build(
     max_files: int,
     year: int | None = None,
 ) -> tuple[str, list[dict[str, object]]]:
-    """Download decision files into ``corpus.txt`` + byte-offset manifest.
+    """Download decision files into ``corpus.txt`` + character-offset manifest.
 
     Concatenates each body separated by a ``\\n\\x00\\n`` sentinel so the
-    manifest's ``[start, end)`` byte ranges never straddle a decision.
+    manifest's ``[start, end)`` character ranges never straddle a decision.
     Returns ``(corpus_path, manifest_rows)`` where each row is
     ``{"url": str, "title": str, "lastmod": str, "start": int, "end": int}``.
 
@@ -2223,6 +2258,11 @@ def _bva_local_build(
     power loss) mid-download must leave the previous index intact rather than
     a truncated ``corpus.txt`` paired with a stale manifest — which the
     freshness check would otherwise accept and silently serve wrong results.
+
+    The per-file swaps are individually atomic, not atomic as a set; readers
+    must hold ``_bva_local_lock`` across the commit and their shard reads
+    (see :class:`BvaLocalIndexProvider`) so no query observes a half-swapped
+    corpus/manifest/meta generation.
     """
     os.makedirs(directory, exist_ok=True)
     corpus_path, manifest_path = _bva_local_index_paths(directory, year)
@@ -2233,7 +2273,9 @@ def _bva_local_build(
     manifest: list[dict[str, object]] = []
     offset = 0
     window = leaf if max_files <= 0 else leaf[:max_files]
-    with open(corpus_tmp, "w", encoding="utf-8") as corpus:
+    # newline="" keeps the manifest's character offsets identical to what a
+    # newline="" reader sees, regardless of platform line-ending translation.
+    with open(corpus_tmp, "w", encoding="utf-8", newline="") as corpus:
         for url, lastmod in window:
             _throttle("bvalocal")
             try:
@@ -2273,7 +2315,9 @@ def _bva_local_build(
         meta["year"] = year
     with open(meta_tmp, "w", encoding="utf-8") as fh:
         json.dump(meta, fh)
-    # Commit: atomically swap the real files in only after all temps are done.
+    # Commit: swap the real files in only after all temps are done. The caller
+    # holds _bva_local_lock across build and reads, so the set is never
+    # observed half-committed.
     os.replace(corpus_tmp, corpus_path)
     os.replace(manifest_tmp, manifest_path)
     os.replace(meta_tmp, meta_path)
@@ -2283,7 +2327,11 @@ def _bva_local_build(
 def _bva_local_load(
     directory: str, year: int | None = None
 ) -> tuple[str, list[dict[str, object]]]:
-    """Read one local index shard from disk (legacy index when year is None)."""
+    """Read one local index shard from disk (legacy index when year is None).
+
+    Retained for existing test callers; production queries read shards under
+    ``_bva_local_lock`` inside :class:`BvaLocalIndexProvider`.
+    """
     corpus_path, manifest_path = _bva_local_index_paths(directory, year)
     with open(manifest_path, encoding="utf-8") as fh:
         manifest = json.load(fh)
@@ -2399,8 +2447,10 @@ class BvaLocalIndexProvider:
         # The agent fans queries out across a worker pool, so several threads
         # can reach here at once. Build/load is serialized under the process
         # lock so a first-use build cannot race a concurrent shard discovery,
-        # and so only one thread performs the downloads. The shard files are
-        # committed atomically, so queries may then read them outside the lock.
+        # and so only one thread performs the downloads. Each file swap is
+        # atomic but the three-file commit is not atomic as a set, so shard
+        # reads stay under the same lock to never observe a half-swapped
+        # corpus/manifest generation.
         with _bva_local_lock:
             shards = _bva_local_shards(directory)
             wanted = settings.search_bva_local_index_years
@@ -2461,19 +2511,20 @@ class BvaLocalIndexProvider:
                 )
         results: list[dict[str, str]] = []
         remaining = max_results
-        for _year, corpus_path, manifest_path in shards:
-            with open(corpus_path, encoding="utf-8") as fh:
-                corpus_text = fh.read()
-            with open(manifest_path, encoding="utf-8") as fh:
-                manifest = json.load(fh)
-            results.extend(
-                _bva_local_search_corpus(
-                    corpus_text, manifest, tokens, remaining
+        with _bva_local_lock:
+            for _year, corpus_path, manifest_path in shards:
+                with open(corpus_path, encoding="utf-8", newline="") as fh:
+                    corpus_text = fh.read()
+                with open(manifest_path, encoding="utf-8") as fh:
+                    manifest = json.load(fh)
+                results.extend(
+                    _bva_local_search_corpus(
+                        corpus_text, manifest, tokens, remaining
+                    )
                 )
-            )
-            remaining = max_results - len(results)
-            if remaining <= 0:
-                break
+                remaining = max_results - len(results)
+                if remaining <= 0:
+                    break
         if not results:
             raise SearchError(
                 f"No search results returned for query: {query}"
@@ -2535,7 +2586,7 @@ def validate_search_providers(raw: str | None = None) -> list[str]:
     return resolve_search_providers(raw)
 
 
-_TELEMETRY_KEYS = ("queries_issued", "results", "deduped", "failures")
+_TELEMETRY_KEYS = ("queries_issued", "results", "deduped", "excluded", "failures")
 
 
 def rollup_search_telemetry(records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
@@ -2641,12 +2692,13 @@ def search_all(
     runs up to ``SEARCH_PAGES_PER_QUERY`` pages (overridable per provider via
     ``SEARCH_PAGES_PER_QUERY_BY_PROVIDER``) and is adapted for the provider
     (e.g. ``site:`` tokens stripped for CourtListener). Results are deduped by
-    canonical URL and capped at *max_results*.
+    exact URL string and capped at *max_results*.
 
     When *telemetry* (a list) is given, one record per provider is appended
     with ``provider``, ``queries_issued`` (successful search calls; failures
     are counted separately), ``results``
-    (raw results returned), ``deduped`` (dropped as URL duplicates),
+    (raw results returned), ``deduped`` (dropped as exact-URL duplicates),
+    ``excluded`` (dropped by ``SEARCH_EXCLUDE_TERMS``),
     ``failures`` (search attempts that raised), and ``variants`` — a dict
     mapping each expanded query to its own ``{results, failures}`` counts so
     callers can see which variant phrasings actually surfaced cases.
@@ -2695,6 +2747,7 @@ def search_all(
             "queries_issued": 0,
             "results": 0,
             "deduped": 0,
+            "excluded": 0,
             "failures": 0,
             "variants": variant_stats,
         }
@@ -2706,6 +2759,10 @@ def search_all(
                 if provider_remaining <= 0:
                     break
                 if deadline is not None and time.monotonic() >= deadline:
+                    # Preserve the counters accumulated so far; the raise
+                    # skips the loop-end append below.
+                    if telemetry is not None:
+                        telemetry.append(stats)
                     raise SearchError(f"Search wall-time budget exhausted for query {query!r}")
                 try:
                     results = provider.search(adapted, provider_remaining, page=page)
@@ -2723,7 +2780,7 @@ def search_all(
                 if settings.search_exclude_terms:
                     filtered = _filter_excluded_terms(results, settings.search_exclude_terms)
                     excluded_count = len(results) - len(filtered)
-                    stats["deduped"] = int(stats["deduped"]) + excluded_count
+                    stats["excluded"] = int(stats["excluded"]) + excluded_count
                     results = filtered
                 stats["results"] = int(stats["results"]) + len(results)
                 vstat["results"] += len(results)

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from .config import get_settings
 from .models import Contradiction
+from .redaction import redact_secrets
 
 if TYPE_CHECKING:
     from .models import CaseRecord
@@ -227,6 +228,15 @@ def _reasoning_schema_error(data: dict[str, object]) -> str | None:
         return "reconciled_principles must be a string or list"
     if "contradictions" in data and not isinstance(data.get("contradictions"), list):
         return "contradictions must be a list"
+    if "contradictions" in data:
+        for item in data["contradictions"]:
+            # A non-dict item is skipped by the parser; it must not discard
+            # the well-formed contradictions that follow it.
+            if not isinstance(item, dict):
+                continue
+            for key in ("statement", "case_a", "case_b"):
+                if key in item and not isinstance(item[key], str):
+                    return f"contradiction {key} must be a string"
     if "synthesis" in data and not isinstance(data.get("synthesis"), str):
         return "synthesis must be a string"
     expected = {"reconciled_principles", "contradictions", "synthesis"}
@@ -404,8 +414,10 @@ def _provenance_failures(text: str, corpus: str, compact: str, titles: set[str])
         if word not in _STOPWORDS
     }
     corpus_words = set(re.findall(r"[a-z][a-z'-]{3,}", corpus))
-    if words and not (words & corpus_words):
-        failures.append("no lexical overlap with the retrieved authorities")
+    # A single shared word must not anchor an otherwise fabricated narrative;
+    # require a meaningful fraction of the content words to appear in the corpus.
+    if words and len(words & corpus_words) / len(words) < 0.3:
+        failures.append("insufficient lexical overlap with the retrieved authorities")
     return failures
 
 
@@ -503,7 +515,7 @@ def reason_cases(
         )
         return None
     except Exception as exc:  # noqa: BLE001 - LLM output is an optional enhancement
-        logger.warning("LLM reasoning failed; using template synthesis: %s", exc)
+        logger.warning("LLM reasoning failed; using template synthesis: %s", redact_secrets(str(exc)))
         return None
     if not text:
         return None
@@ -523,6 +535,6 @@ def interpret_cases(issue: str, claim_type: str, cases: "list[CaseRecord]") -> s
         )
         return None
     except Exception as exc:  # noqa: BLE001 - LLM output is an optional enhancement
-        logger.warning("LLM interpretation failed; using template fallback: %s", exc)
+        logger.warning("LLM interpretation failed; using template fallback: %s", redact_secrets(str(exc)))
         return None
     return text or None

@@ -1300,34 +1300,37 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         )
         if analysis.impact_profiles
         else [],
+        # Gate each section on the rendered lines, not one raw field: a
+        # guidance object can carry other populated sections even when the
+        # single field previously checked is empty.
         _bullets(
             "VA Rater (RVSR) Application",
             _rvsr_workflow_lines(analysis.adjudication_guidance),
         )
-        if analysis.adjudication_guidance.rvsr.evidence_review_checklist
+        if _rvsr_workflow_lines(analysis.adjudication_guidance)
         else [],
         _bullets(
             "Senior VA Rater / DRO Application (HLR & CUE)",
             _senior_workflow_lines(analysis.adjudication_guidance),
         )
-        if analysis.adjudication_guidance.senior_rater_dro.hlr_de_novo_actions
+        if _senior_workflow_lines(analysis.adjudication_guidance)
         else [],
         _bullets(
             "Quality Review (QRS) Checkpoints",
             _qrs_workflow_lines(analysis.adjudication_guidance),
         )
-        if analysis.adjudication_guidance.qrs.nqr_qrt_error_calls
+        if _qrs_workflow_lines(analysis.adjudication_guidance)
         else [],
         # Backward-compatible headings for callers that parsed the pre-AUD4-007
         # report. The workflow sections above are the authoritative structures.
         _bullets("RVSR operational playbook", _rvsr_lines(analysis.rvsr_guidance))
-        if analysis.rvsr_guidance.evidence_review_checklist
+        if _rvsr_lines(analysis.rvsr_guidance)
         else [],
         _bullets(
             "Senior Rater / DRO operational playbook",
             _senior_lines(analysis.senior_rater_guidance),
         )
-        if analysis.senior_rater_guidance.hlr_de_novo_focus
+        if _senior_lines(analysis.senior_rater_guidance)
         else [],
         _bullets("LLM provenance warnings", analysis.llm_provenance_warnings)
         if analysis.llm_provenance_warnings
@@ -1335,6 +1338,19 @@ def _analysis_to_text(analysis: LegalAnalysis) -> str:
         _bullets("Deep summaries", deep_blocks) if deep_blocks else [],
         [f"How this affects VA claims:\n{analysis.how_it_affects_va_claims or '(none)'}"],
         _bullets("Applicable principles", analysis.likely_applicable_principles),
+        _bullets(
+            "Detected claim elements",
+            [_element_label(e) for e in analysis.detected_elements],
+        )
+        if analysis.detected_elements
+        else [],
+        _bullets(
+            "Principle findings",
+            [_finding_label(f) for f in analysis.principle_findings],
+        )
+        if analysis.principle_findings
+        else [],
+        [f"LLM provenance validated: {'yes' if analysis.llm_provenance_validated else 'no'}"],
         _bullets("Contradictions", [_contradiction_label(c) for c in analysis.contradictions]),
         _bullets("Next steps", analysis.next_steps),
         _bullets("Strengths", analysis.strengths + _search_strengths(analysis.search_telemetry)),
@@ -2087,7 +2103,7 @@ def batch_dry_run(
         # daily window or an explicit --max-batch-requests cap would be
         # exceeded. A cap-based deferral is marked 'deferred' so scheduling can
         # retry it later without treating it as a quota-blocked abort.
-        if packing_cap is not None:
+        if packing_cap is not None and row["verdict"] == "proceed":
             if packed_total + cl_requests > packing_cap:
                 row["verdict"] = "deferred"
             else:
@@ -2095,7 +2111,10 @@ def batch_dry_run(
         if row["verdict"] == "proceed" and remaining is not None and cl_requests > remaining:
             row["verdict"] = "abort"
         if remaining is not None:
-            remaining -= min(cl_requests, remaining)
+            # Only a row that will actually run consumes the daily window;
+            # an aborted/deferred row must not shrink the reported remainder.
+            if row["verdict"] == "proceed":
+                remaining -= min(cl_requests, remaining)
             row["courtlistener_after"] = remaining
         else:
             row["courtlistener_after"] = None
@@ -2299,6 +2318,9 @@ def _auto_run(
     max_iterations: int | None = None,
     max_wait_seconds: float | None = None,
     snapshot_dir: str | None = None,
+    deep_read: bool | None = None,
+    deep_read_limit: int | None = None,
+    enrich: bool = True,
 ) -> list[dict[str, object]]:
     """Execute the batch: run the packed issues now, wait for the reset, repeat.
 
@@ -2347,6 +2369,8 @@ def _auto_run(
             pending,
             claim_type=claim_type,
             max_results=max_results,
+            deep_read=deep_read,
+            deep_read_limit=deep_read_limit,
             max_batch_requests=max_batch_requests,
         )
         next_pending: list[str] = []
@@ -2363,8 +2387,11 @@ def _auto_run(
                         issue,
                         claim_type=claim_type,
                         max_results=max_results,
+                        enrich=enrich,
                         telemetry=None,
                         max_wall_seconds=max_wall_seconds,
+                        deep_read=deep_read,
+                        deep_read_limit=deep_read_limit,
                         snapshot_dir=snapshot_dir,
                     )
                     analysis.run_id = run_id
@@ -2683,7 +2710,7 @@ def main() -> None:
     parser.add_argument(
         "--batch-size",
         dest="batch_size",
-        type=int,
+        type=_positive_int,
         default=None,
         help="Declared number of runs sharing this run_id; emit a batch_summary event once that many complete/fail.",
     )
@@ -2843,6 +2870,9 @@ def main() -> None:
             max_batch_requests=args.max_batch_requests,
             run_id=run_id,
             snapshot_dir=args.snapshot_dir,
+            deep_read=args.deep_read,
+            deep_read_limit=args.deep_read_limit,
+            enrich=not args.no_enrich,
         )
         summary = _auto_run_summary(results)
         complete = summary["successful"] == summary["issues"]

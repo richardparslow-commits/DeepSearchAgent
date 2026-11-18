@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .models import CitatorCheck, LegalAnalysis
+from .redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,26 @@ class SnapshotStore:
             temporary_path.unlink(missing_ok=True)
             raise
 
+    def _manifest_has_id(self, snapshot_id: str) -> bool:
+        """Whether the manifest already carries a row for *snapshot_id*."""
+        if not self.manifest.exists():
+            return False
+        try:
+            with self.manifest.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(entry, dict) and entry.get("id") == snapshot_id:
+                        return True
+        except OSError:
+            return False
+        return False
+
     def _append_manifest(self, record: SnapshotRecord) -> None:
         entry = {
             "id": record.id,
@@ -197,6 +218,11 @@ class SnapshotStore:
             metadata=metadata or {},
         )
         if path.exists():
+            # The payload is immutable, but the manifest may have lost this
+            # row (truncation/manual edit); re-append it so the snapshot stays
+            # discoverable instead of silently orphaned.
+            if not self._manifest_has_id(snapshot_id):
+                self._append_manifest(record)
             return record
         self._write_atomic(
             path,
@@ -292,17 +318,19 @@ class SnapshottingCourtListenerProvider:
             self.store.record_response(
                 kind, request, response, source_url=source_url
             )
-        except OSError as exc:
+        except (OSError, TypeError, ValueError) as exc:
             # Snapshotting must never make a provider result fail. The caller
             # still receives the response; the failure is logged for the run.
-            logger.warning("Could not persist %s snapshot: %s", kind, exc)
+            logger.warning(
+                "Could not persist %s snapshot: %s", kind, redact_secrets(str(exc))
+            )
 
     def lookup_citations(self, text: str) -> Any:
         request = {"citation_text": text}
         try:
             response = self.provider.lookup_citations(text)
         except Exception as exc:  # noqa: BLE001 - preserve provider error
-            self._capture("courtlistener.lookup", request, {"error": str(exc)})
+            self._capture("courtlistener.lookup", request, {"error": redact_secrets(str(exc))})
             raise
         self._capture("courtlistener.lookup", request, response)
         return response
@@ -323,7 +351,7 @@ class SnapshottingCourtListenerProvider:
                 opinion_id, page_size=page_size, cursor=cursor
             )
         except Exception as exc:  # noqa: BLE001 - preserve provider error
-            self._capture("courtlistener.citing_edges", request, {"error": str(exc)})
+            self._capture("courtlistener.citing_edges", request, {"error": redact_secrets(str(exc))})
             raise
         self._capture("courtlistener.citing_edges", request, response)
         return response
@@ -338,7 +366,7 @@ class SnapshottingCourtListenerProvider:
             )
         except Exception as exc:  # noqa: BLE001 - preserve provider error
             self._capture(
-                "courtlistener.same_docket", request, {"error": str(exc)}
+                "courtlistener.same_docket", request, {"error": redact_secrets(str(exc))}
             )
             raise
         self._capture("courtlistener.same_docket", request, response)
@@ -350,7 +378,7 @@ class SnapshottingCourtListenerProvider:
             response = self.provider.opinion_metadata(opinion_id)
         except Exception as exc:  # noqa: BLE001 - preserve provider error
             self._capture(
-                "courtlistener.opinion_metadata", request, {"error": str(exc)}
+                "courtlistener.opinion_metadata", request, {"error": redact_secrets(str(exc))}
             )
             raise
         source_url = str(response.get("url") or "") if isinstance(response, dict) else ""
@@ -377,7 +405,7 @@ class SnapshottingCourtListenerProvider:
             self._capture(
                 "courtlistener.opinion_metadata_batch",
                 request,
-                {"error": str(exc)},
+                {"error": redact_secrets(str(exc))},
             )
             raise
         self._capture(
@@ -391,7 +419,7 @@ class SnapshottingCourtListenerProvider:
             response = self.provider.fetch_opinion_text(opinion_id)
         except Exception as exc:  # noqa: BLE001 - preserve provider error
             self._capture(
-                "courtlistener.opinion_text", request, {"error": str(exc)}
+                "courtlistener.opinion_text", request, {"error": redact_secrets(str(exc))}
             )
             raise
         self._capture("courtlistener.opinion_text", request, response)
