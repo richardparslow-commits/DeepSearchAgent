@@ -153,8 +153,8 @@ where no variant is a substring of another).
 
 * `MUTATE_MODULES` and the CI matrix measure **the same modules and slices**;
 * **every** package module is either measured or carries an explicit, reasoned
-  entry in `MUTATION_EXEMPT` (13 modules, listed with reasons);
-* `redaction.py` and `citator.py` specifically stay measured.
+  entry in `MUTATION_EXEMPT` (12 modules, listed with reasons);
+* `redaction.py`, `citator.py` and `va_domain.py` specifically stay measured.
 
 Verified: dropping a new unaccounted module into the package fails the guard with
 an actionable message naming the module. The gap is now tracked debt that cannot
@@ -203,6 +203,47 @@ below).
 `citator.py` is now in `MUTATE_MODULES` and the CI matrix with a **45-minute**
 leg, and `test_citator_is_mutation_measured` keeps it gated.
 
+## Scope extension: `va_domain.py` is now gated
+
+`va_domain.py` (1,633 lines / 476 statements) maps decisions onto VA adjudication:
+provision impacts, provenance verification, D1 metadata and role guidance.
+
+Wiring it surfaced a **second instance of the sandbox-mirroring crash**: its slice
+includes `tests/test_audit_pass5.py`, which reads `deploy/install.sh` and
+`scripts/`. The earlier fix mirrored only `tests/` and `benchmarks/`, so mutmut
+again exited 1. That was fixed generally (all repo-root reads mirrored, plus a
+completeness guard) and shipped separately before this scope change.
+
+Measured: **962 survivors, 0 timeouts**. Over half (492) are guidance-string
+literals in `build_rvsr_guidance` / `build_senior_rater_guidance` — advisory
+playbook text, the documented equivalent class.
+
+### Killable correctness mutants that were killed
+
+Verified by applying each mutation and confirming the suite fails (**6/6**):
+
+| Mutation | Consequence if uncaught |
+|---|---|
+| `verified = host_verified and anchor_confirmed` → `or` | provenance claimed on official-host membership alone, with no citation-bearing anchor |
+| `anchor_confirmed = bool(quote.strip()) and (…)` → `or` | an empty anchor still "confirms" the citation |
+| `host_verified = bool(host) and (…)` → `or` | a secondary host counts as an official source |
+| `host_verified = bool(host)` → `bool(None)` | provenance never verified at all |
+| `if subsection and not spec.citation.endswith(…)` → `or` | the AUD5 subsection guard breaks: `§ 5107(a)` text emits the `§ 5107(b)` benefit-of-the-doubt impact |
+| `(match.group(1) or "")` → `or "XXXX"` | a bare alias (`§ 5107`) stops mapping to its registry provision |
+
+The new tests pin all three provenance combinations (official+anchor, official+empty
+anchor, secondary+anchor) and all three subsection cases (bare, matching,
+mismatched).
+
+**Disproved rather than assumed:** the canonical-citation boundary and
+`re.IGNORECASE` mutants looked killable but are **equivalent** — all 49 registry
+specs are U.S.C./C.F.R. with an alias fallback that yields the same impact, so
+breaking the canonical pattern does not change the result.
+
+Survivors: **962 → 941**. `va_domain.py` is now in `MUTATE_MODULES` and the CI
+matrix with a **40-minute** leg, and `test_va_domain_is_mutation_measured` keeps it
+gated.
+
 ## Per-module counts
 
 | Module | Baseline before | First measured pass | After killing tests |
@@ -224,7 +265,8 @@ leg, and `test_citator_is_mutation_measured` keeps it gated.
 | `reliability.py` | 2 | 28 | 18 |
 | `search.py` | 40 | 43 | 40 |
 | `topics.py` | 0 | 0 | 0 |
-| **Total** | **640** (15 gated) | **2326** | **2253** (17 gated) |
+| `va_domain.py` | not gated | 962 | 941 |
+| **Total** | **640** (15 gated) | **3288** | **3194** (18 gated) |
 
 `ranking.py` now sits **below** its old baseline; `search.py`, `queries.py`,
 `planning.py` and `topics.py` are unchanged.
@@ -248,7 +290,7 @@ make mutate           # per-module passes; reports to /tmp/mutmut_survivors_<mod
 python scripts/check_mutation_baseline.py
 ```
 
-Validation after this re-triage: **2516 tests pass** (also under
+Validation after this re-triage: **2520 tests pass** (also under
 `PYTHONWARNINGS=error`), **100% line + branch coverage** (`--cov-fail-under=100`),
-ruff clean, and the kill-gate reports `match` for all 17 modules with
+ruff clean, and the kill-gate reports `match` for all 18 modules with
 **0 timeouts**.

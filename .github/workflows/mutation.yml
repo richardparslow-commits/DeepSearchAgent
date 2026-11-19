@@ -97,6 +97,9 @@ jobs:
           - module: citator.py
             tests: tests/test_citator.py tests/test_source_validity.py tests/test_source_audit_properties.py tests/test_fetch_error_kind.py
             timeout: 45
+          - module: va_domain.py
+            tests: tests/test_impact.py tests/test_audit_pass5.py tests/test_interpretation.py tests/test_audit_invariants.py tests/test_cli.py tests/test_legal_agent.py
+            timeout: 40
     steps:
       - uses: actions/checkout@v5
 

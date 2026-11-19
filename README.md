@@ -20,7 +20,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of November 2026: **2516 tests**, with 100% line + branch coverage across the package, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 17 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of November 2026: **2520 tests**, with 100% line + branch coverage across the package, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 18 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -35,7 +35,7 @@ State as of November 2026: **2516 tests**, with 100% line + branch coverage acro
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2516 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2520 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every in-scope module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
@@ -242,9 +242,10 @@ default args, unreachable fallbacks — expected and acceptable); the post-AUD5
 catch-up triage has not yet proven every remaining survivor equivalent, so a
 follow-up kill-pass is still owed (see
 [`docs/mutation-baseline-retriage.md`](docs/mutation-baseline-retriage.md)).
-The mutation scope is the 17 modules paired with
+The mutation scope is the 18 modules paired with
 test slices in the Makefile's `MUTATE_MODULES`, including the security-critical
-`redaction.py` and the legal-correctness-critical `citator.py`. Every other
+`redaction.py`, the legal-correctness-critical `citator.py`, and the
+provision-mapping `va_domain.py`. Every other
 package module must carry an explicit, reasoned
 entry in `MUTATION_EXEMPT` (`tests/test_mutation_gate_integrity.py`), so a new
 module can never silently escape the gate. Run the pass after adding features or
