@@ -2587,3 +2587,97 @@ def test_run_citator_prioritizes_binding_authority_over_input_order():
         [lower, higher], provider, max_cases=1, authority_queue=prebuilt
     )
     assert [check.target_case for check in prebuilt_checks] == ["Smith v. Wilkie"]
+
+
+def test_scope_for_marks_every_whole_precedent_treatment_as_all():
+    # Each member of the "all" set must be honoured; dropping one silently
+    # downgrades a whole-precedent overruling to an "unclear" scope.
+    for treatment in (
+        "overruled",
+        "abrogated",
+        "superseded",
+        "vacated",
+        "reaffirmed",
+        "adhered to",
+        "declined to overrule",
+    ):
+        assert _scope_for(treatment, "The court acted.") == "all", treatment
+    # The partial-scope scan is case-insensitive.
+    assert _scope_for("overruled", "OVERRULED IN PART.") == "part"
+    assert _scope_for("overruled", "OVERRULED TO THE EXTENT IT CONFLICTS.") == "part"
+
+
+def test_is_negated_window_boundaries():
+    from va_legal_agent.citator import _is_negated
+
+    # Negation at the very start of a short sentence must still be seen: the
+    # prefix window starts at 0, not 1.
+    assert _is_negated("not overruled here", 4) is True
+    # The window is exactly 80 characters. A negation that only fits in an
+    # 81-character window must NOT be honoured.
+    sentence = "not " + "x" * 77 + "overruled"
+    assert sentence.index("overruled") == 81
+    assert _is_negated(sentence, 81) is False
+
+
+def test_is_non_verb_negative_handles_plural_and_uppercase_objects():
+    # Plural noun "questions" is still the noun, not a treatment.
+    noun = "The questions presented are narrow."
+    idx = noun.index("questions")
+    assert (
+        _is_non_verb_negative("questioned", "questions", noun, idx + len("questions"))
+        is True
+    )
+    # An uppercase determiner still marks the verb form (case-insensitive).
+    verb = "We question THE doctrine announced in Smith."
+    idx = verb.index("question")
+    assert (
+        _is_non_verb_negative("questioned", "question", verb, idx + len("question"))
+        is False
+    )
+    # Uppercase WHETHER still marks a clause object.
+    clause = "We question WHETHER Smith was correctly decided."
+    idx = clause.index("question")
+    assert (
+        _is_non_verb_negative("questioned", "question", clause, idx + len("question"))
+        is False
+    )
+
+
+def test_enforcement_demotes_good_law_only_when_as_of_was_carried():
+    from va_legal_agent.citator import _apply_source_validity_enforcement
+    from va_legal_agent.models import CitatorCheck, SourceValiditySignal
+
+    blocked = NegativeTreatment(
+        citing_case="Later v. Secretary",
+        citing_citation="9 Vet.App. 9",
+        treatment="overruled",
+        excerpt="Later v. Secretary overruled the decision.",
+        authoritative=True,
+        source_opinion_id="9",
+    )
+    signal = SourceValiditySignal(source_opinion_id="9", status="invalid")
+
+    # good_law with NO as-of date did not rest on those treatments: keep it.
+    no_as_of = CitatorCheck(
+        target_case="Smith v. Wilkie",
+        status="good_law",
+        good_law_as_of="",
+        negative_treatments=[blocked],
+        source_validity=[signal],
+    )
+    _apply_source_validity_enforcement(no_as_of)
+    assert no_as_of.status == "good_law"
+
+    # good_law whose as-of WAS carried from the blocked treatments: demote.
+    carried = CitatorCheck(
+        target_case="Smith v. Wilkie",
+        status="good_law",
+        good_law_as_of="2026-01-01",
+        negative_treatments=[blocked],
+        source_validity=[signal],
+    )
+    _apply_source_validity_enforcement(carried)
+    assert carried.status == "unknown"
+    assert carried.good_law_as_of == ""
+

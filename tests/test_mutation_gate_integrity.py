@@ -156,7 +156,6 @@ PACKAGE_DIR = REPO_ROOT / "va_legal_agent"
 # or be listed here, otherwise the suite fails. Shrink this list over time —
 # see docs/mutation-baseline-retriage.md for the follow-up kill-pass order.
 MUTATION_EXEMPT = {
-    "citator.py": "3.8k lines; needs a dedicated scoped kill-pass before it can be gated",
     "__main__.py": "3.1k lines of CLI/render wiring; slice not yet chosen",
     "models.py": "pydantic validators; mostly declarative, slice not yet chosen",
     "va_domain.py": "1.6k lines of domain guidance; needs a dedicated kill-pass",
@@ -224,3 +223,11 @@ def test_redaction_is_mutation_measured() -> None:
     assert "redaction.py" in scope
     assert "tests/test_redaction.py" in scope["redaction.py"]
     assert "redaction.py" not in MUTATION_EXEMPT
+
+
+def test_citator_is_mutation_measured() -> None:
+    """Good-law / negative-treatment correctness must stay gated."""
+    scope = _makefile_scope()
+    assert "citator.py" in scope
+    assert "tests/test_citator.py" in scope["citator.py"]
+    assert "citator.py" not in MUTATION_EXEMPT

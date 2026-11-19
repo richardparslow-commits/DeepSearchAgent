@@ -75,7 +75,7 @@ Every runtime knob is a typed field in `Settings` (`config.py`), driven by envir
 - **Lint**: `ruff` (rules E, F, W; E501 ignored). `make lint`
 - **Tests**: 2,434 tests, ~20s runtime. `make test` / `make test-w` (warnings as errors)
 - **Coverage**: 100% line + branch, enforced by `--cov-fail-under=100`. `make coverage`
-- **Mutation kill-gate**: mutmut pass per module against its test slice for the 16 modules paired in the Makefile's `MUTATE_MODULES`; survivors triaged into `.mutation-baseline.json`. `make mutate-check`
+- **Mutation kill-gate**: mutmut pass per module against its test slice for the 17 modules paired in the Makefile's `MUTATE_MODULES`; survivors triaged into `.mutation-baseline.json`. `make mutate-check`
 
 ## Conventions when editing
 

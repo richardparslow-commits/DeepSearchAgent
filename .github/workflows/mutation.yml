@@ -94,6 +94,9 @@ jobs:
           - module: redaction.py
             tests: tests/test_redaction.py tests/test_audit_invariants.py
             timeout: 10
+          - module: citator.py
+            tests: tests/test_citator.py tests/test_source_validity.py tests/test_source_audit_properties.py tests/test_fetch_error_kind.py
+            timeout: 45
     steps:
       - uses: actions/checkout@v5
 
