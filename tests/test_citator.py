@@ -11,6 +11,7 @@ from va_legal_agent.citator import (
     _citing_priority_page_size,
     _citing_priority_pool_size,
     _is_abbreviation,
+    _is_non_verb_negative,
     _normalize_as_of_date,
     _opinion_role,
     _precedential_tier,
@@ -365,6 +366,41 @@ def test_extract_ignores_question_noun_and_adjectival_limited():
     )
 
     assert extract_negative_treatments(text, "Smith v. Wilkie", "") == []
+
+
+def test_question_whether_clause_is_a_verbal_treatment():
+    # AUD5-007 follow-up: "question whether …" takes a clause object, so it is
+    # the verb (real treatment), unlike the noun "the question whether …".
+    sentence = "We question whether Smith was correctly decided."
+    idx = sentence.index("question")
+    assert (
+        _is_non_verb_negative("questioned", "question", sentence, idx + len("question"))
+        is False
+    )
+
+
+def test_question_noun_before_whether_clause_stays_suppressed():
+    sentence = "The question whether Smith applies is narrow."
+    idx = sentence.index("question")
+    assert (
+        _is_non_verb_negative("questioned", "question", sentence, idx + len("question"))
+        is True
+    )
+
+
+def test_question_without_an_object_is_not_treatment():
+    sentence = "We question."
+    idx = sentence.index("question")
+    assert (
+        _is_non_verb_negative("questioned", "question", sentence, idx + len("question"))
+        is True
+    )
+
+
+def test_extract_questions_whether_clause_binds_the_target():
+    text = "We question whether Smith v. Wilkie was correctly decided."
+    findings = extract_negative_treatments(text, "Smith v. Wilkie", "")
+    assert [finding.treatment for finding in findings] == ["questioned"]
 
 
 def test_extract_keeps_a_passive_overrule_by_an_explicit_actor():

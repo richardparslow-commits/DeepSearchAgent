@@ -132,3 +132,40 @@ def test_authority_labels_and_summary_cover_official_secondary_and_unknown():
     assert summary.unknown_count == 1
     assert summary.official_primary_binding_count == 1
     assert summary.official_primary_persuasive_count == 1
+
+
+def test_classify_authority_tier_supreme_court_binding_without_precedential_flag():
+    # The Supreme Court branch returns binding regardless of the precedential
+    # designation (reliability.py line 117).
+    from va_legal_agent.topics import COURT_SUPREME
+
+    assert classify_authority_tier(
+        "https://www.supremecourt.gov/opinions/21-1.pdf", COURT_SUPREME
+    ) == (AUTHORITY_BINDING, True)
+
+
+def test_classify_authority_tier_official_non_courtlistener_host_falls_through():
+    # An official primary URL with no court label whose host is neither
+    # CourtListener nor va.gov lands on the fallthrough (reliability.py line 136).
+    assert classify_authority_tier("https://uscourts.cavc.gov/opinions/1") == (
+        AUTHORITY_AGENCY_GUIDANCE,
+        True,
+    )
+
+
+def test_authority_label_persuasive_agency_and_generic_official_badges():
+    assert authority_label(AUTHORITY_PERSUASIVE, True) == (
+        "Official Court Transcript / Primary Authority (persuasive)"
+    )
+    assert authority_label(AUTHORITY_AGENCY_GUIDANCE, True) == (
+        "Official Agency Guidance / Primary Authority"
+    )
+    assert authority_label("custom_tier", True) == "Official Primary Authority"
+    assert authority_label(AUTHORITY_BINDING, True) == (
+        "Official Court Transcript / Primary Authority (binding)"
+    )
+    assert authority_label(AUTHORITY_SECONDARY, False) == (
+        "Secondary Summary / Non-Binding Source"
+    )
+    assert authority_label("custom_tier", False) == "Unverified Source"
+

@@ -4924,3 +4924,57 @@ def test_aud4_005_008_agent_preserves_full_impact_and_role_workflows():
     assert record.is_official_authority is True
     assert analysis.source_reliability_summary.official_count == 1
     assert analysis.source_reliability_summary.total == len(analysis.surfaced_cases)
+
+
+def test_fetch_cases_keeps_abstract_set_by_deep_read(monkeypatch):
+    results = [
+        {"title": "Case A", "url": "https://uscourts.cavc.gov/a", "snippet": "service connection"}
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {}
+    )
+
+    def deep_read_sets_abstract(cases, issue, limit=None):
+        from va_legal_agent.va_domain import build_case_abstract
+
+        for case in cases:
+            case.case_abstract = build_case_abstract("", case)
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", deep_read_sets_abstract)
+
+    cases = fetch_cases_for_issue("service connection", max_results=5)
+
+    assert cases[0].case_abstract is not None
+
+
+def test_analyze_unverified_deep_summary_without_holding_exports_snippet(monkeypatch):
+    results = [
+        {
+            "title": "Case A",
+            "url": "https://uscourts.cavc.gov/a",
+            "snippet": "service connection evidence",
+        }
+    ]
+    _stub_search(monkeypatch, results=results)
+    monkeypatch.setenv("DEEP_READ", "1")
+    monkeypatch.setattr(
+        "va_legal_agent.agent.fetch_case_details", lambda url, timeout=None: {}
+    )
+
+    def deep_read_unverified(cases, issue, limit=None):
+        for case in cases:
+            case.deep_summary = "Unverified model text."
+            case.deep_summary_source = "llm_synthesized"
+            case.deep_summary_provenance_verified = False
+            case.holding = ""
+
+    monkeypatch.setattr("va_legal_agent.agent.deep_read_cases", deep_read_unverified)
+
+    analysis = analyze_cases_for_claim("service connection")
+
+    entry = analysis.deep_summaries[0]
+    assert entry.get("unverified_snippet")
+    assert "verified_holding" not in entry
+

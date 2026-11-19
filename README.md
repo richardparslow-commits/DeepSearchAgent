@@ -20,7 +20,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of November 2026: **2434 tests**, with 100% line + branch coverage on the new Regulations.gov module, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 15 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of November 2026: **2488 tests**, with 100% line + branch coverage across the package, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 15 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -35,7 +35,7 @@ State as of November 2026: **2434 tests**, with 100% line + branch coverage on t
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2434 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2488 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every in-scope module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |

@@ -4746,3 +4746,109 @@ def test_aud4_real_cavc_fixture_renders_every_required_layer():
     )
     assert payload["rvsr_guidance"]["rating_codesheet_actions"]
     assert payload["senior_rater_guidance"]["cue_analysis"]
+
+
+def test_source_invalidator_check_rejects_unknown_review_status():
+    from pydantic import ValidationError
+
+    from va_legal_agent.models import SourceInvalidatorCheck
+
+    with pytest.raises(ValidationError):
+        SourceInvalidatorCheck(review_status="bogus_status")
+
+
+def test_surfaced_case_record_infers_tier_and_display_label():
+    from va_legal_agent.models import SurfacedCaseRecord
+
+    secondary = SurfacedCaseRecord(
+        case_title="X v. Y",
+        court="CAVC",
+        authority_tier="unverified",
+        source_reliability="secondary",
+    )
+    assert secondary.authority_tier == "secondary_summary"
+    assert secondary.is_official_authority is False
+
+    official = SurfacedCaseRecord(
+        case_title="X v. Y",
+        court="CAVC",
+        authority_tier="unverified",
+        source_reliability="official",
+    )
+    assert official.authority_tier == "official_primary_persuasive"
+    assert official.is_official_authority is True
+    assert official.display_label == "X v. Y (CAVC)"
+
+
+def test_deep_summary_source_label_all_sources():
+    from va_legal_agent.__main__ import _deep_summary_source_label
+
+    assert _deep_summary_source_label({"summary_source": "extractive_fallback"}) == (
+        "[Extractive Source Summary — Verified Excerpts; "
+        "Unverified LLM Claims Rejected]"
+    )
+    assert _deep_summary_source_label({"summary_source": "extractive"}) == (
+        "[Extractive Source Summary — Verified Excerpts]"
+    )
+    assert _deep_summary_source_label({"summary_source": "other"}) == (
+        "[Deep Summary — Source-Derived Text; Confirm Against Official Transcript]"
+    )
+
+
+def test_deep_summary_blocks_no_holding_non_list_notes_and_legacy():
+    from va_legal_agent.__main__ import _deep_summary_blocks
+
+    entry = {
+        "case": "X v. Y",
+        "summary": "Some summary.",
+        "summary_source": "extractive",
+        "verification_notes": "not-a-list",
+    }
+    blocks = _deep_summary_blocks([entry])
+    assert len(blocks) == 1
+    assert "[Verified Source Holding]" not in blocks[0]
+    legacy = {"case": "A v. B", "summary": "Legacy summary."}
+    assert _deep_summary_blocks([legacy]) == ["A v. B:\nLegacy summary."]
+    assert _deep_summary_blocks([{"case": "C", "summary": ""}]) == []
+
+
+def test_authority_lines_govinfo_records_detail_fallback():
+    from va_legal_agent.__main__ import _authority_lines
+    from va_legal_agent.models import AuthorityCheck, GovInfoPublicLaw, GovInfoStatute
+
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110",
+        source="govinfo",
+        status="verified",
+        public_laws=[
+            GovInfoPublicLaw(
+                package_id="PLAW-1", citation="Pub. L. 1", title="T", detail="law detail"
+            ),
+            GovInfoPublicLaw(package_id="PLAW-2"),
+        ],
+        statutes_at_large=[
+            GovInfoStatute(
+                package_id="STATUTE-1", citation="1 Stat. 1", title="S", detail="statute detail"
+            ),
+            GovInfoStatute(package_id="STATUTE-2"),
+        ],
+    )
+    text = "\n".join(_authority_lines([check]))
+    assert "law detail" in text
+    assert "statute detail" in text
+    assert "Record:" not in text
+    assert "Text:" not in text
+    assert "Excerpt:" not in text
+
+
+def test_regulations_lines_docket_without_supporting_documents():
+    from va_legal_agent.__main__ import _regulations_lines
+    from va_legal_agent.models import RegulationsDocket, RegulationsMapping
+
+    mapping = RegulationsMapping(
+        cfr_part="3", dockets=[RegulationsDocket(docket_id="VA-2024-0001")]
+    )
+    text = "\n".join(_regulations_lines([mapping]))
+    assert "Docket VA-2024-0001" in text
+    assert "Supporting documents:" not in text
+

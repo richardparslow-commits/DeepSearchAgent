@@ -142,6 +142,27 @@ def main() -> None:
         if conftest.exists():
             shutil.copy2(conftest, Path("mutants") / "conftest.py")
 
+        # Mirror the test slice and the repo data fixtures it reads. mutmut's
+        # copy step skips paths already present in the sandbox, so a scratch dir
+        # left by an earlier pass would keep stale tests and never gain the
+        # benchmarks/ tree. Tests resolve fixtures relative to the sandbox root
+        # (Path(__file__).parents[1] / "benchmarks"), so without this mirror the
+        # stats-collection run dies on FileNotFoundError and mutmut exits 1.
+        shutil.copytree(
+            Path("tests"),
+            Path("mutants") / "tests",
+            ignore=shutil.ignore_patterns("__pycache__"),
+            dirs_exist_ok=True,
+        )
+        benchmarks = Path("benchmarks")
+        if benchmarks.exists():
+            shutil.copytree(
+                benchmarks,
+                Path("mutants") / "benchmarks",
+                ignore=shutil.ignore_patterns("__pycache__"),
+                dirs_exist_ok=True,
+            )
+
         # Drop the current module's copy and the cached test associations so this
         # pass re-collects stats against the tests as they exist right now.
         stem = Path(module).stem

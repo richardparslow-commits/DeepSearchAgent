@@ -736,3 +736,48 @@ def test_deep_read_case_sets_full_structured_abstract(monkeypatch):
     assert "VACATED" in case.case_abstract.disposition
     assert "REMANDED" in case.case_abstract.remand_instructions
     assert "§ 3.304(f)" in case.case_abstract.reasoning_summary
+
+
+def test_deep_read_case_empty_synthesis_returns_empty(monkeypatch):
+    # An empty reduce result short-circuits to "" (deep_read.py line 254).
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text",
+        lambda url, max_pages=0: "Some body text here.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read._synthesize_case_result",
+        lambda title, issue, digests: ("", "extractive"),
+    )
+    assert deep_read_case(_case(), "tinnitus") == ""
+
+
+def test_deep_read_case_no_extractive_fallback_marks_unverified(monkeypatch):
+    # A rejected LLM summary with no extractive fallback stays unverified
+    # (deep_read.py lines 271-272).
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read.fetch_full_text",
+        lambda url, max_pages=0: "The Court holds that the Board erred.",
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read._synthesize_case_result",
+        lambda title, issue, digests: (
+            "Zzyqx quuxology fabricated unrelated narrative words",
+            "llm_synthesized",
+        ),
+    )
+    monkeypatch.setattr(
+        "va_legal_agent.deep_read._extractive_digest_summary", lambda digests: ""
+    )
+    case = _case()
+
+    result = deep_read_case(case, "tinnitus")
+
+    assert result == "Zzyqx quuxology fabricated unrelated narrative words"
+    assert case.deep_summary_source == "llm_synthesized"
+    assert case.deep_summary_provenance_verified is False
+    assert any(
+        "No extractive fallback" in note
+        for note in case.deep_summary_verification_notes
+    )
+

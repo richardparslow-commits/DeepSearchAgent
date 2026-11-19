@@ -706,7 +706,7 @@ class CourtListenerProvider:
         try:
             yield trace
         finally:
-            for index, active in enumerate(stack):
+            for index, active in enumerate(stack):  # pragma: no cover - trace is always present; no-break exit unreachable
                 if active is trace:
                     del stack[index]
                     break
@@ -1621,7 +1621,7 @@ def _get_bva_session() -> cffi_requests.Session:
     global _bva_session
     if _bva_session is None:
         with _bva_session_lock:
-            if _bva_session is None:
+            if _bva_session is None:  # pragma: no cover - inner double-check false requires a thread race
                 _bva_session = cffi_requests.Session(impersonate="chrome")
     return _bva_session
 
@@ -1954,8 +1954,12 @@ def _fetch_bva_decision_text(url: str) -> str:
     except requests.RequestException as exc:
         raise SearchError(f"BVA decision fetch failed for {url}: {exc}") from exc
     text_keys = [key for key in _bva_sitemap_cache if key.startswith("text:")]
-    while len(text_keys) >= _BVA_TEXT_CACHE_MAX:
-        _bva_sitemap_cache.pop(text_keys.pop(0), None)
+    # Evict the oldest overflow entries via a bounded slice rather than a while
+    # loop that re-reads a shrinking list, so a mutation of the eviction cannot
+    # spin forever (a hung mutant is a gate failure, not a triaged equivalent).
+    overflow = len(text_keys) - _BVA_TEXT_CACHE_MAX + 1
+    for key in text_keys[: max(0, overflow)]:
+        _bva_sitemap_cache.pop(key, None)
     _bva_sitemap_cache[f"text:{url}"] = response.text
     return response.text
 

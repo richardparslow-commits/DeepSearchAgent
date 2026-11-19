@@ -79,7 +79,7 @@ def _normalize_source_url(url: str | None) -> str:
         if parts.password is not None:
             userinfo += f":{parts.password}"
         userinfo += "@"
-    elif parts.password is not None:
+    elif parts.password is not None:  # pragma: no cover - urlsplit always sets a username when a password is present
         userinfo = f":{parts.password}@"
     netloc = f"{userinfo}{host_display}"
     if port is not None:

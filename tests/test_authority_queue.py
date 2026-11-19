@@ -660,3 +660,35 @@ def test_citator_annotations_do_not_feed_back_into_ranking_or_order():
     assert low.superseded_by == "Newer v. VA"
     assert check.status == "negative"
     assert check.authority_priority == 1
+
+
+def test_annotate_entry_dedups_findings_reasons_and_gated_without_reason():
+    from va_legal_agent.authority_queue import _annotate_entry
+    from va_legal_agent.models import AuthorityQueueEntry
+
+    duplicate = _finding()
+    gated = _finding(
+        citing_case="Other v. X",
+        treatment="criticized",
+        gate_reason="",
+        excerpt="A gated finding without a gate reason.",
+    )
+    check = _check(
+        "Smith v. Wilkie", status="negative", negative=[duplicate, duplicate], gated=[gated]
+    )
+    entry = AuthorityQueueEntry(case_title="Smith v. Wilkie")
+
+    _annotate_entry(entry, check)
+
+    # The duplicate negative finding collapses (authority_queue.py 197->exit).
+    assert len(entry.citator_findings) == 2  # one negative + one gated
+    # The duplicate demotion reason collapses (202->exit).
+    demotion = [r for r in entry.citator_reasons if r.startswith("citator demotion")]
+    assert len(demotion) == 1
+    # A gated finding with no gate reason carries no "; gate:" suffix (230->232).
+    gated_reasons = [
+        r for r in entry.citator_reasons if r.startswith("citator gated finding")
+    ]
+    assert len(gated_reasons) == 1
+    assert "; gate:" not in gated_reasons[0]
+

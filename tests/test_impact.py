@@ -431,3 +431,249 @@ def test_impact_profile_retains_every_renderable_field():
     assert profile.authority_note
     assert profile.provision_impacts
     assert profile.nuance
+
+
+def test_provision_impact_note_without_m21_citations():
+    from va_legal_agent.impact import provision_impact_note
+    from va_legal_agent.models import ProvisionImpact
+
+    impact = ProvisionImpact(
+        citation="38 U.S.C. § 1110",
+        stage="appellate_review",
+        legal_effect="clarifying",
+        m21_1_citations=[],
+    )
+    note = provision_impact_note([impact])
+    assert "38 U.S.C. § 1110" in note
+    assert "->" not in note
+
+
+def test_va_domain_sentence_helpers():
+    import re
+
+    from va_legal_agent.va_domain import _first_match_sentence, _sentences
+
+    assert _sentences("") == []
+    assert _sentences("   ") == []
+    assert _first_match_sentence("First one. Second two.", re.compile(r"Second")) == (
+        "Second two."
+    )
+    assert _first_match_sentence("First one.", re.compile(r"zzz")) == ""
+
+
+def test_va_domain_effect_for_branches():
+    from va_legal_agent.va_domain import STAGE_APPELLATE, ProvisionSpec, _effect_for
+
+    spec = ProvisionSpec("38 U.S.C. § 1110", "statute", STAGE_APPELLATE, "clarifying")
+    assert _effect_for("The rule is invalid.", spec) == "narrowing"
+    assert _effect_for("The manual provision is invalid.", spec, m21=True) == (
+        "invalidating_m21_1_rule"
+    )
+    assert _effect_for("The court cannot apply the manual rule.", spec) == "narrowing"
+    assert _effect_for("The veteran is entitled to benefits.", spec) == "expanding"
+    assert _effect_for("The Board must clarify the standard.", spec) == "clarifying"
+    assert _effect_for("The court will remand.", spec) == "procedural"
+
+
+def test_va_domain_extract_provision_impacts_empty_text():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import extract_provision_impacts
+
+    case = CaseRecord(
+        title="Smith v. Wilkie",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/x",
+    )
+    assert extract_provision_impacts("", case) == []
+
+
+def test_va_domain_impacts_from_cases_dedupes_same_citation_stage():
+    from va_legal_agent.models import CaseRecord, ProvisionImpact
+    from va_legal_agent.va_domain import impacts_from_cases
+
+    impact = ProvisionImpact(citation="38 U.S.C. § 1110", stage="appellate_review")
+    c1 = CaseRecord(title="A v. B", court="CAVC", url="https://example.com/a")
+    c2 = CaseRecord(title="C v. D", court="CAVC", url="https://example.com/c")
+    c1.provision_impacts = [impact]
+    c2.provision_impacts = [impact]
+    assert len(impacts_from_cases([c1, c2])) == 1
+
+
+def test_va_domain_panel_and_precedential_status_edge_cases():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import _panel_status, _precedential_status
+
+    en_banc = CaseRecord(
+        title="Smith v. Wilkie",
+        court="Court of Appeals for Veterans Claims",
+        url="https://example.com/x",
+        snippet="The en banc court decided.",
+        precedential=True,
+    )
+    assert _panel_status(en_banc) == "en_banc"
+    assert _precedential_status(en_banc) == "en_banc"
+    other = CaseRecord(
+        title="X v. Y", court="Some Other Court", url="https://example.com/y"
+    )
+    assert _precedential_status(other) == "unknown"
+
+
+def test_va_domain_history_status_unknown_and_authority_refs_dedupe():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import _authority_refs, _history_status
+
+    assert _history_status("zzz_unrecognized") == "unknown"
+    case = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        citation="1 Vet.App. 1",
+        url="https://example.com/x",
+    )
+    assert len(_authority_refs([case, case])) == 1
+
+
+def test_va_domain_build_case_abstract_empty_title_and_incomplete():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import build_case_abstract
+
+    case = CaseRecord(title="", court="CAVC", url="https://example.com/x")
+    abstract = build_case_abstract("", case)
+    assert abstract.abstract_complete is False
+    assert abstract.abstract_source == "record_metadata"
+    assert "Claimant" in abstract.claimant_and_conditions
+
+
+def test_va_domain_m21_stage_appellate_and_intake():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import (
+        STAGE_APPELLATE,
+        STAGE_INTAKE,
+        extract_provision_impacts,
+    )
+
+    case = CaseRecord(
+        title="Smith v. Wilkie", court="CAVC", url="https://example.com/x"
+    )
+    appellate = extract_provision_impacts("The Board must follow M21-1, Part X.", case)
+    assert any(
+        i.authority_type == "m21_1" and i.stage == STAGE_APPELLATE for i in appellate
+    )
+    intake = extract_provision_impacts("VA must provide notice under M21-1, Part III.", case)
+    assert any(i.authority_type == "m21_1" and i.stage == STAGE_INTAKE for i in intake)
+
+
+def test_va_domain_apply_citator_checks_history_branches():
+    from va_legal_agent.models import (
+        AppellateHistoryCheck,
+        AppellateHistoryRecord,
+        CitatorCheck,
+        LegalAnalysis,
+        NegativeTreatment,
+        SurfacedCaseRecord,
+    )
+    from va_legal_agent.va_domain import apply_citator_checks
+
+    def record(title, citation):
+        return SurfacedCaseRecord(
+            case_title=title, court="CAVC", reporter_citation=citation
+        )
+
+    verified_item = AppellateHistoryRecord(
+        candidate_case="Later v. X",
+        candidate_citation="2 Vet.App. 2",
+        relationship="appeal",
+        disposition="affirmed",
+        scope="full",
+        source_quality="official",
+        source_url="https://example.com/h",
+        reviewer="r",
+        reviewed_at="2024-01-01",
+        rationale="ok",
+    )
+    # A negative treatment that duplicates the verified history entry (dedupe).
+    dup_treatment = NegativeTreatment(
+        citing_case="Later v. X",
+        citing_citation="2 Vet.App. 2",
+        treatment="affirmed",
+        excerpt="Later v. X affirmed the decision.",
+        authoritative=True,
+    )
+    check_verified = CitatorCheck(
+        target_case="Smith v. Wilkie",
+        target_citation="1 Vet.App. 1",
+        status="negative",
+        appellate_history=AppellateHistoryCheck(
+            target_case="Smith v. Wilkie", status="verified", verified_history=[verified_item]
+        ),
+        negative_treatments=[dup_treatment],
+    )
+    check_negative = CitatorCheck(
+        target_case="Jones v. Y",
+        target_citation="3 Vet.App. 3",
+        status="negative",
+        negative_treatments=[
+            NegativeTreatment(
+                citing_case="Other v. Z",
+                citing_citation="4 Vet.App. 4",
+                treatment="overruled",
+                excerpt="Other v. Z overruled the decision.",
+                authoritative=True,
+            )
+        ],
+    )
+    check_other = CitatorCheck(
+        target_case="Other v. Q", target_citation="5 Vet.App. 5", status="not_assessed"
+    )
+    analysis = LegalAnalysis(
+        issue="x",
+        summary="s",
+        how_it_affects_va_claims="h",
+        surfaced_cases=[
+            record("Smith v. Wilkie", "1 Vet.App. 1"),
+            record("Jones v. Y", "3 Vet.App. 3"),
+            record("Other v. Q", "5 Vet.App. 5"),
+            record("No Match v. Nobody", "9 Vet.App. 9"),
+        ],
+    )
+
+    apply_citator_checks(
+        analysis, [check_verified, check_negative, check_other]
+    )
+
+    smith, jones, other, no_match = analysis.surfaced_cases
+    assert smith.history_status == "verified_history"
+    assert smith.citator_status == "negative"
+    # The duplicated history entry collapsed to one.
+    assert len(smith.appellate_history) == 1
+    assert jones.history_status == "negative_treatment"
+    assert other.history_status == "not_assessed"
+    assert no_match.citator_status == "not_assessed"
+
+
+def test_va_domain_rvsr_guidance_musculoskeletal_and_tdiu():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import build_rvsr_guidance
+
+    case = CaseRecord(
+        title="Smith v. Wilkie",
+        court="CAVC",
+        url="https://example.com/x",
+        snippet="The veteran has a knee condition and seeks TDIU individual unemployability.",
+    )
+    guidance = build_rvsr_guidance("service connection for knee", [case])
+    assert any("Musculoskeletal" in item for item in guidance.evidence_review_checklist)
+    assert any("TDIU" in item for item in guidance.rating_codesheet_actions)
+
+
+def test_va_domain_claimant_condition_too_short_after_split_is_rejected():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import _claimant_and_conditions
+
+    case = CaseRecord(
+        title="Smith v. Wilkie", court="CAVC", url="https://example.com/x"
+    )
+    # The captured condition collapses to "a" (len 1) after the split, so it is
+    # rejected by the 2..140 length guard (va_domain.py 684->671).
+    result = _claimant_and_conditions("service connection for a and assigned a rating", case)
+    assert "No specific condition" in result
+

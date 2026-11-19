@@ -6075,3 +6075,144 @@ def test_courtlistener_cluster_helpers_cover_edge_variants():
     assert _cluster_identifier({}, "https://www.courtlistener.com/api/rest/v4/clusters/77/") == "77"
     assert _cluster_identifier({"resource_uri": "https://x/clusters/88/"}) == "88"
     assert _cluster_identifier({}) == ""
+
+
+def test_courtlistener_public_url_passthrough_and_prefix():
+    from va_legal_agent.providers import _courtlistener_public_url
+
+    assert _courtlistener_public_url("https://www.courtlistener.com/opinion/1/") == (
+        "https://www.courtlistener.com/opinion/1/"
+    )
+    assert _courtlistener_public_url("/opinion/1/") == (
+        "https://www.courtlistener.com/opinion/1/"
+    )
+    assert _courtlistener_public_url("") == ""
+    assert _courtlistener_public_url(None) == ""
+
+
+def test_panel_names_string_dict_and_dedupe():
+    from va_legal_agent.providers import _panel_names
+
+    assert _panel_names("Judge A") == "Judge A"
+    assert _panel_names([{"name": "Judge A"}, {"full_name": "Judge B"}]) == (
+        "Judge A; Judge B"
+    )
+    assert _panel_names(["Judge A", "Judge A"]) == "Judge A"
+    assert _panel_names(["https://www.courtlistener.com/people/1/", "/people/2/"]) == ""
+    assert _panel_names(123) == ""
+
+
+def test_docket_identifier_from_id_and_url():
+    from va_legal_agent.providers import _docket_identifier
+
+    assert _docket_identifier({"id": "123"}) == "123"
+    assert _docket_identifier({"id": "0"}) == ""
+    assert _docket_identifier({"resource_uri": "/api/rest/v4/dockets/123/"}) == "123"
+    assert _docket_identifier({}) == ""
+
+
+def test_fetch_oral_argument_error_and_malformed_rows(monkeypatch):
+    from va_legal_agent.providers import CourtListenerProvider
+    from va_legal_agent.search import SearchError
+
+    provider = CourtListenerProvider()
+
+    def boom(url, params=None):
+        raise SearchError("throttled")
+
+    monkeypatch.setattr(provider, "_get_json", boom)
+    with pytest.raises(SearchError, match="oral-argument lookup failed"):
+        provider.fetch_oral_argument("4214664")
+
+    # A non-dict row and a row without a public URL are both skipped.
+    monkeypatch.setattr(
+        provider,
+        "_get_json",
+        lambda url, params=None: {"results": ["not-a-dict", {"absolute_url": ""}]},
+    )
+    assert provider.fetch_oral_argument("4214664") == {}
+
+
+def test_get_json_cache_non_dict_entry_raises(monkeypatch):
+    from types import SimpleNamespace
+
+    from va_legal_agent.providers import CourtListenerProvider
+    from va_legal_agent.search import SearchError
+
+    provider = CourtListenerProvider()
+    monkeypatch.setattr(provider, "_cache_target", lambda url, params: ("kind", "key"))
+    monkeypatch.setattr(
+        provider,
+        "_cache",
+        SimpleNamespace(
+            get_entry=lambda *a: SimpleNamespace(response=["not", "dict"], age_seconds=0)
+        ),
+    )
+    with pytest.raises(SearchError, match="not a JSON object"):
+        provider._get_json("https://www.courtlistener.com/api/rest/v4/search/", {})
+
+
+def test_opinion_metadata_batch_chunk_skips_unrequested_and_malformed_rows(monkeypatch):
+    from va_legal_agent.providers import CourtListenerProvider
+
+    provider = CourtListenerProvider()
+
+    def fake_batch_rows(url, ids, label):
+        if label == "opinion":
+            return [{"id": 1, "cluster": "/api/rest/v4/clusters/50/"}, {"id": 999}]
+        if label == "cluster":
+            return [{"id": 50, "docket": "/api/rest/v4/dockets/70/"}, {"id": 888}]
+        if label == "docket":
+            return [
+                {"resource_uri": "/api/rest/v4/dockets/70/"},
+                {"id": "abc"},
+                {"resource_uri": "/api/rest/v4/dockets/999/"},
+            ]
+        return []
+
+    monkeypatch.setattr(provider, "_batch_rows", fake_batch_rows)
+    result = provider._opinion_metadata_batch_chunk([1])
+    assert isinstance(result, dict)
+
+
+def test_fetch_bva_decision_text_evicts_when_text_cache_full(monkeypatch):
+    import va_legal_agent.providers as prov
+    from va_legal_agent.providers import _BVA_TEXT_CACHE_MAX, _fetch_bva_decision_text
+
+    monkeypatch.setattr(
+        prov,
+        "_bva_sitemap_cache",
+        {f"text:u{i}": "x" for i in range(_BVA_TEXT_CACHE_MAX)},
+    )
+
+    class Resp:
+        text = "decision body"
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(prov.requests, "get", lambda *a, **k: Resp())
+    assert _fetch_bva_decision_text("https://www.va.gov/vetapp26/Files1/new.txt") == (
+        "decision body"
+    )
+    # The oldest entry was evicted and the new one cached, keeping the cap.
+    assert "text:u0" not in prov._bva_sitemap_cache
+    assert prov._bva_sitemap_cache[
+        "text:https://www.va.gov/vetapp26/Files1/new.txt"
+    ] == "decision body"
+    assert len(prov._bva_sitemap_cache) == _BVA_TEXT_CACHE_MAX
+
+
+def test_search_all_wall_time_exhaustion_preserves_telemetry(monkeypatch):
+    import time
+
+    from va_legal_agent.providers import search_all
+    from va_legal_agent.search import SearchError
+
+    telemetry: list[dict[str, object]] = []
+    with pytest.raises(SearchError, match="wall-time budget exhausted"):
+        search_all(
+            "tinnitus", max_results=5, telemetry=telemetry, deadline=time.monotonic() - 1
+        )
+    assert telemetry
+

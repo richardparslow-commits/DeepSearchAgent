@@ -346,3 +346,54 @@ def test_record_analysis_persists_lossless_d1_and_provision_payload(tmp_path):
     assert payload["payload"]["case_abstracts"][0]["abstract_complete"] is True
     assert payload["payload"]["provision_impacts"][0]["m21_1_citations"]
     assert payload["metadata"]["surfaced_case_count"] == 1
+
+
+def test_normalize_source_url_malformed_and_userinfo_edge_cases():
+    # urlsplit ValueError -> returned unchanged (snapshots.py lines 58-59).
+    assert _normalize_source_url("http://[::1") == "http://[::1"
+    # No scheme and no netloc -> returned unchanged (line 61).
+    assert _normalize_source_url("relative/path") == "relative/path"
+    # Scheme but no host -> returned unchanged (line 64).
+    assert _normalize_source_url("file:///x") == "file:///x"
+    # Invalid port -> port dropped (lines 67-68).
+    assert _normalize_source_url("http://host:99999/x") == "http://host/x"
+    # Username and password both present (lines 78-81).
+    assert _normalize_source_url("http://user:pass@host/x") == (
+        "http://user:pass@host/x"
+    )
+    # Username without a password (line 79->81).
+    assert _normalize_source_url("http://user@host/x") == "http://user@host/x"
+    # An empty username with a password still takes the username branch.
+    assert _normalize_source_url("http://:pass@host/x") == "http://:pass@host/x"
+    assert _normalize_source_url("") == ""
+    assert _normalize_source_url("   ") == ""
+
+
+def test_manifest_has_id_tolerates_blank_invalid_and_non_dict_rows(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    # Missing manifest -> False.
+    assert store._manifest_has_id("target") is False
+    # Blank line (157), invalid JSON (160-161), non-matching dict row (162->154),
+    # then a matching row.
+    store.manifest.write_text(
+        "\nnot json\n"
+        + json.dumps({"id": "other"})
+        + "\n"
+        + json.dumps({"id": "target"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert store._manifest_has_id("target") is True
+    assert store._manifest_has_id("absent") is False
+    # A non-dict row is skipped and the loop falls through to False (166).
+    store.manifest.write_text(json.dumps(["not", "dict"]) + "\n", encoding="utf-8")
+    assert store._manifest_has_id("target") is False
+
+
+def test_manifest_has_id_returns_false_on_oserror(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+    # A directory where the manifest file should be makes .open() raise an
+    # OSError, which is swallowed into False (snapshots.py lines 164-165).
+    store.manifest.mkdir()
+    assert store._manifest_has_id("target") is False
+

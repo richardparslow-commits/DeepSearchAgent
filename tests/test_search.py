@@ -1109,3 +1109,18 @@ def test_is_http_url_requires_absolute_http_url_with_host():
     assert _is_http_url("//example.com/path") is False
     assert _is_http_url("/relative/path") is False
     assert _is_http_url("ftp://example.com") is False
+
+
+def test_search_error_preserves_message_kind_and_retryable():
+    from va_legal_agent.search import SearchError
+
+    exc = SearchError("boom", kind="malformed_response", retryable=False)
+    assert str(exc) == "boom"
+    assert exc.kind == "malformed_response"
+    assert exc.retryable is False
+
+    default = SearchError()
+    assert str(default) == ""
+    assert default.kind == ""
+    assert default.retryable is None
+
