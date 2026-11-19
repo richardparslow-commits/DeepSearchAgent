@@ -100,6 +100,9 @@ jobs:
           - module: va_domain.py
             tests: tests/test_impact.py tests/test_audit_pass5.py tests/test_interpretation.py tests/test_audit_invariants.py tests/test_cli.py tests/test_legal_agent.py
             timeout: 40
+          - module: snapshots.py
+            tests: tests/test_snapshots.py tests/test_audit_pass5.py tests/test_citator.py
+            timeout: 15
     steps:
       - uses: actions/checkout@v5
 

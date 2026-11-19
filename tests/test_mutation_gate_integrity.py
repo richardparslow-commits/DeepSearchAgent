@@ -163,7 +163,6 @@ MUTATION_EXEMPT = {
     "congress.py": "Congress.gov client; slice not yet chosen",
     "adjudication.py": "adjudication queue persistence; slice not yet chosen",
     "provenance_compare.py": "provenance sidecar comparison; slice not yet chosen",
-    "snapshots.py": "snapshot store; slice not yet chosen",
     "authority_queue.py": "authority queue ordering; slice not yet chosen",
     "appellate_history.py": "appellate history records; slice not yet chosen",
     "extraction.py": "quote-first extraction; slice not yet chosen",
@@ -238,6 +237,14 @@ def test_va_domain_is_mutation_measured() -> None:
     assert "va_domain.py" in scope
     assert "tests/test_impact.py" in scope["va_domain.py"]
     assert "va_domain.py" not in MUTATION_EXEMPT
+
+
+def test_snapshots_is_mutation_measured() -> None:
+    """The durable evidence store's identity and atomic writes must stay gated."""
+    scope = _makefile_scope()
+    assert "snapshots.py" in scope
+    assert "tests/test_snapshots.py" in scope["snapshots.py"]
+    assert "snapshots.py" not in MUTATION_EXEMPT
 
 
 def test_sandbox_mirrors_every_repo_path_the_tests_read() -> None:

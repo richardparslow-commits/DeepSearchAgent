@@ -90,7 +90,8 @@ MUTATE_MODULES = \
 	"ranking.py tests/test_ranking.py" \
 	"redaction.py tests/test_redaction.py tests/test_audit_invariants.py" \
 	"citator.py tests/test_citator.py tests/test_source_validity.py tests/test_source_audit_properties.py tests/test_fetch_error_kind.py" \
-	"va_domain.py tests/test_impact.py tests/test_audit_pass5.py tests/test_interpretation.py tests/test_audit_invariants.py tests/test_cli.py tests/test_legal_agent.py"
+	"va_domain.py tests/test_impact.py tests/test_audit_pass5.py tests/test_interpretation.py tests/test_audit_invariants.py tests/test_cli.py tests/test_legal_agent.py" \
+	"snapshots.py tests/test_snapshots.py tests/test_audit_pass5.py tests/test_citator.py"
 
 mutate: ## Mutation-testing pass (mutmut) over every mutable module; survivors to /tmp
 	@set -e; for spec in $(MUTATE_MODULES); do \
