@@ -25,6 +25,32 @@ from pathlib import Path
 
 SURVIVOR_DIR = Path("/tmp")
 
+# Repo context the test suite reads relative to its own root. When mutmut runs
+# the slice from mutants/, `Path(__file__).parents[1]` is the sandbox, so every
+# one of these must be mirrored or the stats run dies on FileNotFoundError.
+# Derived from the repo-root reads in tests/ (ROOT / REPO_ROOT / root / ...).
+_SANDBOX_CONTEXT_DIRS = (
+    "tests",
+    "benchmarks",
+    "scripts",
+    "deploy",
+    "docs",
+    ".github",
+)
+_SANDBOX_CONTEXT_FILES = (
+    "README.md",
+    "USAGE.md",
+    "PROMPT.md",
+    "PROMPT-CHATBOT.md",
+    "GEMINI-GEM.md",
+    "GEMINI-GEM-KNOWLEDGE.md",
+    "PROGRESSIVE-GEM.md",
+    "Makefile",
+    "webapp.py",
+    ".env.example",
+    ".mutation-baseline.json",
+)
+
 
 def _reverify_segfault(name: str, tests: list[str], target: str) -> str:
     """Recover the true verdict for a mutant mutmut reported as ``segfault``.
@@ -142,26 +168,26 @@ def main() -> None:
         if conftest.exists():
             shutil.copy2(conftest, Path("mutants") / "conftest.py")
 
-        # Mirror the test slice and the repo data fixtures it reads. mutmut's
+        # Mirror the test slice plus every repo path the tests read. mutmut's
         # copy step skips paths already present in the sandbox, so a scratch dir
-        # left by an earlier pass would keep stale tests and never gain the
-        # benchmarks/ tree. Tests resolve fixtures relative to the sandbox root
-        # (Path(__file__).parents[1] / "benchmarks"), so without this mirror the
-        # stats-collection run dies on FileNotFoundError and mutmut exits 1.
-        shutil.copytree(
-            Path("tests"),
-            Path("mutants") / "tests",
-            ignore=shutil.ignore_patterns("__pycache__"),
-            dirs_exist_ok=True,
-        )
-        benchmarks = Path("benchmarks")
-        if benchmarks.exists():
-            shutil.copytree(
-                benchmarks,
-                Path("mutants") / "benchmarks",
-                ignore=shutil.ignore_patterns("__pycache__"),
-                dirs_exist_ok=True,
-            )
+        # left by an earlier pass would keep stale tests and never gain new data
+        # trees. Tests resolve repo context relative to the sandbox root
+        # (Path(__file__).parents[1] / "<path>"), so a missing path makes the
+        # stats-collection run die on FileNotFoundError and mutmut exits 1.
+        # Keep this list in sync with the repo-root reads in tests/.
+        for name in _SANDBOX_CONTEXT_DIRS:
+            source = Path(name)
+            if source.is_dir():
+                shutil.copytree(
+                    source,
+                    Path("mutants") / name,
+                    ignore=shutil.ignore_patterns("__pycache__"),
+                    dirs_exist_ok=True,
+                )
+        for name in _SANDBOX_CONTEXT_FILES:
+            source = Path(name)
+            if source.is_file():
+                shutil.copy2(source, Path("mutants") / name)
 
         # Drop the current module's copy and the cached test associations so this
         # pass re-collects stats against the tests as they exist right now.
