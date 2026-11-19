@@ -344,3 +344,59 @@ def test_precedential_case_explanation_has_no_unknown_note():
     assert explanation.endswith("completeness 1.00 x 0.15")
     assert "XXXX" not in explanation
     assert "precedential status unknown" not in explanation
+
+
+def test_ranking_explanation_names_the_source_reliability():
+    official = make_case("Alpha v. B")
+    official.is_official_authority = True
+    secondary = make_case("Beta v. C")
+    secondary.is_official_authority = False
+
+    ranked = rank_cases([official, secondary], current_year=2026)
+
+    by_title = {case.title: case.ranking_explanation for case in ranked}
+    assert by_title["Alpha v. B"].endswith("official primary source")
+    assert by_title["Beta v. C"].endswith("secondary/unverified source")
+
+
+def test_official_source_wins_an_exact_score_tie():
+    # Same tier and same composite: only the official flag differs. The mirror
+    # gets the alphabetically earlier title so a broken official tie-break
+    # would let it win on the title key instead.
+    official = make_case(
+        "Zulu v. Secretary", relevance=5, date="2020-01-01",
+        citation="1 Vet.App. 1", holding="h",
+    )
+    official.is_official_authority = True
+    mirror = make_case(
+        "Alpha v. Secretary", relevance=5, date="2020-01-01",
+        citation="1 Vet.App. 1", holding="h",
+    )
+    mirror.is_official_authority = False
+
+    ranked = rank_cases([mirror, official], current_year=2026)
+
+    assert ranked[0].composite_score == ranked[1].composite_score
+    assert ranked[0].title == "Zulu v. Secretary"
+
+
+def test_court_floor_never_exceeds_the_limit_within_one_tier():
+    # floor > limit: the per-tier take must still stop exactly at the limit.
+    cases = [make_case(f"Case {i}", relevance=10 - i) for i in range(5)]
+    ranked = rank_cases(cases, current_year=2026)
+
+    selected = select_with_court_floor(ranked, limit=3, floor=5)
+
+    assert len(selected) == 3
+
+
+def test_court_floor_stops_at_the_limit_before_the_next_tier():
+    high = [make_case(f"High {i}", weight=3, relevance=10 - i) for i in range(2)]
+    low = [make_case(f"Low {i}", weight=2, relevance=10 - i) for i in range(2)]
+    ranked = rank_cases(high + low, current_year=2026)
+
+    selected = select_with_court_floor(ranked, limit=2, floor=2)
+
+    assert len(selected) == 2
+    assert all(case.authority_weight == 3 for case in selected)
+

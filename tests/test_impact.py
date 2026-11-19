@@ -677,3 +677,38 @@ def test_va_domain_claimant_condition_too_short_after_split_is_rejected():
     result = _claimant_and_conditions("service connection for a and assigned a rating", case)
     assert "No specific condition" in result
 
+
+def test_provision_impact_note_caps_at_six_and_keeps_the_full_label():
+    from va_legal_agent.impact import provision_impact_note
+    from va_legal_agent.models import ProvisionImpact
+
+    impacts = [
+        ProvisionImpact(
+            citation=f"38 U.S.C. § {1100 + i}",
+            stage="appellate_review",
+            legal_effect="clarifying",
+            m21_1_citations=["M21-1, Part V"],
+        )
+        for i in range(7)
+    ]
+
+    note = provision_impact_note(impacts)
+
+    expected = "Provision-level VBA impact: " + "; ".join(
+        f"38 U.S.C. § {1100 + i} (appellate_review; clarifying) -> M21-1, Part V"
+        for i in range(6)
+    ) + "."
+    assert note == expected
+
+
+def test_outcome_note_for_uses_the_secretary_override_text():
+    from va_legal_agent.impact import outcome_note_for
+
+    secretary = outcome_note_for("affirmed", "secretary")
+
+    assert secretary == (
+        "The Secretary's cross-appeal was affirmed, meaning the veteran's "
+        "favorable outcome below stands."
+    )
+    assert outcome_note_for("affirmed", "veteran") != secretary
+
