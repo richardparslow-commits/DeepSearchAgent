@@ -388,3 +388,18 @@ def test_summary_telemetry_skips_non_list_entries(state_dir):
 
 def test_outcomes_when_state_file_missing(state_dir):
     assert BatchTracker("nope").outcomes() == []
+
+
+def test_record_preserves_non_ascii_literally_in_the_state_file(state_dir):
+    # ensure_ascii=False is deliberate: section signs and em dashes stay
+    # readable in the state file instead of becoming \uXXXX escapes.
+    tracker = BatchTracker("batch-unicode")
+    issue = "38 C.F.R. § 4.130 — PTSD"
+
+    tracker.record({"event": "analysis_complete", "issue": issue})
+
+    raw = tracker.path.read_text(encoding="utf-8")
+    assert issue in raw
+    assert "\\u" not in raw
+    assert tracker.outcomes()[0]["issue"] == issue
+

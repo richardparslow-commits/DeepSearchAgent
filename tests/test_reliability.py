@@ -153,6 +153,19 @@ def test_classify_authority_tier_official_non_courtlistener_host_falls_through()
     )
 
 
+def test_classify_authority_tier_courtlistener_host_without_court_label():
+    # With no court label, the CourtListener host branch classifies the mirror
+    # as persuasive (official mirror), never agency guidance.
+    assert classify_authority_tier("https://www.courtlistener.com/opinion/1/") == (
+        AUTHORITY_PERSUASIVE,
+        True,
+    )
+    assert classify_authority_tier("https://www.va.gov/vetapp25/Files6/A1.txt") == (
+        AUTHORITY_AGENCY_GUIDANCE,
+        True,
+    )
+
+
 def test_authority_label_persuasive_agency_and_generic_official_badges():
     assert authority_label(AUTHORITY_PERSUASIVE, True) == (
         "Official Court Transcript / Primary Authority (persuasive)"

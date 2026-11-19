@@ -1762,3 +1762,26 @@ def test_aud4_interpretation_emits_concrete_rvsr_and_senior_playbooks():
     assert any(step.startswith("RVSR —") for step in result.next_steps)
     assert any(step.startswith("Senior Rater/DRO —") for step in result.next_steps)
     assert not any("Compare the facts of the current claim" in step for step in result.next_steps)
+
+
+def test_element_library_fields_mirror_the_topic_and_guidance_tables():
+    # Non-emptiness alone cannot catch a shifted/swapped argument: every field
+    # must equal its own source value, position by position.
+    from va_legal_agent.interpretation import _ELEMENT_DETAILS, _build_element_library
+    from va_legal_agent.topics import TOPICS
+
+    specs = _build_element_library()
+
+    assert len(specs) == len(TOPICS)
+    for spec, topic in zip(specs, TOPICS):
+        description, guidance, step, weight = _ELEMENT_DETAILS[topic.name]
+        assert spec.name == topic.name
+        assert spec.phrases == topic.phrases
+        assert spec.description == description
+        assert spec.guidance == guidance
+        assert spec.step == step
+        assert spec.weight == weight
+    # At least one element is weighted above the dataclass default, so dropping
+    # the weight argument is observable.
+    assert any(spec.weight != 0.1 for spec in specs)
+
