@@ -87,7 +87,8 @@ MUTATE_MODULES = \
 	"interpretation.py tests/test_interpretation.py tests/test_topics.py" \
 	"llm.py tests/test_llm.py" \
 	"impact.py tests/test_impact.py" \
-	"ranking.py tests/test_ranking.py"
+	"ranking.py tests/test_ranking.py" \
+	"redaction.py tests/test_redaction.py tests/test_audit_invariants.py"
 
 mutate: ## Mutation-testing pass (mutmut) over every mutable module; survivors to /tmp
 	@set -e; for spec in $(MUTATE_MODULES); do \

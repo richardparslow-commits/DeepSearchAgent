@@ -146,3 +146,81 @@ exit 0
     assert len(calls) == 2
     assert "one.py" in calls[0]
     assert "fail.py" in calls[1]
+
+
+MAKEFILE = REPO_ROOT / "Makefile"
+PACKAGE_DIR = REPO_ROOT / "va_legal_agent"
+
+# Modules deliberately OUTSIDE the mutation gate, each with a reason. This is
+# tracked debt, not a silent hole: a new package module must either be measured
+# or be listed here, otherwise the suite fails. Shrink this list over time —
+# see docs/mutation-baseline-retriage.md for the follow-up kill-pass order.
+MUTATION_EXEMPT = {
+    "citator.py": "3.8k lines; needs a dedicated scoped kill-pass before it can be gated",
+    "__main__.py": "3.1k lines of CLI/render wiring; slice not yet chosen",
+    "models.py": "pydantic validators; mostly declarative, slice not yet chosen",
+    "va_domain.py": "1.6k lines of domain guidance; needs a dedicated kill-pass",
+    "authorities.py": "external-authority verification; slice not yet chosen",
+    "regulations.py": "Regulations.gov client; slice not yet chosen",
+    "congress.py": "Congress.gov client; slice not yet chosen",
+    "adjudication.py": "adjudication queue persistence; slice not yet chosen",
+    "provenance_compare.py": "provenance sidecar comparison; slice not yet chosen",
+    "snapshots.py": "snapshot store; slice not yet chosen",
+    "authority_queue.py": "authority queue ordering; slice not yet chosen",
+    "appellate_history.py": "appellate history records; slice not yet chosen",
+    "extraction.py": "quote-first extraction; slice not yet chosen",
+    "courtlistener_cache.py": "response cache; slice not yet chosen",
+}
+
+
+def _makefile_scope() -> dict[str, str]:
+    """Parse MUTATE_MODULES into {module: test-slice string}."""
+    text = MAKEFILE.read_text(encoding="utf-8")
+    block = text.split("MUTATE_MODULES =", 1)[1].split("\n\n", 1)[0]
+    scope = dict(re.findall(r'"([a-z_]+\.py)\s+([^"]+)"', block))
+    assert scope, "Makefile has no MUTATE_MODULES entries"
+    return scope
+
+
+def test_makefile_and_workflow_measure_the_same_modules() -> None:
+    """`make mutate` locally and the CI matrix must not drift apart."""
+    scope = _makefile_scope()
+    entries = _matrix_entries(_workflow_text())
+
+    assert set(scope) == set(entries)
+    for module, tests in scope.items():
+        assert entries[module][0].split() == tests.split(), module
+
+
+def test_every_package_module_is_measured_or_explicitly_exempt() -> None:
+    """The gate must not silently skip a module (the DOC5 scope gap).
+
+    Adding a module to the package without either wiring it into the mutation
+    scope or recording an explicit exemption fails here.
+    """
+    measured = set(_makefile_scope())
+    present = {
+        path.name for path in PACKAGE_DIR.glob("*.py") if path.name != "__init__.py"
+    }
+    exempt = set(MUTATION_EXEMPT)
+
+    assert not (measured & exempt), (
+        f"modules are both measured and exempt: {sorted(measured & exempt)}"
+    )
+    unaccounted = present - measured - exempt
+    assert not unaccounted, (
+        "package modules are neither mutation-measured nor explicitly exempt: "
+        f"{sorted(unaccounted)}. Add them to MUTATE_MODULES + the workflow "
+        "matrix, or record a reason in MUTATION_EXEMPT."
+    )
+    stale = exempt - present
+    assert not stale, f"exemptions name modules that no longer exist: {sorted(stale)}"
+    assert all(reason.strip() for reason in MUTATION_EXEMPT.values())
+
+
+def test_redaction_is_mutation_measured() -> None:
+    """Credential scrubbing is security-critical and must stay gated."""
+    scope = _makefile_scope()
+    assert "redaction.py" in scope
+    assert "tests/test_redaction.py" in scope["redaction.py"]
+    assert "redaction.py" not in MUTATION_EXEMPT

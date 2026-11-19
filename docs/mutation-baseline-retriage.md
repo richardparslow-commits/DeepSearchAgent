@@ -104,6 +104,62 @@ their matrix timeouts were raised to **30** and **35** minutes respectively. The
 per-leg timeout mechanism is unchanged (a timeout still kills only that leg and
 its report still uploads).
 
+## Scope extension: `redaction.py` is now gated
+
+The gate covered **15 of 30** package modules — 9,766 of 25,933 lines. The
+unmeasured 62% included `redaction.py`, whose entire job is preventing credential
+disclosure (AUD4-001 was **Critical**). Audit finding **DOC5** had flagged this
+scope gap, but it was closed by *rewording the README* ("No code behavior
+changes"), leaving the hole open. Nothing enforced scope completeness:
+`test_mutation_gate_integrity.py` only compared the baseline to the matrix.
+
+Measuring `redaction.py` against its own slice found **84 untracked survivors**,
+including genuinely killable security-critical ones. Demonstrated concretely —
+mutating `_coerce_secrets`' longest-first sort to `key=None` turns
+
+```
+Authorization: Bearer [REDACTED]          (correct)
+Authorization: Bearer AAAAA[REDACTED]BBBB (mutant: credential fragments leak)
+```
+
+and the **entire 2,498-test suite still passed**. Longest-first matters because
+when one secret is a substring of another, replacing the shorter one first
+leaves fragments of the longer credential behind.
+
+`redaction.py` is now in `MUTATE_MODULES` and the CI matrix (slice
+`tests/test_redaction.py tests/test_audit_invariants.py`, 10-minute leg). New
+tests kill the security-critical mutants; each was **verified by applying the
+mutation and confirming the suite fails** (14/14 killed):
+
+| Mutant class | Examples |
+|---|---|
+| Secret ordering | `sort(key=len, reverse=True)` → `key=None`, `reverse=False`, no sort |
+| Length floor | `len(text) < 4` → `<= 4`, `< 5` (would skip 4-char keys) |
+| Filter precedence | the `or` chain → `and` (breaks dedup / short-value skip) |
+| Query fidelity | `keep_blank_values=True` → `False`; `urlencode(safe="[]")` dropped |
+| Secret propagation | `redact_secrets(rebuilt, extra_secrets)` → `None` |
+| Name normalization | `replace(" ", "_")` broken in `_parameter_is_sensitive` |
+| Header scrubbing | `sensitive or redacted != value` → `and` |
+| Type guard | `not isinstance(...) or not text` → `and` |
+| Attribute coverage | `"reason"` dropped from the scrubbed-attribute tuple |
+
+Survivors: **84 → 64**. The remainder are the documented equivalent classes
+(default/`None` arguments, `getattr` defaults, and variant-encoding orderings
+where no variant is a substring of another).
+
+### Scope-completeness guard
+
+`tests/test_mutation_gate_integrity.py` now also asserts:
+
+* `MUTATE_MODULES` and the CI matrix measure **the same modules and slices**;
+* **every** package module is either measured or carries an explicit, reasoned
+  entry in `MUTATION_EXEMPT` (14 modules, listed with reasons);
+* `redaction.py` specifically stays measured.
+
+Verified: dropping a new unaccounted module into the package fails the guard with
+an actionable message naming the module. The gap is now tracked debt that cannot
+silently reopen, rather than an invisible hole.
+
 ## Per-module counts
 
 | Module | Baseline before | First measured pass | After killing tests |
@@ -120,10 +176,11 @@ its report still uploads).
 | `providers.py` | 236 | 706 (+1 timeout) | 701 (0 timeouts) |
 | `queries.py` | 3 | 3 | 3 |
 | `ranking.py` | 4 | 10 | 2 |
+| `redaction.py` | not gated | 84 | 64 |
 | `reliability.py` | 2 | 28 | 18 |
 | `search.py` | 40 | 43 | 40 |
 | `topics.py` | 0 | 0 | 0 |
-| **Total** | **640** | **1480** | **1440** |
+| **Total** | **640** (15 gated) | **1564** | **1504** (16 gated) |
 
 `ranking.py` now sits **below** its old baseline; `search.py`, `queries.py`,
 `planning.py` and `topics.py` are unchanged.
@@ -147,7 +204,7 @@ make mutate           # per-module passes; reports to /tmp/mutmut_survivors_<mod
 python scripts/check_mutation_baseline.py
 ```
 
-Validation after this re-triage: **2498 tests pass** (also under
+Validation after this re-triage: **2511 tests pass** (also under
 `PYTHONWARNINGS=error`), **100% line + branch coverage** (`--cov-fail-under=100`),
-ruff clean, and the kill-gate reports `match` for all 15 modules with
+ruff clean, and the kill-gate reports `match` for all 16 modules with
 **0 timeouts**.
