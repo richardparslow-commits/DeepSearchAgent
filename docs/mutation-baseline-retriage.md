@@ -153,12 +153,55 @@ where no variant is a substring of another).
 
 * `MUTATE_MODULES` and the CI matrix measure **the same modules and slices**;
 * **every** package module is either measured or carries an explicit, reasoned
-  entry in `MUTATION_EXEMPT` (14 modules, listed with reasons);
-* `redaction.py` specifically stays measured.
+  entry in `MUTATION_EXEMPT` (13 modules, listed with reasons);
+* `redaction.py` and `citator.py` specifically stay measured.
 
 Verified: dropping a new unaccounted module into the package fails the guard with
 an actionable message naming the module. The gap is now tracked debt that cannot
 silently reopen, rather than an invisible hole.
+
+## Scope extension: `citator.py` is now gated
+
+`citator.py` is the largest module in the package (3,826 lines / 1,388
+statements — comparable in *statements* to `providers.py`, so a scoped pass is
+affordable). It owns the highest legal-correctness risk: whether a decision is
+reported as **good law**, **negative**, or **unknown**.
+
+Measured against the four test files that import it
+(`test_citator.py`, `test_source_validity.py`, `test_source_audit_properties.py`,
+`test_fetch_error_kind.py`): **762 survivors, 0 timeouts**.
+
+**The core status decision was already safe.** The critical
+`elif complete and reviewed and latest: status = "good_law"` guard is *not* among
+the survivors — existing tests kill its `and`/`or` and boundary mutants. That was
+verified rather than assumed, and it is the single most dangerous mutation in the
+module (an `or` there would assert "good law" on incomplete coverage).
+
+### Killable legal-correctness mutants that were killed
+
+Each was verified by applying the mutation and confirming the suite fails
+(**9/9 killed**):
+
+| Area | Mutation | Consequence if uncaught |
+|---|---|---|
+| `_scope_for` "all" set | `abrogated`, `superseded`, `adhered to` dropped | a whole-precedent overruling is reported with `unclear` scope |
+| `_scope_for` partial scan | `re.I` removed | `OVERRULED IN PART` misclassified as `all` instead of `part` |
+| `_is_negated` | window start `max(0, …)` → `max(1, …)` | misses negation at the start of a short sentence ("not overruled") |
+| `_is_negated` | window `80` → `81` characters | honours a negation outside the intended window |
+| `_is_non_verb_negative` | plural `questions` dropped from the noun set | the noun "questions presented" becomes a treatment |
+| `_is_non_verb_negative` | verb-object scan `re.I` removed | uppercase determiner/`WHETHER` no longer marks the verb form |
+| `_apply_source_validity_enforcement` | `good_law and good_law_as_of` → `or` | demotes a clean `good_law` that never carried an as-of date |
+
+The negation-window tests are exact boundary pins (a negation at offset 0, and one
+that only fits an 81-character window), not just happy-path assertions.
+
+Survivors: **762 → 749**. The remainder are dominated by advisory detail/reason
+strings and default/`None` arguments in the source-audit and candidate-review
+helpers; they are **not** all claimed provably equivalent (see the limitation
+below).
+
+`citator.py` is now in `MUTATE_MODULES` and the CI matrix with a **45-minute**
+leg, and `test_citator_is_mutation_measured` keeps it gated.
 
 ## Per-module counts
 
@@ -166,6 +209,7 @@ silently reopen, rather than an invisible hole.
 |---|---:|---:|---:|
 | `agent.py` | 140 | 275 | 275 |
 | `batch.py` | 21 | 30 | 28 |
+| `citator.py` | not gated | 762 | 749 |
 | `config.py` | 57 | 82 | 82 |
 | `deep_read.py` | 9 | 34 | 34 |
 | `fetch.py` | 61 | 79 | 79 |
@@ -180,7 +224,7 @@ silently reopen, rather than an invisible hole.
 | `reliability.py` | 2 | 28 | 18 |
 | `search.py` | 40 | 43 | 40 |
 | `topics.py` | 0 | 0 | 0 |
-| **Total** | **640** (15 gated) | **1564** | **1504** (16 gated) |
+| **Total** | **640** (15 gated) | **2326** | **2253** (17 gated) |
 
 `ranking.py` now sits **below** its old baseline; `search.py`, `queries.py`,
 `planning.py` and `topics.py` are unchanged.
@@ -204,7 +248,7 @@ make mutate           # per-module passes; reports to /tmp/mutmut_survivors_<mod
 python scripts/check_mutation_baseline.py
 ```
 
-Validation after this re-triage: **2511 tests pass** (also under
+Validation after this re-triage: **2516 tests pass** (also under
 `PYTHONWARNINGS=error`), **100% line + branch coverage** (`--cov-fail-under=100`),
-ruff clean, and the kill-gate reports `match` for all 16 modules with
+ruff clean, and the kill-gate reports `match` for all 17 modules with
 **0 timeouts**.
