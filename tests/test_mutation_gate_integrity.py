@@ -231,3 +231,38 @@ def test_citator_is_mutation_measured() -> None:
     assert "citator.py" in scope
     assert "tests/test_citator.py" in scope["citator.py"]
     assert "citator.py" not in MUTATION_EXEMPT
+
+
+def test_sandbox_mirrors_every_repo_path_the_tests_read() -> None:
+    """mutmut runs the slice from mutants/, so repo-root reads must be mirrored.
+
+    A test reading e.g. ``deploy/install.sh`` resolves it under the sandbox
+    root. If the pass script does not mirror that path, mutmut's stats run dies
+    on FileNotFoundError and exits 1 — the original AUD4 gate crash, and again
+    when va_domain's slice pulled in test_audit_pass5.py.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_mutmut_pass_probe", REPO_ROOT / "scripts" / "mutmut_pass.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    mirrored = set(module._SANDBOX_CONTEXT_DIRS) | set(module._SANDBOX_CONTEXT_FILES)
+
+    pattern = re.compile(r'\b(?:root|ROOT|REPO_ROOT|PROJECT_ROOT) / "([^"]+)"')
+    referenced: set[str] = set()
+    for path in (REPO_ROOT / "tests").glob("*.py"):
+        referenced |= set(pattern.findall(path.read_text(encoding="utf-8")))
+
+    # Only real repo-root paths matter; tmp_path-relative names do not exist here.
+    needed = {name for name in referenced if (REPO_ROOT / name).exists()}
+    # The package itself is mirrored separately as the mutable copy.
+    needed.discard("va_legal_agent")
+
+    missing = needed - mirrored
+    assert not missing, (
+        f"tests read repo paths that mutmut_pass.py does not mirror: {sorted(missing)}. "
+        "Add them to _SANDBOX_CONTEXT_DIRS / _SANDBOX_CONTEXT_FILES."
+    )
