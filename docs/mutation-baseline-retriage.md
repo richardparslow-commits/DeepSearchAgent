@@ -153,8 +153,8 @@ where no variant is a substring of another).
 
 * `MUTATE_MODULES` and the CI matrix measure **the same modules and slices**;
 * **every** package module is either measured or carries an explicit, reasoned
-  entry in `MUTATION_EXEMPT` (12 modules, listed with reasons);
-* `redaction.py`, `citator.py` and `va_domain.py` specifically stay measured.
+  entry in `MUTATION_EXEMPT` (11 modules, listed with reasons);
+* `redaction.py`, `citator.py`, `va_domain.py` and `snapshots.py` stay measured.
 
 Verified: dropping a new unaccounted module into the package fails the guard with
 an actionable message naming the module. The gap is now tracked debt that cannot
@@ -244,6 +244,44 @@ Survivors: **962 → 941**. `va_domain.py` is now in `MUTATE_MODULES` and the CI
 matrix with a **40-minute** leg, and `test_va_domain_is_mutation_measured` keeps it
 gated.
 
+## Scope extension: `snapshots.py` is now gated
+
+`snapshots.py` (426 lines / 202 statements) is the durable evidence store: content
+identity, atomic payload writes, the manifest, and provider-response capture.
+
+Measured: **187 survivors, 0 timeouts**. Killed 4 killable identity/durability
+mutants, each verified by applying the mutation and confirming the suite fails
+(**4/4**):
+
+| Mutation | Consequence if uncaught |
+|---|---|
+| `snapshot_id = digest[:32]` → `[:33]` | snapshot identity length drifts from the documented 32 hex chars |
+| `root.mkdir(parents=True, …)` → `parents=False` / dropped | a nested state directory raises instead of being created |
+| `.replace(microsecond=0)` → `1` | timestamps stop being stable whole seconds |
+
+Survivors: **187 → 180**. Deliberately **not** targeted: the `"MANIFEST.JSONL"` /
+`"SNAPSHOTS"` filename-case mutants. macOS's case-insensitive filesystem resolves
+them to the same file, so killing them locally would not reproduce on the Linux
+runner — exactly the platform-divergence trap hit earlier with providers. They are
+left as baselined rather than pinned with a platform-dependent assertion.
+
+`snapshots.py` is now in `MUTATE_MODULES` and the CI matrix with a **15-minute**
+leg, and `test_snapshots_is_mutation_measured` keeps it gated.
+
+### Note on the earlier "potentially killable" estimate
+
+The first categorisation pass flagged ~252 logic-shaped survivors across the
+original 15 modules. Inspecting them individually shows that estimate was **too
+high**: many are provably equivalent, e.g. in `providers.py`
+
+* `"\u201C"` vs `"\u201c"` — hex escapes are case-insensitive, so the *same* character;
+* `encoding="UTF-8"` vs `"utf-8"` — codec aliases;
+* `url.rsplit("/", 1)[+1]` vs `[-1]`, and `rsplit("/", 2)` / `rsplit("/")` — all
+  yield the last segment for a multi-slash URL.
+
+Those are correctly baselined, not gaps. The owed kill-pass should therefore
+expect a smaller yield than the raw REVIEW count suggested.
+
 ## Per-module counts
 
 | Module | Baseline before | First measured pass | After killing tests |
@@ -264,9 +302,10 @@ gated.
 | `redaction.py` | not gated | 84 | 64 |
 | `reliability.py` | 2 | 28 | 18 |
 | `search.py` | 40 | 43 | 40 |
+| `snapshots.py` | not gated | 187 | 180 |
 | `topics.py` | 0 | 0 | 0 |
 | `va_domain.py` | not gated | 962 | 941 |
-| **Total** | **640** (15 gated) | **3288** | **3194** (18 gated) |
+| **Total** | **640** (15 gated) | **3475** | **3374** (19 gated) |
 
 `ranking.py` now sits **below** its old baseline; `search.py`, `queries.py`,
 `planning.py` and `topics.py` are unchanged.
@@ -290,7 +329,7 @@ make mutate           # per-module passes; reports to /tmp/mutmut_survivors_<mod
 python scripts/check_mutation_baseline.py
 ```
 
-Validation after this re-triage: **2520 tests pass** (also under
+Validation after this re-triage: **2524 tests pass** (also under
 `PYTHONWARNINGS=error`), **100% line + branch coverage** (`--cov-fail-under=100`),
-ruff clean, and the kill-gate reports `match` for all 18 modules with
+ruff clean, and the kill-gate reports `match` for all 19 modules with
 **0 timeouts**.

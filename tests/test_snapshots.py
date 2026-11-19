@@ -397,3 +397,32 @@ def test_manifest_has_id_returns_false_on_oserror(tmp_path):
     store.manifest.mkdir()
     assert store._manifest_has_id("target") is False
 
+
+def test_snapshot_id_is_the_first_32_hex_chars_of_the_digest(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    record = store.record("courtlistener.lookup", {"a": 1})
+
+    assert len(record.id) == 32
+    assert record.id == record.sha256[:32]
+    assert len(record.sha256) == 64
+
+
+def test_snapshot_store_creates_nested_root_directories(tmp_path):
+    # parents=True: a caller may pass a not-yet-existing nested state dir.
+    nested = tmp_path / "deep" / "nested" / "snapshots"
+    store = SnapshotStore(nested)
+
+    assert store.root.is_dir()
+    assert store.record("k", {"a": 1}).id
+
+
+def test_snapshot_timestamp_is_whole_second_utc(tmp_path):
+    store = SnapshotStore(tmp_path / "snapshots")
+
+    record = store.record("k", {"a": 1})
+
+    # Microseconds are stripped so the timestamp is a stable whole second.
+    assert "." not in record.captured_at
+    assert record.captured_at.endswith("+00:00")
+
