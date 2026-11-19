@@ -623,17 +623,33 @@ def test_global_pacing_holds_under_concurrent_requests(monkeypatch):
     clock = {"now": 100.0}
     timestamps: list[float] = []
     lock = threading.Lock()
+    # _throttle reserves its slot UNDER _interval_lock and then sleeps OUTSIDE
+    # it, so the shared simulated clock at request time is NOT this worker's
+    # reserved slot: another worker may already have advanced it. Reading it in
+    # fake_get made this test racy (duplicate/zero gaps under load). Capture each
+    # worker's own reservation instead: monotonic() is called exactly once per
+    # request, inside the lock, and sleep(wait) targets base + wait.
+    local = threading.local()
+
+    def fake_monotonic():
+        value = clock["now"]
+        local.base = value
+        local.slot = value  # no wait => the slot is now
+        return value
+
+    def fake_sleep(sec):
+        local.slot = local.base + sec
+        with lock:
+            clock["now"] = max(clock["now"], local.slot)
 
     def fake_get(url, impersonate=None, timeout=None):
         with lock:
-            timestamps.append(clock["now"])
+            timestamps.append(local.slot)
         raise CffiConnectionError("down")
 
     monkeypatch.setattr("va_legal_agent.search.cffi_requests.get", fake_get)
-    monkeypatch.setattr("va_legal_agent.search.time.monotonic", lambda: clock["now"])
-    monkeypatch.setattr(
-        "va_legal_agent.search.time.sleep", lambda sec: clock.__setitem__("now", clock["now"] + sec)
-    )
+    monkeypatch.setattr("va_legal_agent.search.time.monotonic", fake_monotonic)
+    monkeypatch.setattr("va_legal_agent.search.time.sleep", fake_sleep)
     monkeypatch.setattr("va_legal_agent.search._last_request_monotonic", None)
 
     def worker(_):
@@ -646,7 +662,8 @@ def test_global_pacing_holds_under_concurrent_requests(monkeypatch):
         list(executor.map(worker, range(8)))
 
     assert len(timestamps) == 8
-    gaps = [b - a for a, b in zip(timestamps, timestamps[1:])]
+    # Reservation order is the pacing order; completion order is not.
+    gaps = [b - a for a, b in zip(sorted(timestamps), sorted(timestamps)[1:])]
     # The simulated clock accumulates binary float drift; allow 1e-6 slack.
     assert all(gap >= 0.1 - 1e-6 for gap in gaps), f"gaps: {gaps}"
 
