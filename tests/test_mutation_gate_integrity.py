@@ -158,7 +158,6 @@ PACKAGE_DIR = REPO_ROOT / "va_legal_agent"
 MUTATION_EXEMPT = {
     "__main__.py": "3.1k lines of CLI/render wiring; slice not yet chosen",
     "models.py": "pydantic validators; mostly declarative, slice not yet chosen",
-    "va_domain.py": "1.6k lines of domain guidance; needs a dedicated kill-pass",
     "authorities.py": "external-authority verification; slice not yet chosen",
     "regulations.py": "Regulations.gov client; slice not yet chosen",
     "congress.py": "Congress.gov client; slice not yet chosen",
@@ -231,6 +230,14 @@ def test_citator_is_mutation_measured() -> None:
     assert "citator.py" in scope
     assert "tests/test_citator.py" in scope["citator.py"]
     assert "citator.py" not in MUTATION_EXEMPT
+
+
+def test_va_domain_is_mutation_measured() -> None:
+    """Provision-impact mapping and provenance verification must stay gated."""
+    scope = _makefile_scope()
+    assert "va_domain.py" in scope
+    assert "tests/test_impact.py" in scope["va_domain.py"]
+    assert "va_domain.py" not in MUTATION_EXEMPT
 
 
 def test_sandbox_mirrors_every_repo_path_the_tests_read() -> None:

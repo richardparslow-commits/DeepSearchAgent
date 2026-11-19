@@ -712,3 +712,50 @@ def test_outcome_note_for_uses_the_secretary_override_text():
     )
     assert outcome_note_for("affirmed", "veteran") != secretary
 
+
+def test_provision_provenance_requires_both_host_and_anchor():
+    from va_legal_agent.va_domain import STAGE_APPELLATE, ProvisionSpec, _impact
+
+    official = ProvisionSpec(
+        "38 U.S.C. § 1110",
+        "statute",
+        STAGE_APPELLATE,
+        "clarifying",
+        source_url="https://uscode.house.gov/view.xhtml?req=1110",
+    )
+    anchor = "The Board must apply 38 U.S.C. § 1110 to basic entitlement."
+
+    # Official host AND a citation-bearing anchor -> verified.
+    assert _impact(official, anchor).provenance_verified is True
+    # Official host but an EMPTY anchor -> not verified (host alone is not proof).
+    assert _impact(official, "").provenance_verified is False
+    # Real anchor on a SECONDARY host -> still not verified.
+    secondary = ProvisionSpec(
+        "38 U.S.C. § 1110",
+        "statute",
+        STAGE_APPELLATE,
+        "clarifying",
+        source_url="https://example.com/summary",
+    )
+    assert _impact(secondary, anchor).provenance_verified is False
+
+
+def test_provision_alias_subsection_must_match_the_registry_spec():
+    from va_legal_agent.models import CaseRecord
+    from va_legal_agent.va_domain import extract_provision_impacts
+
+    case = CaseRecord(
+        title="Smith v. Wilkie", court="CAVC", url="https://uscourts.cavc.gov/x"
+    )
+    benefit_of_doubt = "38 U.S.C. § 5107(b)"
+
+    # Bare alias (no subsection) still maps to the registry provision.
+    bare = extract_provision_impacts("The Board applied 38 U.S.C. § 5107 here.", case)
+    assert any(i.citation == benefit_of_doubt for i in bare)
+    # Explicit matching subsection maps too.
+    matching = extract_provision_impacts("The Board applied 38 U.S.C. § 5107(b).", case)
+    assert any(i.citation == benefit_of_doubt for i in matching)
+    # A DIFFERENT subsection is not the benefit-of-the-doubt provision.
+    mismatched = extract_provision_impacts("The Board applied 38 U.S.C. § 5107(a).", case)
+    assert not any(i.citation == benefit_of_doubt for i in mismatched)
+
