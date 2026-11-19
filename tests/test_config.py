@@ -605,3 +605,21 @@ def test_env_var_documentation_parity():
         "Documented env vars that no module reads (dead documentation): "
         f"{sorted(dead_docs)}"
     )
+
+
+def test_mask_url_userinfo_malformed_and_port_edge_cases():
+    from va_legal_agent.config import mask_url_userinfo
+
+    # urlsplit ValueError -> wholesale mask (config.py lines 56-57).
+    assert mask_url_userinfo("http://[::1") == "[REDACTED]"
+    # Userinfo but no host -> wholesale mask (line 83).
+    assert mask_url_userinfo("http://user:pass@") == "[REDACTED]"
+    # Invalid port -> port dropped (lines 89-90).
+    assert mask_url_userinfo("http://user:pass@host:99999/") == (
+        "http://[REDACTED]@host/"
+    )
+    # Valid port retained alongside masked userinfo (line 93).
+    assert mask_url_userinfo("http://user:pass@host:8080/") == (
+        "http://[REDACTED]@host:8080/"
+    )
+

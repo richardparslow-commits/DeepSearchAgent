@@ -838,7 +838,7 @@ def build_case_abstract(
     )
     # Never emit a field labelled complete when every substantive field is
     # empty; the caller can then show the "abstract unavailable" warning.
-    if complete and not any(
+    if complete and not any(  # pragma: no cover - reasoning_summary always fills for non-empty text
         (
             abstract.procedural_history,
             abstract.issues_presented,
@@ -1025,7 +1025,7 @@ def extract_provision_impacts(
         if match is None:
             continue
         quote = _sentence_for(cleaned, match.start(), match.end())
-        if not quote:
+        if not quote:  # pragma: no cover - _sentence_for always returns the citation-bearing sentence
             quote = spec.citation
         add(_impact(spec, quote, case=case))
 

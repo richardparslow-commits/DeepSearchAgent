@@ -688,6 +688,38 @@ def test_citator_text_renders_source_invalidator_checks():
     assert "invalidator 303 (Binding v. Secretary); accepted; binding" in text
 
 
+def test_citator_text_renders_reviewed_unaccepted_invalidator_as_rejected():
+    check = _check().model_copy(
+        update={
+            "source_validity": [
+                SourceValiditySignal(
+                    source_opinion_id="201",
+                    source_cluster_id="888",
+                    status="unverified",
+                    reason="source-history invalidation was not established",
+                    precedence="authoritative",
+                    withheld=True,
+                    history_complete=False,
+                    invalidator_checks=[
+                        SourceInvalidatorCheck(
+                            source_opinion_id="301",
+                            citing_case="Later v. Secretary",
+                            review_status="reviewed",
+                            accepted=False,
+                            binding=False,
+                            reason="reviewed but the invalidator was not accepted",
+                        )
+                    ],
+                )
+            ]
+        }
+    )
+
+    text = render_analysis(_analysis(check), "text")
+
+    assert "invalidator 301 (Later v. Secretary); rejected; not binding" in text
+
+
 def test_citator_text_renders_source_candidate_review_reason_codes():
     check = _check().model_copy(
         update={

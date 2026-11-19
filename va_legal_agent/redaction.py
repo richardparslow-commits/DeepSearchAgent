@@ -155,8 +155,9 @@ def redact_secrets(
             quote(secret),
         }
         for variant in sorted(variants, key=len, reverse=True):
-            if variant:
-                redacted = redacted.replace(variant, REDACTED)
+            if not variant:  # pragma: no cover - coerced secrets are never empty
+                continue
+            redacted = redacted.replace(variant, REDACTED)
 
     redacted = _redact_query_text(redacted)
     redacted = _USERINFO_RE.sub(rf"\1{REDACTED}@", redacted)

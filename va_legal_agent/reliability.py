@@ -131,7 +131,7 @@ def classify_authority_tier(
     if host == "va.gov" or host.endswith(".va.gov"):
         # va.gov hosts both BVA decisions and agency guidance. A court label
         # already returned above; everything else is agency material.
-        if any(token in host for token in _AGENCY_GUIDANCE_HOSTS):
+        if any(token in host for token in _AGENCY_GUIDANCE_HOSTS):  # pragma: no cover - always true for a va.gov host
             return AUTHORITY_AGENCY_GUIDANCE, True
     return AUTHORITY_AGENCY_GUIDANCE, True
 

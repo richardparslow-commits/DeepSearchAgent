@@ -822,3 +822,61 @@ def test_call_openai_uses_empty_key_when_unset(monkeypatch):
 
     assert call_openai([{"role": "user", "content": "hi"}]) == "ok"
     assert fake.client_kwargs["api_key"] == ""
+
+
+def test_parse_reasoning_response_content_free_returns_none():
+    # A schema-valid but empty reasoning object parses to None (llm.py line 294).
+    assert _parse_reasoning_response(
+        '{"reconciled_principles": [], "contradictions": [], "synthesis": ""}'
+    ) is None
+
+
+def test_validate_text_provenance_corpus_includes_provision_impacts():
+    from va_legal_agent.llm import validate_text_provenance
+    from va_legal_agent.models import ProvisionImpact
+
+    case = _case()
+    case.provision_impacts = [
+        ProvisionImpact(
+            citation="38 U.S.C. § 1110",
+            provenance_anchor="The Board must apply 38 U.S.C. § 1110.",
+            m21_1_citations=["M21-1, Part V"],
+        )
+    ]
+    # Provision impacts feed the source corpus (llm.py line 376).
+    failures = validate_text_provenance(
+        "38 U.S.C. § 1110 basic entitlement service connection", [case]
+    )
+    assert not any("uncorroborated legal reference" in f for f in failures)
+
+
+def test_validate_text_provenance_flags_fabricated_name_docket_and_quote():
+    from va_legal_agent.llm import validate_text_provenance
+
+    case = _case()
+    text = (
+        "Fake v. Name held No. 99-99999 and said "
+        "“a wholly fabricated quotation that is not in the source”"
+    )
+    failures = validate_text_provenance(text, [case])
+    assert any("fabricated case name" in f for f in failures)
+    assert any("fabricated docket number" in f for f in failures)
+    assert any("uncorroborated quotation" in f for f in failures)
+
+
+def test_validate_text_provenance_matched_citation_and_reference_not_flagged():
+    from va_legal_agent.llm import validate_text_provenance
+
+    case = _case()
+    case.statutes = ["38 U.S.C. § 1110"]
+    case.docket = "23-1234"
+    # A citation, docket, and legal reference present in the corpus exercise the
+    # matched-loop branches (llm.py 393->392, 399->398, and 403->401).
+    failures = validate_text_provenance(
+        "23 Vet.App. 1 No. 23-1234 and 38 U.S.C. § 1110 service connection evidence",
+        [case],
+    )
+    assert not any("fabricated case citation" in f for f in failures)
+    assert not any("fabricated docket number" in f for f in failures)
+    assert not any("uncorroborated legal reference" in f for f in failures)
+

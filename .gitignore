@@ -40,5 +40,13 @@ plan.retry.txt
 .congress_cache/
 .regulations_cache/
 
+# Local reference material (VA claim guides, lay-evidence samples, media) kept
+# in the working root for research — not part of the source tree.
+/*.pdf
+/*.docx
+/*.zip
+/*.mp4
+/*.png
+
 # OS
 .DS_Store

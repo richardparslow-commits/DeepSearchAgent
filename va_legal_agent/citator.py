@@ -1531,12 +1531,16 @@ def _is_non_verb_negative(
     """Whether a matched negative term is a noun or adjective, not a verb."""
     lowered = phrase.casefold()
     if treatment == "questioned" and lowered in {"question", "questions"}:
-        # A determiner after the word ("question the doctrine") marks the
-        # verb form taking an object — real treatment. "question whether…"
-        # is likewise a verb taking a clause object. Without a determiner
-        # ("the question presented") it is the noun, not treatment.
+        # "question" is the verb (real treatment) when it takes an object: a
+        # determiner ("question the doctrine") or a whether-clause ("question
+        # whether Smith…") follows it. A determiner BEFORE the word marks the
+        # noun ("the question whether…", "the question presented"), which is
+        # not treatment even when a whether-clause follows it.
+        word_start = verb_end - len(phrase)
+        if re.search(r"\b(?:the|a|an|this|that)\s+$", sentence[:word_start], re.I):
+            return True
         return not re.match(
-            r"\s+(?:the|a|an|this|that)\b", sentence[verb_end:], re.I
+            r"\s+(?:the|a|an|this|that|whether)\b", sentence[verb_end:], re.I
         )
     if treatment == "limited":
         # "limited to the question whether…" restricts the grant of review,
