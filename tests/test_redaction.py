@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from urllib.parse import quote_plus
 
+import pytest
 import requests
 
 from va_legal_agent.redaction import (
@@ -216,4 +217,129 @@ def test_sanitize_exception_tolerates_non_tuple_args():
             return ["SECRETVALUE"]
 
     sanitize_exception(_OddArgs("boom"))
+
+
+@pytest.fixture
+def no_env_secrets(monkeypatch):
+    """Deterministic secret set: ignore ambient *_API_KEY / *_SECRET env values."""
+    import va_legal_agent.redaction as mod
+
+    monkeypatch.setattr(mod.os, "environ", {})
+    return mod
+
+
+def test_coerce_secrets_orders_longest_first_and_filters(no_env_secrets):
+    # Longest-first is a SECURITY property: if a short secret is a substring of a
+    # longer one, replacing the short one first leaves fragments of the long
+    # credential behind. Also pins dedup, the [REDACTED] skip and the length floor.
+    mod = no_env_secrets
+
+    result = mod._coerce_secrets(
+        ("ZZZZ", "AAAAAZZZZBBBB", "ZZZZ", REDACTED, "abc")
+    )
+
+    assert result == ("AAAAAZZZZBBBB", "ZZZZ")
+
+
+def test_redact_secrets_never_leaves_a_fragment_of_a_longer_secret(no_env_secrets):
+    mod = no_env_secrets
+
+    out = mod.redact_secrets(
+        "Authorization: Bearer AAAAAZZZZBBBB",
+        extra_secrets=("ZZZZ", "AAAAAZZZZBBBB"),
+    )
+
+    assert out == f"Authorization: Bearer {REDACTED}"
+    assert "AAAAA" not in out
+    assert "BBBB" not in out
+
+
+def test_redact_secrets_keeps_four_char_secrets_and_skips_shorter(no_env_secrets):
+    mod = no_env_secrets
+
+    # A 4-character key is still a credential and must be scrubbed.
+    assert mod.redact_secrets("Bearer Z4kQ", ("Z4kQ",)) == f"Bearer {REDACTED}"
+    # The documented floor: shorter values are not treated as credentials.
+    assert mod.redact_secrets("Bearer abc", ("abc",)) == "Bearer abc"
+    assert "Z4kQ" in mod._coerce_secrets(("Z4kQ",))
+    assert "abc" not in mod._coerce_secrets(("abc",))
+
+
+def test_redaction_returns_non_string_input_unchanged():
+    # The guard is `not isinstance(...) or not text`; an `and` would let a
+    # non-string truthy value reach str.replace and raise.
+    assert redact_secrets(123) == 123
+    assert redact_url(123) == 123
+
+
+def test_redact_url_preserves_blank_sensitive_parameters():
+    # keep_blank_values=True: a blank credential param must still be surfaced
+    # and redacted, not silently dropped from the rebuilt query.
+    out = redact_url("https://host/p?api_key=&q=ok")
+
+    assert f"api_key={REDACTED}" in out
+    assert "q=ok" in out
+
+
+def test_redact_url_preserves_bracket_characters_in_query_names():
+    # urlencode(safe="[]") keeps Rails-style bracket names readable.
+    out = redact_url("https://host/p?filter[]=x&api_key=SECRETVALUE")
+
+    assert "filter[]=x" in out
+    assert "SECRETVALUE" not in out
+
+
+def test_redact_url_scrubs_path_secrets_via_extra_secrets(monkeypatch):
+    import va_legal_agent.redaction as mod
+
+    secret = "SUPERSECRET123"
+    # Normal rebuild path.
+    assert secret not in mod.redact_url(f"https://host/{secret}/p", (secret,))
+    # urlsplit ValueError fallback.
+    assert secret not in mod.redact_url(f"http://[broken/{secret}", (secret,))
+
+    # parse_qsl ValueError fallback must also forward extra_secrets.
+    def boom(*args, **kwargs):
+        raise ValueError("bad query")
+
+    monkeypatch.setattr(mod, "parse_qsl", boom)
+    assert secret not in mod.redact_url(f"https://host/{secret}?a=1", (secret,))
+
+
+def test_parameter_is_sensitive_normalizes_spaces_and_case():
+    from va_legal_agent.redaction import _parameter_is_sensitive
+
+    assert _parameter_is_sensitive("  API KEY  ") is True
+    assert _parameter_is_sensitive("Client Secret") is True
+    assert _parameter_is_sensitive("X-Api-Key") is True
+    assert _parameter_is_sensitive("q") is False
+
+
+def test_sanitize_exception_scrubs_non_sensitive_header_bearing_a_secret():
+    # The condition is `sensitive or redacted != value`: a NON-sensitive header
+    # name whose value contains a credential must still be scrubbed.
+    secret = "SUPERSECRET123"
+    exc = Exception("boom")
+    exc.response = SimpleNamespace(
+        url="https://host/", headers={"X-Custom": f"Bearer {secret}"}
+    )
+
+    sanitize_exception(exc, (secret,))
+
+    assert secret not in exc.response.headers["X-Custom"]
+
+
+def test_sanitize_exception_scrubs_every_message_attribute_and_notes():
+    secret = "SUPERSECRET123"
+    exc = Exception("boom")
+    for name in ("url", "filename", "msg", "reason", "message"):
+        setattr(exc, name, f"{name}={secret}")
+    exc.__notes__ = [f"note {secret}", 42]
+
+    sanitize_exception(exc, (secret,))
+
+    for name in ("url", "filename", "msg", "reason", "message"):
+        assert secret not in getattr(exc, name), name
+    assert secret not in exc.__notes__[0]
+    assert exc.__notes__[1] == 42
 

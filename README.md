@@ -20,7 +20,7 @@ This project is designed to search widely for relevant court and board decisions
 
 ## Project status (handoff)
 
-State as of November 2026: **2498 tests**, with 100% line + branch coverage across the package, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 15 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
+State as of November 2026: **2511 tests**, with 100% line + branch coverage across the package, ruff clean, and the mutation kill-property enforced on every module in the mutation scope (the 16 modules paired with test slices in the Makefile's `MUTATE_MODULES`). CI is green on Python 3.11–3.14; the mutation gate runs on every code push and nightly on the Linux runner. The desktop checkout and GitHub are the same repository, tracking `origin/main`.
 
 ### Feature surface
 
@@ -35,7 +35,7 @@ State as of November 2026: **2498 tests**, with 100% line + branch coverage acro
 
 | Gate | Command | Status |
 |---|---|---|
-| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2498 passing |
+| Unit + integration suite | `make test` / `make test-w` (warnings as errors) | 2511 passing |
 | Coverage, line + branch | `make coverage` | 100%, enforced in CI (`--cov-fail-under=100`) |
 | Lint | `make lint` | ruff clean |
 | Mutation kill-property | `make mutate-check` | every in-scope module's survivor names match `.mutation-baseline.json`; timeouts and vacuous passes hard-fail |
@@ -237,11 +237,16 @@ mutated against the test slice that exercises it) and writes every surviving
 mutant's diff to `/tmp/mutmut_survivors_<module>.txt`. A survivor is either a
 provably-equivalent mutation (log-message text, default args, unreachable
 fallbacks — expected and acceptable) or a real gap that needs a stronger
-test. The current suite kills every non-equivalent mutant: survivors are
-limited to equivalent ones. The mutation scope is the 15 modules paired with
-test slices in the Makefile's `MUTATE_MODULES`; `models.py` contains only
-Pydantic declarations and the newer domain/citator layers are not yet paired,
-so they are outside the mutation scope. Run the pass after adding features or
+test. Most survivors are provably-equivalent mutations (log-message text,
+default args, unreachable fallbacks — expected and acceptable); the post-AUD5
+catch-up triage has not yet proven every remaining survivor equivalent, so a
+follow-up kill-pass is still owed (see
+[`docs/mutation-baseline-retriage.md`](docs/mutation-baseline-retriage.md)).
+The mutation scope is the 16 modules paired with
+test slices in the Makefile's `MUTATE_MODULES`, including the security-critical
+`redaction.py`. Every other package module must carry an explicit, reasoned
+entry in `MUTATION_EXEMPT` (`tests/test_mutation_gate_integrity.py`), so a new
+module can never silently escape the gate. Run the pass after adding features or
 tests to keep that property, and triage survivors with `python
 scripts/mutmut_pass.py <module> <test_file>` for a single module.
 

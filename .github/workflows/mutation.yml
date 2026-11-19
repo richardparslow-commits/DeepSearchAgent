@@ -91,6 +91,9 @@ jobs:
           - module: ranking.py
             tests: tests/test_ranking.py
             timeout: 10
+          - module: redaction.py
+            tests: tests/test_redaction.py tests/test_audit_invariants.py
+            timeout: 10
     steps:
       - uses: actions/checkout@v5
 
