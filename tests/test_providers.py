@@ -6216,3 +6216,44 @@ def test_search_all_wall_time_exhaustion_preserves_telemetry(monkeypatch):
         )
     assert telemetry
 
+
+def test_post_json_backoff_uses_the_zero_based_retry_index(monkeypatch):
+    # The backoff exponent is attempt-1, so the first retry backs off as index 0.
+    # An off-by-one here silently inflates every wait, so pin the exact indices.
+    import va_legal_agent.providers as prov
+
+    monkeypatch.setenv("SEARCH_RETRY_ATTEMPTS", "3")
+    seen: list[int] = []
+
+    def record_delay(attempt, exc):
+        seen.append(attempt)
+        return 0.0
+
+    monkeypatch.setattr(prov, "_courtlistener_retry_delay", record_delay)
+    monkeypatch.setattr(prov.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(prov, "_throttle", lambda name=None: None)
+
+    calls = {"n": 0}
+
+    class FlakyResponse:
+        def raise_for_status(self):
+            if calls["n"] <= 2:
+                raise prov.requests.ConnectionError("throttled")
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, data=None, headers=None, timeout=None, **kwargs):
+        calls["n"] += 1
+        return FlakyResponse()
+
+    monkeypatch.setattr(prov.requests, "post", fake_post)
+
+    result = prov.CourtListenerProvider()._post_json(
+        "https://www.courtlistener.com/api/rest/v4/citation-lookup/",
+        {"text": "1 Vet.App. 1"},
+    )
+
+    assert result == {"ok": True}
+    assert seen == [0, 1]
+

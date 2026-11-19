@@ -67,7 +67,7 @@ Rather than baseline these, the killing tests were strengthened:
 | `impact.py` | 5 | `provision_impact_note` six-item cap, `label +=` (not `=`), exact prefix/separator/suffix; Secretary override note text |
 | `search.py` | 3 | `SearchError` message / `kind` / `retryable` defaults and assignment |
 | `batch.py` | 2 | `ensure_ascii=False` keeps non-ASCII literal in the state file |
-| `providers.py` | 3 | BVA text-cache eviction assertions (oldest evicted, cap held) |
+| `providers.py` | 5 | BVA text-cache eviction assertions (oldest evicted, cap held); `_post_json` zero-based backoff index pinned to `[0, 1]` |
 
 ### Hang removed (a timeout is never a triaged equivalent)
 
@@ -80,6 +80,29 @@ The eviction is now a **bounded slice** (`overflow = len - MAX + 1`, then
 `for key in text_keys[: max(0, overflow)]`). No mutation of it can loop
 unboundedly, and the strengthened assertions kill the eviction mutants cleanly.
 Providers now reports **0 timeouts**.
+
+### Platform divergence resolved by killing, not by baselining
+
+The first CI run of the re-triaged baseline matched **14 of 15 modules exactly**;
+`providers.py` differed by a single mutant:
+`CourtListenerProvider._post_json`'s `_courtlistener_retry_delay(attempt - 1, ...)`
+→ `attempt + 1`. It survived on the macOS dev box but was **killed on the Linux
+gate runner**.
+
+Rather than delete the name to satisfy one platform (which would leave the other
+red), the off-by-one is now pinned deterministically:
+`test_post_json_backoff_uses_the_zero_based_retry_index` drives two transient
+POST failures and asserts the backoff indices are exactly `[0, 1]`. Applying the
+mutant locally makes that test fail, so it is killed on **both** platforms.
+
+### CI leg timeout headroom
+
+With the gate measuring again, the two largest legs ran right up against their
+budgets: `agent.py` finished in **19m58s of 20m** (99.8%) and `providers.py` in
+**23m20s of 25m** (93%). Either would flake red on a slightly slower runner, so
+their matrix timeouts were raised to **30** and **35** minutes respectively. The
+per-leg timeout mechanism is unchanged (a timeout still kills only that leg and
+its report still uploads).
 
 ## Per-module counts
 
@@ -94,13 +117,13 @@ Providers now reports **0 timeouts**.
 | `interpretation.py` | 22 | 50 | 44 |
 | `llm.py` | 28 | 107 | 107 |
 | `planning.py` | 4 | 4 | 4 |
-| `providers.py` | 236 | 706 (+1 timeout) | 703 (0 timeouts) |
+| `providers.py` | 236 | 706 (+1 timeout) | 701 (0 timeouts) |
 | `queries.py` | 3 | 3 | 3 |
 | `ranking.py` | 4 | 10 | 2 |
 | `reliability.py` | 2 | 28 | 18 |
 | `search.py` | 40 | 43 | 40 |
 | `topics.py` | 0 | 0 | 0 |
-| **Total** | **640** | **1480** | **1442** |
+| **Total** | **640** | **1480** | **1440** |
 
 `ranking.py` now sits **below** its old baseline; `search.py`, `queries.py`,
 `planning.py` and `topics.py` are unchanged.
@@ -124,7 +147,7 @@ make mutate           # per-module passes; reports to /tmp/mutmut_survivors_<mod
 python scripts/check_mutation_baseline.py
 ```
 
-Validation after this re-triage: **2497 tests pass** (also under
+Validation after this re-triage: **2498 tests pass** (also under
 `PYTHONWARNINGS=error`), **100% line + branch coverage** (`--cov-fail-under=100`),
 ruff clean, and the kill-gate reports `match` for all 15 modules with
 **0 timeouts**.

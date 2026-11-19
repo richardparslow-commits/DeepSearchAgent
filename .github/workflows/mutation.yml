@@ -48,7 +48,7 @@ jobs:
         include:
           - module: providers.py
             tests: tests/test_providers.py tests/test_search.py tests/test_citator_provider.py
-            timeout: 25
+            timeout: 35
           - module: queries.py
             tests: tests/test_providers.py tests/test_search.py
             timeout: 20
@@ -66,7 +66,7 @@ jobs:
             timeout: 15
           - module: agent.py
             tests: tests/test_legal_agent.py tests/test_legal_agent_citator.py tests/test_research.py
-            timeout: 20
+            timeout: 30
           - module: planning.py
             tests: tests/test_planning.py
             timeout: 10
