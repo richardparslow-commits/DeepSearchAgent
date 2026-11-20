@@ -838,3 +838,82 @@ def test_authority_flags_deduplicates_identical_flags():
     assert flags == [
         "Unresolved authority '38 C.F.R. § 3.303' (eCFR): not found"
     ]
+
+
+def test_authority_flags_surfaces_partial_legislative_records():
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110",
+        source="GovInfo",
+        status="verified",
+        records_status="partial",
+        records_detail="1 of 3 statutes missing",
+    )
+
+    flags = auth.authority_flags([check])
+
+    assert flags == [
+        "GovInfo legislative records partial for 38 U.S.C. § 1110: 1 of 3 statutes missing"
+    ]
+
+
+def test_authority_flags_surfaces_unavailable_legislative_records():
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110",
+        source="GovInfo",
+        status="verified",
+        records_status="unavailable",
+        records_detail="collection down",
+    )
+
+    flags = auth.authority_flags([check])
+
+    assert flags == [
+        "GovInfo legislative records unavailable for 38 U.S.C. § 1110: collection down"
+    ]
+
+
+def test_authority_flags_records_status_ignored_when_primary_status_fails():
+    check = AuthorityCheck(
+        authority="CAVC docket 24-1234",
+        source="CAVC",
+        status="conflict",
+        detail="panel list contradicts Rule 30(a)",
+        records_status="partial",
+        records_detail="some detail",
+    )
+
+    flags = auth.authority_flags([check])
+
+    assert flags == [
+        "Authority conflict: CAVC docket 24-1234 (CAVC) — panel list contradicts Rule 30(a)"
+    ]
+
+
+def test_authority_flags_informational_records_status_skipped():
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110",
+        source="GovInfo",
+        status="verified",
+        records_status="verified",
+        records_detail="all found",
+    )
+
+    flags = auth.authority_flags([check])
+
+    assert flags == []
+
+
+def test_authority_flags_deduplicates_records_status_flags():
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110",
+        source="GovInfo",
+        status="verified",
+        records_status="partial",
+        records_detail="1 of 3 statutes missing",
+    )
+
+    flags = auth.authority_flags([check, check])
+
+    assert flags == [
+        "GovInfo legislative records partial for 38 U.S.C. § 1110: 1 of 3 statutes missing"
+    ]
