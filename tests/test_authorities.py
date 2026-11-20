@@ -964,3 +964,178 @@ def test_authority_flags_deduplicates_records_status_flags():
     assert flags == [
         "GovInfo legislative records partial for 38 U.S.C. § 1110: 1 of 3 statutes missing"
     ]
+
+
+def test_enrich_govinfo_legislation_disabled_does_nothing():
+    client = auth.GovInfoClient("demo-key", include_records=False)
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    auth._enrich_govinfo_legislation(check, "1110", client)
+
+    assert check.public_laws == []
+    assert check.statutes_at_large == []
+    assert check.records_status == ""
+    assert check.records_detail == ""
+
+
+def test_enrich_govinfo_legislation_retrieved_and_deduplicated(monkeypatch):
+    client = auth.GovInfoClient("demo-key", include_records=True)
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    search_calls: list[str] = []
+
+    def fake_search(query, page_size=5):
+        search_calls.append(query)
+        if "collection:PLAW" in query:
+            return [
+                {
+                    "packageId": "PLAW-100publ1",
+                    "title": "Public Law 100-1",
+                    "dateIssued": "1988-01-01",
+                },
+                # Duplicate packageId should be ignored
+                {
+                    "packageId": "PLAW-100publ1",
+                    "title": "Public Law 100-1 duplicate",
+                },
+                # Exceeds _MAX_GOVINFO_RECORDS (2)
+                {
+                    "packageId": "PLAW-100publ2",
+                    "title": "Public Law 100-2",
+                },
+                {
+                    "packageId": "PLAW-100publ3",
+                    "title": "Public Law 100-3",
+                },
+            ]
+        if "collection:STATUTE" in query:
+            return [
+                {
+                    "packageId": "STATUTE-102",
+                    "granuleId": "STATUTE-102-Pg100",
+                    "title": "Statute 102",
+                },
+                # Duplicate granule should be ignored
+                {
+                    "packageId": "STATUTE-102",
+                    "granuleId": "STATUTE-102-Pg100",
+                    "title": "Statute 102 duplicate",
+                },
+            ]
+        return []
+
+    monkeypatch.setattr(client, "search", fake_search)
+    monkeypatch.setattr(auth, "_fetch_govinfo_text", lambda url: "Sample statutory text.")
+
+    auth._enrich_govinfo_legislation(check, "1110", client)
+
+    assert len(search_calls) == 2
+    assert 'collection:PLAW uscodecitation:"38 U.S.C. 1110"' in search_calls[0]
+    assert 'collection:STATUTE uscodecitation:"38 U.S.C. 1110"' in search_calls[1]
+
+    assert len(check.public_laws) == 2
+    assert check.public_laws[0].package_id == "PLAW-100publ1"
+    assert check.public_laws[1].package_id == "PLAW-100publ2"
+    assert check.public_laws[0].text_status == "retrieved"
+    assert check.public_laws[0].text_excerpt == "Sample statutory text."
+
+    assert len(check.statutes_at_large) == 1
+    assert check.statutes_at_large[0].package_id == "STATUTE-102"
+    assert check.statutes_at_large[0].granule_id == "STATUTE-102-Pg100"
+    assert check.statutes_at_large[0].text_status == "retrieved"
+
+    assert check.records_status == "retrieved"
+    assert (
+        "Retrieved 2 Public Law record(s) and 1 Statutes at Large record(s) citing 38 U.S.C. § 1110."
+        == check.records_detail
+    )
+
+
+def test_enrich_govinfo_legislation_not_found(monkeypatch):
+    client = auth.GovInfoClient("demo-key", include_records=True)
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    monkeypatch.setattr(client, "search", lambda *args, **kwargs: [])
+
+    auth._enrich_govinfo_legislation(check, "1110", client)
+
+    assert check.public_laws == []
+    assert check.statutes_at_large == []
+    assert check.records_status == "not_found"
+    assert (
+        "No Public Law or Statutes at Large record citing 38 U.S.C. § 1110 was found"
+        in check.records_detail
+    )
+
+
+def test_enrich_govinfo_legislation_search_errors(monkeypatch):
+    client = auth.GovInfoClient("demo-key", include_records=True)
+
+    # Both searches fail -> unavailable
+    check1 = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    def fail_search(*args, **kwargs):
+        raise SearchError("Service timeout")
+
+    monkeypatch.setattr(client, "search", fail_search)
+
+    auth._enrich_govinfo_legislation(check1, "1110", client)
+    assert check1.records_status == "unavailable"
+    assert "Public Laws search unavailable: Service timeout" in check1.records_detail
+    assert "Statutes at Large search unavailable: Service timeout" in check1.records_detail
+
+    # PLAW search fails, STATUTE search succeeds -> partial
+    check2 = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    def plaw_fail_statute_ok(query, **kwargs):
+        if "collection:PLAW" in query:
+            raise SearchError("PLAW 503")
+        return [
+            {
+                "packageId": "STATUTE-102",
+                "granuleId": "STATUTE-102-Pg100",
+                "title": "Statute 102",
+            }
+        ]
+
+    monkeypatch.setattr(client, "search", plaw_fail_statute_ok)
+    monkeypatch.setattr(auth, "_fetch_govinfo_text", lambda url: "text")
+
+    auth._enrich_govinfo_legislation(check2, "1110", client)
+    assert check2.records_status == "partial"
+    assert "PLAW 503" in check2.records_detail
+
+
+def test_enrich_govinfo_legislation_text_fetch_error(monkeypatch):
+    client = auth.GovInfoClient("demo-key", include_records=True)
+    check = AuthorityCheck(
+        authority="38 U.S.C. § 1110", source="GovInfo", status="verified"
+    )
+
+    def fake_search(query, **kwargs):
+        if "collection:PLAW" in query:
+            return [{"packageId": "PLAW-100publ1", "title": "PL 100-1"}]
+        return []
+
+    monkeypatch.setattr(client, "search", fake_search)
+
+    def fail_text(url):
+        raise SearchError("Text missing 404")
+
+    monkeypatch.setattr(auth, "_fetch_govinfo_text", fail_text)
+
+    auth._enrich_govinfo_legislation(check, "1110", client)
+    # Search succeeded (1 PLAW record found), but text fetch failed
+    assert check.records_status == "partial"
+    assert "Text missing 404" in check.records_detail
+    assert check.public_laws[0].text_status == "unavailable"
