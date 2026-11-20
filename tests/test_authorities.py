@@ -890,54 +890,75 @@ def test_govinfo_search_returns_empty_list_for_null_results(monkeypatch):
 
 def test_verify_us_code_requires_the_exact_title_38_granule(monkeypatch):
     client = auth.GovInfoClient("demo-key")
-    rows = iter(
-        [
-            [
+    captured_queries = []
+
+    def fake_search(query, **kwargs):
+        captured_queries.append(query)
+        if 'citation:"38 U.S.C. 1110"' in query:
+            return [
                 {
                     "packageId": "USCODE-2024-title38",
                     "granuleId": "USCODE-2024-title38-partII-chap11-sec1110",
                 }
-            ],
-            [
+            ]
+        if 'citation:"38 U.S.C. 5103A"' in query:
+            return [
                 {
                     "packageId": "USCODE-2024-title38",
-                    "granuleId": "USCODE-2024-title38-partII-chap11-sec9999",
+                    "granuleId": "USCODE-2024-title38-partV-chap51-sec5103A",
                 }
-            ],
-            [
-                {
-                    "packageId": "USCODE-2024-title5",
-                    "granuleId": "USCODE-2024-title5-sec1110",
-                }
-            ],
-        ]
-    )
+            ]
+        return []
 
-    monkeypatch.setattr(client, "search", lambda *args, **kwargs: next(rows))
+    monkeypatch.setattr(client, "search", fake_search)
+    monkeypatch.setattr(auth, "_enrich_govinfo_legislation", lambda *args: None)
 
+    # 1. Exact match
     verified = auth._verify_us_code("1110", client)
-    wrong_section = auth._verify_us_code("1110", client)
-    wrong_title = auth._verify_us_code("1110", client)
-
+    assert verified.authority == "38 U.S.C. § 1110"
     assert verified.status == "verified"
     assert "USCODE-2024-title38" in verified.detail
     assert verified.url.endswith("/USCODE-2024-title38")
-    assert wrong_section.status == "unresolved"
-    assert wrong_title.status == "unresolved"
+    assert 'citation:"38 U.S.C. 1110"' in captured_queries[0]
+
+    # 2. Section with subsection: should still search for the base section
+    # and match the granule (sec1110 matches sec1110(a) base).
+    subsection = auth._verify_us_code("1110(a)", client)
+    assert subsection.authority == "38 U.S.C. § 1110(a)"
+    assert subsection.status == "verified"
+    assert 'citation:"38 U.S.C. 1110"' in captured_queries[1]
+
+    # 3. Alphanumeric section
+    alphanumeric = auth._verify_us_code("5103A", client)
+    assert alphanumeric.status == "verified"
+    assert 'citation:"38 U.S.C. 5103A"' in captured_queries[2]
+
+    # 4. Unresolved (wrong title or section)
+    unresolved = auth._verify_us_code("9999", client)
+    assert unresolved.status == "unresolved"
+    assert "no exact title 38 section 9999" in unresolved.detail
 
 
 def test_verify_us_code_reports_unresolved_and_unavailable(monkeypatch):
     client = auth.GovInfoClient("demo-key")
     monkeypatch.setattr(client, "search", lambda *args, **kwargs: [])
 
-    assert auth._verify_us_code("1110", client).status == "unresolved"
+    check = auth._verify_us_code("1110", client)
+    assert check.status == "unresolved"
+    assert check.authority == "38 U.S.C. § 1110"
+    assert check.source == "GovInfo"
+    assert "no exact title 38 section 1110" in check.detail
 
     def fail(*args, **kwargs):
         raise SearchError("GovInfo quota")
 
     monkeypatch.setattr(client, "search", fail)
 
-    assert auth._verify_us_code("1110", client).status == "unavailable"
+    check = auth._verify_us_code("1110", client)
+    assert check.status == "unavailable"
+    assert check.authority == "38 U.S.C. § 1110"
+    assert check.source == "GovInfo"
+    assert "GovInfo quota" in check.detail
 
 
 def test_verify_federal_circuit_case_reports_unresolved_and_unavailable(monkeypatch):
@@ -945,14 +966,101 @@ def test_verify_federal_circuit_case_reports_unresolved_and_unavailable(monkeypa
     case = CaseRecord(title="Veteran v. Secretary", court=COURT_FEDERAL_CIRCUIT)
     monkeypatch.setattr(client, "search", lambda *args, **kwargs: [])
 
-    assert auth._verify_federal_circuit_case(case, client).status == "unresolved"
+    check = auth._verify_federal_circuit_case(case, client)
+    assert check.status == "unresolved"
+    assert check.authority == "Federal Circuit: Veteran v. Secretary"
+    assert check.source == "GovInfo"
+    assert "no exact Federal Circuit case match" in check.detail
 
     def fail(*args, **kwargs):
         raise SearchError("GovInfo quota")
 
     monkeypatch.setattr(client, "search", fail)
 
-    assert auth._verify_federal_circuit_case(case, client).status == "unavailable"
+    check = auth._verify_federal_circuit_case(case, client)
+    assert check.status == "unavailable"
+    assert check.authority == "Federal Circuit: Veteran v. Secretary"
+    assert check.source == "GovInfo"
+    assert "GovInfo quota" in check.detail
+
+
+def test_verify_federal_circuit_case_verified(monkeypatch):
+    client = auth.GovInfoClient("demo-key")
+    case = CaseRecord(
+        title="Veteran v. Secretary (2023)",
+        court=COURT_FEDERAL_CIRCUIT,
+    )
+    captured_queries = []
+
+    def fake_search(query, **kwargs):
+        captured_queries.append(query)
+        return [
+            {
+                "packageId": "USCOURTS-ca13-23-1234",
+                "title": "Veteran v. Secretary (2023)",
+            }
+        ]
+
+    monkeypatch.setattr(client, "search", fake_search)
+
+    check = auth._verify_federal_circuit_case(case, client)
+
+    assert check.authority == "Federal Circuit: Veteran v. Secretary (2023)"
+    assert check.source == "GovInfo"
+    assert check.status == "verified"
+    assert "USCOURTS-ca13-23-1234" in check.detail
+    assert check.url.endswith("/USCOURTS-ca13-23-1234")
+    assert 'courtcode:ca13 courttype:appellate title:("Veteran v. Secretary  2023")' in captured_queries[0]
+
+
+def test_verify_federal_circuit_case_title_with_quotes_and_parens(monkeypatch):
+    """Title containing quotes and parentheses is sanitized and matches exactly."""
+    client = auth.GovInfoClient("demo-key")
+    case = CaseRecord(
+        title='Smith v. Jones "The Ruling" (Remand)',
+        court=COURT_FEDERAL_CIRCUIT,
+    )
+    captured_queries = []
+
+    def fake_search(query, **kwargs):
+        captured_queries.append(query)
+        return [
+            {
+                "packageId": "USCOURTS-ca13-22-5678",
+                "title": 'Smith v. Jones "The Ruling" (Remand)',
+            }
+        ]
+
+    monkeypatch.setattr(client, "search", fake_search)
+
+    check = auth._verify_federal_circuit_case(case, client)
+
+    assert check.status == "verified"
+    assert 'courtcode:ca13 courttype:appellate title:("Smith v. Jones  The Ruling   Remand")' in captured_queries[0]
+
+
+def test_verify_federal_circuit_case_rejects_close_but_wrong_title(monkeypatch):
+    """GovInfo returns a case with a slightly different title -> unresolved."""
+    client = auth.GovInfoClient("demo-key")
+    case = CaseRecord(
+        title="Veteran v. Secretary",
+        court=COURT_FEDERAL_CIRCUIT,
+    )
+
+    def fake_search(query, **kwargs):
+        return [
+            {
+                "packageId": "USCOURTS-ca13-23-9999",
+                "title": "Veteran v. Secretary (2024)",  # different year -> should NOT match
+            }
+        ]
+
+    monkeypatch.setattr(client, "search", fake_search)
+
+    check = auth._verify_federal_circuit_case(case, client)
+
+    assert check.status == "unresolved"
+    assert "no exact Federal Circuit case match" in check.detail
 
 
 def test_verify_analysis_authorities_runs_govinfo_checks(monkeypatch):
