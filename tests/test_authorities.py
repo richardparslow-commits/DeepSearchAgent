@@ -119,17 +119,25 @@ def test_verify_cfr_section_verified(monkeypatch):
     captured = {}
 
     def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
-        captured.update(url=url, params=params)
+        captured.update(
+            url=url, params=params, headers=headers, timeout=timeout, kwargs=kwargs
+        )
         return FakeResponse(content=b'<DIV8 N="3.303"><HEAD>Service connection</HEAD></DIV8>')
 
     monkeypatch.setattr(auth.requests, "get", fake_get)
 
     check = auth.verify_cfr_section("3.303")
 
-    assert check.status == "verified"
+    assert check.authority == "38 C.F.R. § 3.303"
     assert check.source == "eCFR"
+    assert check.status == "verified"
+    assert check.detail == "Section 3.303 is present in the current eCFR title 38."
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
+
+    assert captured["url"] == "https://www.ecfr.gov/api/versioner/v1/full/2026-11-09/title-38.xml"
+    assert captured["headers"] == auth._headers()
+    assert captured["timeout"] == auth._timeout()
     assert captured["params"] == {"part": "3", "section": "3.303"}
-    assert "title-38.xml" in captured["url"]
 
 
 def test_verify_cfr_section_missing_is_unresolved(monkeypatch):
@@ -142,8 +150,14 @@ def test_verify_cfr_section_missing_is_unresolved(monkeypatch):
 
     check = auth.verify_cfr_section("3.999")
 
+    assert check.authority == "38 C.F.R. § 3.999"
+    assert check.source == "eCFR"
     assert check.status == "unresolved"
-    assert "no section 3.999" in check.detail
+    assert (
+        check.detail
+        == "eCFR returned title 38 part 3, but no section 3.999 element was present."
+    )
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.999"
 
 
 def test_verify_federal_register_part_reports_latest_rule(monkeypatch):
@@ -660,8 +674,11 @@ def test_verify_cfr_section_reports_404(monkeypatch):
 
     check = auth.verify_cfr_section("3.999")
 
+    assert check.authority == "38 C.F.R. § 3.999"
+    assert check.source == "eCFR"
     assert check.status == "unresolved"
-    assert "404" in check.detail
+    assert check.detail == "eCFR returned 404 for title 38, part 3, section 3.999."
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.999"
 
 
 def test_verify_cfr_section_reports_request_failure(monkeypatch):
@@ -676,8 +693,11 @@ def test_verify_cfr_section_reports_request_failure(monkeypatch):
 
     check = auth.verify_cfr_section("3.303")
 
+    assert check.authority == "38 C.F.R. § 3.303"
+    assert check.source == "eCFR"
     assert check.status == "unavailable"
     assert "eCFR down" in check.detail
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
 
 
 def test_verify_cfr_section_reports_unparseable_xml(monkeypatch):
@@ -690,8 +710,11 @@ def test_verify_cfr_section_reports_unparseable_xml(monkeypatch):
 
     check = auth.verify_cfr_section("3.303")
 
+    assert check.authority == "38 C.F.R. § 3.303"
+    assert check.source == "eCFR"
     assert check.status == "unavailable"
-    assert "unparseable XML" in check.detail
+    assert "eCFR returned unparseable XML" in check.detail
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
 
 
 def test_verify_cfr_section_ignores_non_division_elements(monkeypatch):
@@ -704,7 +727,10 @@ def test_verify_cfr_section_ignores_non_division_elements(monkeypatch):
 
     check = auth.verify_cfr_section("3.303")
 
+    assert check.authority == "38 C.F.R. § 3.303"
+    assert check.source == "eCFR"
     assert check.status == "unresolved"
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
 
 
 def test_verify_cfr_section_accepts_hierarchy_metadata(monkeypatch):
@@ -722,7 +748,11 @@ def test_verify_cfr_section_accepts_hierarchy_metadata(monkeypatch):
 
     check = auth.verify_cfr_section("3.303")
 
+    assert check.authority == "38 C.F.R. § 3.303"
+    assert check.source == "eCFR"
     assert check.status == "verified"
+    assert check.detail == "Section 3.303 is present in the current eCFR title 38."
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
 
 
 def test_verify_cfr_section_rejects_a_longer_section_prefix(monkeypatch):
@@ -740,7 +770,10 @@ def test_verify_cfr_section_rejects_a_longer_section_prefix(monkeypatch):
 
     check = auth.verify_cfr_section("3.303")
 
+    assert check.authority == "38 C.F.R. § 3.303"
+    assert check.source == "eCFR"
     assert check.status == "unresolved"
+    assert check.url == "https://www.ecfr.gov/current/title-38/section-3.303"
 
 
 def test_verify_federal_register_part_reports_request_failure(monkeypatch):
