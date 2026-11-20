@@ -663,9 +663,11 @@ def test_extract_usc_sections_is_unique_and_limited():
 
 def test_ecfr_current_date_prefers_up_to_date_and_caches(monkeypatch):
     calls = {"n": 0}
+    captured = {}
 
     def fake_get(*args, **kwargs):
         calls["n"] += 1
+        captured.update(url=args[0], params=kwargs.get("params"), headers=kwargs.get("headers"), timeout=kwargs.get("timeout"), proxies=kwargs.get("proxies"))
         return FakeResponse(
             payload={
                 "titles": [
@@ -681,6 +683,11 @@ def test_ecfr_current_date_prefers_up_to_date_and_caches(monkeypatch):
     assert auth._ecfr_current_date() == "2026-11-12"
     assert calls["n"] == 1
 
+    assert captured["url"] == "https://www.ecfr.gov/api/versioner/v1/titles.json"
+    assert captured["headers"] == auth._headers()
+    assert captured["timeout"] == auth._timeout()
+    assert "proxies" in captured
+
 
 def test_ecfr_current_date_falls_back_to_issue_and_amended_dates(monkeypatch):
     payloads = iter(
@@ -689,25 +696,98 @@ def test_ecfr_current_date_falls_back_to_issue_and_amended_dates(monkeypatch):
             {"titles": [{"number": 38, "latest_amended_on": "2026-11-10"}]},
         ]
     )
-    monkeypatch.setattr(
-        auth.requests, "get", lambda *args, **kwargs: FakeResponse(payload=next(payloads))
-    )
+    captured_calls = []
+
+    def fake_get(*args, **kwargs):
+        captured_calls.append(
+            {
+                "url": args[0],
+                "params": kwargs.get("params"),
+                "headers": kwargs.get("headers"),
+                "timeout": kwargs.get("timeout"),
+                "proxies": kwargs.get("proxies"),
+            }
+        )
+        return FakeResponse(payload=next(payloads))
+
+    monkeypatch.setattr(auth.requests, "get", fake_get)
 
     assert auth._ecfr_current_date() == "2026-11-11"
     auth.clear_authority_caches()
     assert auth._ecfr_current_date() == "2026-11-10"
 
+    assert len(captured_calls) == 2
+    for call in captured_calls:
+        assert call["url"] == "https://www.ecfr.gov/api/versioner/v1/titles.json"
+        assert call["headers"] == auth._headers()
+        assert call["timeout"] == auth._timeout()
+        assert "proxies" in call
 
-def test_ecfr_current_date_requires_title_38(monkeypatch):
+
+def test_ecfr_current_date_requires_exact_title_38_number(monkeypatch):
+    """Title 38 must match exactly; title 380 or 038 should not match."""
+    captured = {}
+
+    def fake_get(*args, **kwargs):
+        captured.update(url=args[0], params=kwargs.get("params"), headers=kwargs.get("headers"), timeout=kwargs.get("timeout"), proxies=kwargs.get("proxies"))
+        return FakeResponse(
+            payload={"titles": [{"number": 380, "up_to_date_as_of": "2026-01-01"}]}
+        )
+
+    monkeypatch.setattr(auth.requests, "get", fake_get)
+
+    with pytest.raises(SearchError, match="eCFR titles response did not contain title 38"):
+        auth._ecfr_current_date()
+
+    assert captured["url"] == "https://www.ecfr.gov/api/versioner/v1/titles.json"
+    assert captured["headers"] == auth._headers()
+    assert captured["timeout"] == auth._timeout()
+    assert "proxies" in captured
+
+
+def test_ecfr_current_date_exact_error_messages(monkeypatch):
+    """Verify exact error messages for different failure modes."""
+    # Test 1: Non-dict payload
+    monkeypatch.setattr(
+        auth.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(payload="not a dict"),
+    )
+    with pytest.raises(SearchError, match="eCFR titles response was not a JSON object"):
+        auth._ecfr_current_date()
+
+    # Test 2: Title 38 missing (only other titles)
+    monkeypatch.setattr(
+        auth.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(payload={"titles": [{"number": 37}]}),
+    )
+    with pytest.raises(SearchError, match="eCFR titles response did not contain title 38"):
+        auth._ecfr_current_date()
+
+    # Test 3: Title 38 present but no date fields
     monkeypatch.setattr(
         auth.requests,
         "get",
         lambda *args, **kwargs: FakeResponse(
-            payload={"titles": [{"number": 37}, {"number": 38}]}
+            payload={"titles": [{"number": 38}]}
+        ),
+    )
+    with pytest.raises(SearchError, match="eCFR titles response did not contain title 38"):
+        auth._ecfr_current_date()
+
+
+def test_ecfr_current_date_missing_number_field_is_rejected(monkeypatch):
+    """Title dict missing 'number' field should be treated as non-matching."""
+    monkeypatch.setattr(
+        auth.requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(
+            payload={"titles": [{"up_to_date_as_of": "2026-01-01"}]}
         ),
     )
 
-    with pytest.raises(SearchError, match="title 38"):
+    with pytest.raises(SearchError, match="eCFR titles response did not contain title 38"):
         auth._ecfr_current_date()
 
 
