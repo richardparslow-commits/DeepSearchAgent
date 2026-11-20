@@ -53,6 +53,7 @@ from .reliability import (
     classify_authority_tier,
     classify_source,
     summarize_authority_reliability,
+    RELIABILITY_OFFICIAL,
 )
 from .search import SearchError
 from .snapshots import SnapshotStore
@@ -324,6 +325,12 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
     snippet = raw.get("snippet", "")
     # Providers (e.g. CourtListener) may return structured fields directly;
     # keep them so enrichment only fills in what's still missing.
+    source_reliability = classify_source(url)
+    authority_weight = authority_weight_for(court_name)
+    # Cap authority_weight <= 1 for non-official sources with a URL
+    # (secondary sources like blog mirrors should not outrank official sources)
+    if url and source_reliability != RELIABILITY_OFFICIAL:
+        authority_weight = min(authority_weight, 1)
     return CaseRecord(
         title=title,
         court=court_name,
@@ -343,9 +350,9 @@ def normalize_case(raw: dict[str, str], court_name: str, issue: str) -> CaseReco
         holding="",
         impact="",
         authority_rank=0,
-        authority_weight=authority_weight_for(court_name),
+        authority_weight=authority_weight,
         relevance_score=0,
-        source_reliability=classify_source(url),
+        source_reliability=source_reliability,
     )
 
 
@@ -1552,6 +1559,53 @@ def analyze_cases_for_claim(
     # The citator runs after the initial analysis assembly; fold its optional
     # appellate-history/status evidence back into the D1 records before return.
     apply_citator_checks(analysis, analysis.citator_checks)
+
+    # Post-citator reconciliation (Item 7(a)):
+    # Remove citator-negative and source-validity-withheld cases from the live set,
+    # then recompute contradictions and statute_outcome_matrix over the remaining cases.
+    if settings.citator and analysis.citator_checks:
+        live_cases = []
+        for record in analysis.surfaced_cases:
+            # Check if this record corresponds to a citator-negative or withheld check
+            is_negative_or_withheld = False
+            for check in analysis.citator_checks:
+                if check.target_case.strip().lower() == record.case_title.strip().lower():
+                    if check.status == "negative":
+                        is_negative_or_withheld = True
+                        break
+                    # Check for source-validity withheld
+                    for signal in check.source_validity:
+                        if signal.withheld:
+                            is_negative_or_withheld = True
+                            break
+                    if is_negative_or_withheld:
+                        break
+            if not is_negative_or_withheld:
+                live_cases.append(record)
+
+        # Only recompute if we actually filtered cases and have live cases
+        if len(live_cases) < len(analysis.surfaced_cases) and live_cases:
+            # Recompute contradictions and statute_outcome_matrix over live cases
+            from va_legal_agent.interpretation import (
+                detect_contradictions,
+                build_statute_outcome_matrix,
+            )
+            # We need CaseRecord objects for the interpretation functions
+            # Create minimal CaseRecord objects from the live SurfacedCaseRecord objects
+            from va_legal_agent.models import CaseRecord
+            live_case_records = [
+                CaseRecord(
+                    title=r.case_title,
+                    court=r.court,
+                    citation=r.reporter_citation or "",
+                    decision_date=r.decision_date or "",
+                    url=r.retrieved_url or r.official_transcript_url or "",
+                )
+                for r in live_cases
+            ]
+            analysis.contradictions = detect_contradictions(live_case_records)
+            analysis.statute_outcome_matrix = build_statute_outcome_matrix(live_case_records)
+
     return analysis
 
 

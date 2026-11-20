@@ -54,7 +54,7 @@ from va_legal_agent.models import (
 )
 from va_legal_agent.providers import ProviderResponseTrace
 from va_legal_agent.search import SearchError, classify_search_error
-from va_legal_agent.topics import COURT_BVA, COURT_CAVC, COURT_UNKNOWN
+from va_legal_agent.topics import COURT_BVA, COURT_CAVC, COURT_FEDERAL_CIRCUIT, COURT_SUPREME, COURT_UNKNOWN
 
 TARGET_ID = 111
 SOURCE_ID = 201
@@ -121,13 +121,14 @@ def _history_meta(
     cluster_id: str = "999",
     court: str = COURT_CAVC,
     decision_date: str = "2022-01-01",
+    cluster_resolved: bool = True,
 ) -> dict[str, object]:
     return {
         "title": title,
         "citation": citation,
         "citations": [citation],
         "cluster_id": cluster_id,
-        "cluster_resolved": True,
+        "cluster_resolved": cluster_resolved,
         "opinion_ids": [opinion_id],
         "court": court,
         "decision_date": decision_date,
@@ -200,11 +201,29 @@ class SourceProvider:
         return self.texts.get(opinion_id, "")
 
 
-def _provider() -> SourceProvider:
+def _provider(court: str = COURT_CAVC) -> SourceProvider:
     provider = SourceProvider()
     provider.pages[None] = _page([SOURCE_ID])
     provider.opinion_pages[(SOURCE_ID, None)] = _page([])
+    provider.metadata[SOURCE_ID] = _source_meta(court=court)
     # The invalidator's own history is empty unless a test supplies one.
+    provider.opinion_pages[(HISTORY_ID, None)] = _page([])
+    return provider
+
+
+def _authoritative_provider() -> SourceProvider:
+    """Provider with a Federal Circuit source (higher court that binds CAVC)."""
+    return _provider(court=COURT_FEDERAL_CIRCUIT)
+
+
+def _en_banc_provider() -> SourceProvider:
+    """Provider with an en banc CAVC source (binds other CAVC panels)."""
+    provider = SourceProvider()
+    provider.pages[None] = _page([SOURCE_ID])
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([])
+    # Use en banc text in the opinion
+    provider.texts[SOURCE_ID] = "EN BANC\nThe court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    provider.metadata[SOURCE_ID] = _source_meta(court=COURT_CAVC)
     provider.opinion_pages[(HISTORY_ID, None)] = _page([])
     return provider
 
@@ -233,7 +252,7 @@ def _check() -> CitatorCheck:
 
 
 def test_advisory_valid_source_reports_valid_without_changing_status():
-    provider = _provider()
+    provider = _authoritative_provider()
 
     check = check_case(
         _case(), provider, source_validity=True, source_validity_mode="advisory"
@@ -259,9 +278,9 @@ def test_extract_mode_skips_source_history_lookups():
 
 
 def _invalid_source_provider() -> SourceProvider:
-    provider = _provider()
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
-    provider.metadata[HISTORY_ID] = _history_meta()
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
@@ -305,6 +324,7 @@ def _nested_invalidator_provider() -> SourceProvider:
         citation="33 Vet.App. 2",
         cluster_id="1000",
         decision_date="2023-01-01",
+        court=COURT_SUPREME,
     )
     provider.texts[SECOND_HISTORY_ID] = (
         "The court overruled Later v. Secretary, 32 Vet.App. 1."
@@ -326,6 +346,8 @@ class _InvalidatorMetadataFailureProvider(SourceProvider):
 
     def __init__(self) -> None:
         super().__init__()
+        # Override SOURCE_ID to be Federal Circuit (authoritative)
+        self.metadata[SOURCE_ID] = _source_meta(court=COURT_FEDERAL_CIRCUIT)
         self.history_metadata_calls = 0
 
     def opinion_metadata(self, opinion_id: int):
@@ -337,7 +359,7 @@ class _InvalidatorMetadataFailureProvider(SourceProvider):
 
 
 def _mixed_invalidator_provider() -> SourceProvider:
-    provider = _provider()
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page(
         [HISTORY_ID, SECOND_HISTORY_ID]
     )
@@ -347,12 +369,14 @@ def _mixed_invalidator_provider() -> SourceProvider:
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
+    # SECOND_HISTORY_ID is Supreme Court (higher than Federal Circuit source) -> binding
     provider.metadata[SECOND_HISTORY_ID] = _history_meta(
         opinion_id=SECOND_HISTORY_ID,
         title="Second v. Secretary",
         citation="33 Vet.App. 2",
         cluster_id="1000",
         decision_date="2022-06-01",
+        court=COURT_SUPREME,
     )
     provider.texts[SECOND_HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
@@ -434,13 +458,22 @@ def test_advisory_ambiguous_invalidator_is_unverified():
     invalidator = signal.invalidator_checks[0]
     assert invalidator.invalidator_status == "not_checked"
     assert invalidator.accepted is False
-    assert invalidator.reason_code == "invalidator_attribution_ambiguous"
-    assert "ambiguous" in invalidator.reason
+    # Same-tier CAVC without en banc -> authority unknown, not attribution ambiguous
+    assert invalidator.reason_code == "invalidator_authority_unknown"
+    assert "unknown" in invalidator.reason
 
 
 def test_advisory_unresolved_invalidator_cluster_is_unverified():
-    provider = _history_provider()
-    provider.metadata[HISTORY_ID]["cluster_resolved"] = False
+    # Source is Federal Circuit (authoritative over CAVC target)
+    # History is Supreme Court (higher court) but with unresolved cluster
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(
+        court=COURT_SUPREME, cluster_resolved=False
+    )
+    provider.texts[HISTORY_ID] = (
+        "The court overruled Jones v. McDonough, 31 Vet.App. 456."
+    )
     check = _check()
 
     _validate_source_validity(provider, check, _SourceValidationCache())
@@ -517,7 +550,8 @@ def test_advisory_invalidator_metadata_failure_is_unverified():
     provider.pages[None] = _page([SOURCE_ID])
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
     provider.opinion_pages[(HISTORY_ID, None)] = _page([])
-    provider.metadata[HISTORY_ID] = _history_meta()
+    # History is Supreme Court (higher than Federal Circuit source) so authority passes
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
@@ -794,9 +828,10 @@ def test_advisory_missing_status_is_unverified():
 
 
 def test_advisory_partial_source_history_is_qualified():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) with partial overrule
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
-    provider.metadata[HISTORY_ID] = _history_meta()
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456, in part."
     )
@@ -882,7 +917,13 @@ def test_advisory_source_cluster_mismatch_is_unverified():
 
 
 def test_advisory_cache_reuses_source_audit():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) overruling source -> invalid
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court overruled Jones v. McDonough, 31 Vet.App. 456."
+    )
     cache = _SourceValidationCache()
 
     check_case(
@@ -904,7 +945,9 @@ def test_advisory_cache_reuses_source_audit():
         source_validation_cache=cache,
     )
 
-    assert second.source_validity[0].status == "valid"
+    # Source is overruled by Supreme Court -> invalid
+    assert second.source_validity[0].status == "invalid"
+    # Cache should be reused (no additional edge calls)
     assert [
         call for call in provider.edge_calls if call[0] == SOURCE_ID
     ] == source_edges
@@ -928,9 +971,12 @@ def test_advisory_missing_source_id_does_not_lookup():
 
 
 def test_advisory_as_of_excludes_post_cutoff_source_history():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) overruling source
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
-    provider.metadata[HISTORY_ID] = _history_meta()
+    provider.metadata[HISTORY_ID] = _history_meta(
+        court=COURT_SUPREME, decision_date="2022-01-01"
+    )
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
@@ -939,6 +985,7 @@ def test_advisory_as_of_excludes_post_cutoff_source_history():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     signal = check.source_validity[0]
+    # Post-cutoff history is out of scope -> no invalidating treatment found
     assert signal.status == "valid"
     assert signal.reason_code == "source_no_invalidating_treatment"
     assert signal.withheld is False
@@ -950,10 +997,12 @@ def test_advisory_as_of_excludes_post_cutoff_source_history():
 
 
 def test_advisory_as_of_includes_history_on_the_cutoff_date():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) overruling source
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
-    provider.metadata[HISTORY_ID] = _history_meta()
-    provider.metadata[HISTORY_ID]["decision_date"] = "2021-01-01"
+    provider.metadata[HISTORY_ID] = _history_meta(
+        court=COURT_SUPREME, decision_date="2021-01-01"
+    )
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
@@ -961,16 +1010,19 @@ def test_advisory_as_of_includes_history_on_the_cutoff_date():
 
     _validate_source_validity(provider, check, _SourceValidationCache())
 
+    # On-cutoff history is in scope -> source is invalid
     assert check.source_validity[0].status == "invalid"
     assert check.source_validity[0].withheld is False
     assert check.source_validity[0].history_complete is True
 
 
 def test_advisory_as_of_in_scope_history_is_validated():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) overruling source
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
-    provider.metadata[HISTORY_ID] = _history_meta()
-    provider.metadata[HISTORY_ID]["decision_date"] = "2020-06-01"
+    provider.metadata[HISTORY_ID] = _history_meta(
+        court=COURT_SUPREME, decision_date="2020-06-01"
+    )
     provider.texts[HISTORY_ID] = (
         "The court overruled Jones v. McDonough, 31 Vet.App. 456."
     )
@@ -1020,7 +1072,13 @@ def test_advisory_unresolved_source_cluster_is_unverified():
 
 
 def test_advisory_fills_missing_signal_cluster_id():
-    provider = _provider()
+    # Source is Federal Circuit, history is Supreme Court (higher court) overruling source -> invalid
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court overruled Jones v. McDonough, 31 Vet.App. 456."
+    )
     check = _check().model_copy(
         update={
             "source_validity": [
@@ -1032,7 +1090,8 @@ def test_advisory_fills_missing_signal_cluster_id():
     _validate_source_validity(provider, check, _SourceValidationCache())
 
     assert check.source_validity[0].source_cluster_id == "888"
-    assert check.source_validity[0].status == "valid"
+    # Source is overruled by Supreme Court -> invalid
+    assert check.source_validity[0].status == "invalid"
 
 
 def test_advisory_preserves_status_and_review_fields():
@@ -1417,9 +1476,17 @@ def test_enforcement_is_idempotent():
 
 
 def test_enforce_mode_valid_source_keeps_negative_and_queue_demotion():
+    # Source is Federal Circuit, history is Supreme Court (higher court) -> authoritative, valid
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court affirmed Jones v. McDonough, 31 Vet.App. 456."
+    )
+
     check = check_case(
         _case(),
-        _provider(),
+        provider,
         source_validity=True,
         source_validity_mode="enforce",
     )
@@ -1703,17 +1770,20 @@ def test_source_candidate_target_not_located_is_audited():
 
 
 def _cap_provider() -> SourceProvider:
-    provider = _provider()
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     ids = [HISTORY_ID, SECOND_HISTORY_ID, 501, 601]
     provider.opinion_pages[(SOURCE_ID, None)] = _page(ids)
     dates = ["2024-04-01", "2023-04-01", "2022-04-01", "2021-04-01"]
-    for opinion_id, decision_date in zip(ids, dates, strict=True):
+    for i, (opinion_id, decision_date) in enumerate(zip(ids, dates, strict=True)):
+        # Alternate between Supreme Court and Federal Circuit for binding authorities
+        court = COURT_SUPREME if i % 2 == 0 else COURT_FEDERAL_CIRCUIT
         provider.metadata[opinion_id] = _history_meta(
             opinion_id=opinion_id,
             title=f"Later {opinion_id} v. Secretary",
             citation=f"{opinion_id} Vet.App. 1",
             cluster_id=str(opinion_id + 1000),
             decision_date=decision_date,
+            court=court,
         )
         provider.texts[opinion_id] = (
             "The court overruled Jones v. McDonough, 31 Vet.App. 456."
@@ -1791,8 +1861,13 @@ def test_source_invalidator_checks_deduplicate_identical_observations():
 
 
 def test_source_reviewed_noninvalidating_finding_is_not_audited():
-    provider = _history_provider(
-        text="The court criticized Jones v. McDonough, 31 Vet.App. 456."
+    # Source is Federal Circuit, history is Supreme Court (higher court) -> authoritative
+    # Text contains "criticized" which is not a negative treatment
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court criticized Jones v. McDonough, 31 Vet.App. 456."
     )
     check = _check()
 
@@ -1805,8 +1880,13 @@ def test_source_reviewed_noninvalidating_finding_is_not_audited():
 
 
 def test_source_clean_reviewed_candidate_is_not_an_invalidator_candidate():
-    provider = _history_provider(
-        text="The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    # Source is Federal Circuit, history is Supreme Court (higher court) -> authoritative
+    # Text contains "discussed" which is not a negative treatment
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court discussed Jones v. McDonough, 31 Vet.App. 456."
     )
     check = _check()
 
@@ -1867,8 +1947,13 @@ def test_source_gated_candidate_keeps_gated_status_with_as_of():
 
 
 def test_source_audit_ledger_records_complete_clean_review():
-    provider = _history_provider(
-        text="The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    # Source is Federal Circuit, history is Supreme Court (higher court) -> authoritative
+    # Text contains "discussed" which is not a negative treatment
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID])
+    provider.metadata[HISTORY_ID] = _history_meta(court=COURT_SUPREME)
+    provider.texts[HISTORY_ID] = (
+        "The court discussed Jones v. McDonough, 31 Vet.App. 456."
     )
     check = _check()
 
@@ -2311,17 +2396,27 @@ def test_source_audit_ledger_adds_cluster_mismatch_gap():
 
 
 def test_source_audit_ledger_keeps_post_as_of_coverage_complete():
-    provider = _provider()
+    # Source is Federal Circuit, histories are Supreme Court and Federal Circuit (binding)
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
     provider.opinion_pages[(SOURCE_ID, None)] = _page(
         [HISTORY_ID, SECOND_HISTORY_ID]
     )
-    provider.metadata[HISTORY_ID] = _history_meta(decision_date="2022-01-01")
+    provider.metadata[HISTORY_ID] = _history_meta(
+        court=COURT_SUPREME, decision_date="2022-01-01"
+    )
     provider.metadata[SECOND_HISTORY_ID] = _history_meta(
         opinion_id=SECOND_HISTORY_ID,
         title="Later 401 v. Secretary",
         citation="33 Vet.App. 2",
         cluster_id="1000",
         decision_date="2023-01-01",
+        court=COURT_FEDERAL_CIRCUIT,
+    )
+    provider.texts[HISTORY_ID] = (
+        "The court discussed Jones v. McDonough, 31 Vet.App. 456."
+    )
+    provider.texts[SECOND_HISTORY_ID] = (
+        "The court discussed Jones v. McDonough, 31 Vet.App. 456."
     )
     check = _check().model_copy(update={"as_of_date": "2021-01-01"})
 
@@ -2472,16 +2567,18 @@ def test_source_audit_ledger_does_not_flag_duplicate_row_as_pool_truncation():
 
 
 def test_source_audit_ledger_separates_multi_opinion_reported_and_unique_counts():
-    provider = _provider()
-    source_metadata = _source_meta()
+    # Source is Federal Circuit (authoritative), histories are Supreme Court and Federal Circuit (binding)
+    provider = _provider(court=COURT_FEDERAL_CIRCUIT)
+    source_metadata = _source_meta(court=COURT_FEDERAL_CIRCUIT)
     source_metadata["opinion_ids"] = [SOURCE_ID, 202]
     provider.metadata[SOURCE_ID] = source_metadata
     provider.opinion_pages[(SOURCE_ID, None)] = _page([HISTORY_ID, 501])
     provider.opinion_pages[(202, None)] = _page([501, SECOND_HISTORY_ID])
-    for opinion_id, title in (
-        (HISTORY_ID, "Later v. Secretary"),
-        (501, "Later 501 v. Secretary"),
-        (SECOND_HISTORY_ID, "Later 401 v. Secretary"),
+    # Use binding authorities: Supreme Court and Federal Circuit
+    for opinion_id, title, court in (
+        (HISTORY_ID, "Later v. Secretary", COURT_SUPREME),
+        (501, "Later 501 v. Secretary", COURT_FEDERAL_CIRCUIT),
+        (SECOND_HISTORY_ID, "Later 401 v. Secretary", COURT_SUPREME),
     ):
         provider.metadata[opinion_id] = _history_meta(
             opinion_id=opinion_id,
@@ -2489,6 +2586,7 @@ def test_source_audit_ledger_separates_multi_opinion_reported_and_unique_counts(
             citation=f"{opinion_id} Vet.App. 1",
             cluster_id=str(opinion_id + 1000),
             decision_date="2020-06-01",
+            court=court,
         )
         provider.texts[opinion_id] = (
             "The court discussed Jones v. McDonough, 31 Vet.App. 456."

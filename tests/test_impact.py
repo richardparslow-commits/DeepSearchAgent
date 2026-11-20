@@ -759,3 +759,49 @@ def test_provision_alias_subsection_must_match_the_registry_spec():
     mismatched = extract_provision_impacts("The Board applied 38 U.S.C. § 5107(a).", case)
     assert not any(i.citation == benefit_of_doubt for i in mismatched)
 
+
+def test_provision_impact_provenance_uses_retrieved_url_not_registry_url():
+    """Item 7(b): Impact provenance_verified uses retrieved case.url, not registry source_url."""
+    from va_legal_agent.va_domain import extract_provision_impacts
+    from va_legal_agent.models import CaseRecord
+
+    # Case with a secondary blog URL (not official) but citing an official provision
+    blog_case = CaseRecord(
+        title="Blog Post About VA Law",
+        court="",
+        url="https://law-blog.example.com/post-about-3-303",
+        snippet="The Board applied 38 C.F.R. § 3.303 for service connection.",
+        holding="The blog discusses 38 C.F.R. § 3.303.",
+        decision_date="2024-01-01",
+    )
+
+    impacts = extract_provision_impacts(
+        "The Board applied 38 C.F.R. § 3.303 for service connection.", blog_case
+    )
+    impact_303 = next((i for i in impacts if "3.303" in i.citation), None)
+    assert impact_303 is not None
+    # provenance_verified should be False because the retrieved URL (blog) is not official
+    assert impact_303.provenance_verified is False
+    # source_url should still be the canonical registry URL
+    assert impact_303.source_url == "https://www.ecfr.gov/current/title-38/part-3/section-3.303"
+
+    # Case with official CAVC URL (official) citing the same provision
+    official_case = CaseRecord(
+        title="Official CAVC Decision",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.uscourts.cavc.gov/opinion/12345",
+        snippet="The Board applied 38 C.F.R. § 3.303 for service connection.",
+        holding="The court applied 38 C.F.R. § 3.303 for service connection.",
+        decision_date="2024-01-01",
+    )
+
+    impacts = extract_provision_impacts(
+        "The Board applied 38 C.F.R. § 3.303 for service connection.", official_case
+    )
+    impact_303 = next((i for i in impacts if "3.303" in i.citation), None)
+    assert impact_303 is not None
+    # provenance_verified should be True because the retrieved URL (CAVC) is official
+    assert impact_303.provenance_verified is True
+    # source_url should still be the canonical registry URL
+    assert impact_303.source_url == "https://www.ecfr.gov/current/title-38/part-3/section-3.303"
+

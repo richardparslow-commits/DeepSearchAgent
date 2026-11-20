@@ -121,15 +121,15 @@ def rank_cases(cases: list[CaseRecord], current_year: int | None = None) -> list
         )
 
     # Court authority remains strictly dominant. The official-source flag is
-    # only a same-score tie-breaker: an official copy of a decision wins over
+    # the primary sort key: an official copy of a decision wins over
     # a secondary mirror without promoting a secondary source above a higher
-    # court tier.
+    # court tier. Within the same official status, authority tiers are dominant.
     ordered = sorted(
         cases,
         key=lambda c: (
+            -int(c.is_official_authority),
             -c.authority_weight,
             -c.composite_score,
-            -int(c.is_official_authority),
             c.title,
             c.url,
         ),

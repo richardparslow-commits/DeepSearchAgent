@@ -862,3 +862,109 @@ def test_aud5_tg4_stage_effect_guard():
     )
     spec = [i for i in impacts if i.citation == "38 C.F.R. § 3.2601"]
     assert spec and spec[0].stage == va_domain.STAGE_APPELLATE
+
+
+def test_official_source_outranks_higher_relevance_secondary_source():
+    """Item 7(c): Strict Official-Over-Secondary Ranking Precedence.
+
+    An official source with lower relevance_score should outrank a secondary
+    source with higher relevance_score, because official authority is the
+    primary sort key.
+    """
+    from va_legal_agent.ranking import rank_cases
+    from va_legal_agent.models import CaseRecord
+
+    # Official CAVC case with lower relevance
+    official_case = CaseRecord(
+        title="Official CAVC Decision",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.uscourts.cavc.gov/opinion/123",
+        citation="35 Vet.App. 100",
+        decision_date="2024-01-01",
+        snippet="Official decision",
+        relevance_score=50,  # Lower relevance
+    )
+    official_case.is_official_authority = True
+    official_case.authority_weight = 3  # CAVC weight
+
+    # Secondary source (blog mirror) with higher relevance
+    secondary_case = CaseRecord(
+        title="Blog Mirror of CAVC Decision",
+        court="Court of Appeals for Veterans Claims",
+        url="https://law-blog.example.com/mirror",
+        citation="35 Vet.App. 100",
+        decision_date="2024-01-01",
+        snippet="Blog mirror of the decision",
+        relevance_score=100,  # Higher relevance
+    )
+    secondary_case.is_official_authority = False
+    secondary_case.authority_weight = 3  # Same CAVC weight
+
+    ranked = rank_cases([secondary_case, official_case])
+
+    # Official source should rank first despite lower relevance
+    assert ranked[0].is_official_authority is True
+    assert ranked[0].title == "Official CAVC Decision"
+    assert ranked[1].title == "Blog Mirror of CAVC Decision"
+
+    # Test with Federal Circuit official vs CAVC secondary
+    fc_official = CaseRecord(
+        title="Federal Circuit Decision",
+        court="U.S. Court of Appeals for the Federal Circuit",
+        url="https://www.cafc.uscourts.gov/opinion/456",
+        citation="50 F.4th 1000",
+        decision_date="2024-01-01",
+        snippet="Federal Circuit decision",
+        relevance_score=30,
+    )
+    fc_official.is_official_authority = True
+    fc_official.authority_weight = 4  # Fed Circuit weight
+
+    cavc_secondary = CaseRecord(
+        title="CAVC Mirror on Blog",
+        court="Court of Appeals for Veterans Claims",
+        url="https://blog.example.com/cavc-mirror",
+        citation="35 Vet.App. 100",
+        decision_date="2024-01-01",
+        snippet="CAVC decision mirrored on blog",
+        relevance_score=100,
+    )
+    cavc_secondary.is_official_authority = False
+    cavc_secondary.authority_weight = 3  # CAVC weight
+
+    ranked = rank_cases([cavc_secondary, fc_official])
+
+    # Federal Circuit official should still rank first (higher authority_weight)
+    assert ranked[0].is_official_authority is True
+    assert ranked[0].title == "Federal Circuit Decision"
+
+    # Test same authority_weight, official vs secondary
+    cavc_official = CaseRecord(
+        title="Official CAVC",
+        court="Court of Appeals for Veterans Claims",
+        url="https://www.uscourts.cavc.gov/opinion/789",
+        citation="35 Vet.App. 200",
+        decision_date="2024-01-01",
+        snippet="Official CAVC",
+        relevance_score=20,
+    )
+    cavc_official.is_official_authority = True
+    cavc_official.authority_weight = 3
+
+    cavc_secondary2 = CaseRecord(
+        title="Secondary CAVC Mirror",
+        court="Court of Appeals for Veterans Claims",
+        url="https://mirror.example.com/cavc",
+        citation="35 Vet.App. 200",
+        decision_date="2024-01-01",
+        snippet="Secondary mirror",
+        relevance_score=100,
+    )
+    cavc_secondary2.is_official_authority = False
+    cavc_secondary2.authority_weight = 3
+
+    ranked = rank_cases([cavc_secondary2, cavc_official])
+
+    # Official should rank first (same authority_weight, but official is primary key)
+    assert ranked[0].is_official_authority is True
+    assert ranked[0].title == "Official CAVC"

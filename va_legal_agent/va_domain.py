@@ -938,10 +938,14 @@ def _impact(
     case: CaseRecord | None = None,
     m21_direct: bool = False,
 ) -> ProvisionImpact:
-    source_url = spec.source_url or (case.url if case else "")
-    host = (urlparse(source_url).hostname or "").lower()
+    # Use the retrieved case URL for provenance verification when available,
+    # falling back to the spec's canonical source URL only when no case is provided.
+    # The canonical source_url is still stored as the reference URL in the impact.
+    retrieved_url = case.url if case else ""
+    source_url = spec.source_url or retrieved_url or ""
+    host = (urlparse(retrieved_url if retrieved_url else source_url).hostname or "").lower()
     host_verified = bool(host) and (
-        classify_source(source_url) == RELIABILITY_OFFICIAL
+        classify_source(retrieved_url if retrieved_url else source_url) == RELIABILITY_OFFICIAL
         or any(
             host == domain or host.endswith("." + domain)
             for domain in PRIMARY_SOURCE_DOMAINS
@@ -965,7 +969,7 @@ def _impact(
         diagnostic_code=diagnostic_code,
         staged_rating=staged,
         medication_effect=medication,
-        source_url=source_url,
+        source_url=spec.source_url,  # Canonical reference URL
         provenance_verified=verified,
         registry_version=REGISTRY_VERSION,
     )
@@ -1338,11 +1342,14 @@ def apply_citator_checks(
         elif check.status == "unknown":
             record.history_status = "unknown"
 
-        record.warnings = [
-            warning
-            for warning in record.warnings
-            if "Appellate history has not been assessed by the citator" not in warning
-        ]
+        # Only remove the "not assessed" warning when citator has a definitive status
+        # (good_law or negative). If status is unknown, preserve the warning.
+        if check.status != "unknown":
+            record.warnings = [
+                warning
+                for warning in record.warnings
+                if "Appellate history has not been assessed by the citator" not in warning
+            ]
 
 
 def _history_status(*values: str) -> str:
