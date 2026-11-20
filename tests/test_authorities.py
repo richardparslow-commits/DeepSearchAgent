@@ -284,7 +284,10 @@ def test_verify_analysis_authorities_uses_ecfr_and_fr(monkeypatch):
     monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
     monkeypatch.delenv("GOVINFO_API_KEY", raising=False)
     monkeypatch.setattr(auth, "_ecfr_current_date", lambda: "2026-11-09")
+    captured_requests: list[tuple[str, dict]] = []
+
     def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
+        captured_requests.append((url, params or {}))
         if "federalregister.gov" in url:
             return FakeResponse(payload={"results": []})
         return FakeResponse(content=b'<DIV8 N="3.303"/>')
@@ -298,8 +301,20 @@ def test_verify_analysis_authorities_uses_ecfr_and_fr(monkeypatch):
 
     checks = auth.verify_analysis_authorities(analysis, [])
 
-    assert [check.source for check in checks] == ["eCFR", "Federal Register"]
-    assert all(check.status in {"verified", "no_recent_documents"} for check in checks)
+    assert len(checks) == 2
+    assert checks[0].authority == "38 C.F.R. § 3.303"
+    assert checks[0].source == "eCFR"
+    assert checks[0].status == "verified"
+
+    assert checks[1].authority == "38 C.F.R. Part 3"
+    assert checks[1].source == "Federal Register"
+    assert checks[1].status == "no_recent_documents"
+
+    fr_calls = [
+        params for url, params in captured_requests if "federalregister.gov" in url
+    ]
+    assert len(fr_calls) == 1
+    assert fr_calls[0].get("conditions[cfr][part]") == "3"
 
 
 def test_federal_circuit_case_cross_check_uses_govinfo(monkeypatch):
@@ -798,31 +813,63 @@ def test_verify_analysis_authorities_runs_govinfo_checks(monkeypatch):
     monkeypatch.setenv("AUTHORITY_VERIFICATION", "1")
     monkeypatch.setenv("GOVINFO_API_KEY", "demo-key")
     monkeypatch.setattr(auth, "extract_cfr_sections", lambda text: [])
-    monkeypatch.setattr(auth, "_extract_usc_sections", lambda text: ["1110"])
-    monkeypatch.setattr(
-        auth,
-        "_verify_us_code",
-        lambda section, client: AuthorityCheck(
+
+    usc_calls: list[tuple[object, object]] = []
+
+    def fake_verify_us_code(section, client):
+        assert section == "1110"
+        assert isinstance(client, auth.GovInfoClient)
+        usc_calls.append((section, client))
+        return AuthorityCheck(
             authority=f"38 U.S.C. § {section}",
             source="GovInfo",
             status="verified",
-        ),
-    )
-    monkeypatch.setattr(
-        auth,
-        "_verify_federal_circuit_case",
-        lambda case, client: AuthorityCheck(
+        )
+
+    monkeypatch.setattr(auth, "_verify_us_code", fake_verify_us_code)
+
+    fed_circuit_calls: list[tuple[CaseRecord, object]] = []
+
+    def fake_verify_federal_circuit_case(case, client):
+        assert isinstance(client, auth.GovInfoClient)
+        assert case.court == COURT_FEDERAL_CIRCUIT
+        assert case.title.strip()
+        fed_circuit_calls.append((case, client))
+        return AuthorityCheck(
             authority=f"Federal Circuit: {case.title}",
             source="GovInfo",
             status="verified",
-        ),
+        )
+
+    monkeypatch.setattr(
+        auth, "_verify_federal_circuit_case", fake_verify_federal_circuit_case
     )
-    analysis = LegalAnalysis(issue="tinnitus", summary="38 U.S.C. § 1110", how_it_affects_va_claims="")
-    cases = [CaseRecord(title="Veteran v. Secretary", court=COURT_FEDERAL_CIRCUIT)]
+
+    analysis = LegalAnalysis(
+        issue="tinnitus",
+        summary="38 U.S.C. § 1110",
+        how_it_affects_va_claims="",
+    )
+    cases = [
+        CaseRecord(title="CAVC Case", court=COURT_CAVC),
+        CaseRecord(title="   ", court=COURT_FEDERAL_CIRCUIT),
+        CaseRecord(title="Fed Cir Case 1", court=COURT_FEDERAL_CIRCUIT),
+        CaseRecord(title="Fed Cir Case 2", court=COURT_FEDERAL_CIRCUIT),
+        CaseRecord(title="Fed Cir Case 3", court=COURT_FEDERAL_CIRCUIT),
+        CaseRecord(title="Fed Cir Case 4", court=COURT_FEDERAL_CIRCUIT),
+    ]
 
     checks = auth.verify_analysis_authorities(analysis, cases)
 
-    assert [check.source for check in checks] == ["GovInfo", "GovInfo"]
+    assert len(usc_calls) == 1
+    assert len(fed_circuit_calls) == 3
+    assert [c[0].title for c in fed_circuit_calls] == [
+        "Fed Cir Case 1",
+        "Fed Cir Case 2",
+        "Fed Cir Case 3",
+    ]
+    assert len(checks) == 4
+    assert [check.source for check in checks] == ["GovInfo"] * 4
 
 
 def test_authority_flags_deduplicates_identical_flags():
