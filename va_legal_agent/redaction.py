@@ -80,6 +80,21 @@ _USERINFO_RE = re.compile(
 )
 
 
+def _decode_param_name(name: str) -> str:
+    """Decode a URL-encoded parameter name, handling double-encoding."""
+    decoded = name
+    while True:
+        try:
+            decoded = unquote_plus(decoded)
+            if decoded == name:
+                break
+            name = decoded
+        except Exception:
+            break
+    return name
+
+
+
 def _redact_query_text(text: str) -> str:
     """Redact sensitive query pairs in free-form text.
 
@@ -88,7 +103,7 @@ def _redact_query_text(text: str) -> str:
     """
 
     def replace(match: re.Match[str]) -> str:
-        name = unquote_plus(match.group(2))
+        name = _decode_param_name(match.group(2))
         if _parameter_is_sensitive(name):
             return f"{match.group(1)}{match.group(2)}{match.group(3)}{REDACTED}"
         return match.group(0)

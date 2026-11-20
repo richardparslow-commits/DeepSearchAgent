@@ -1270,7 +1270,7 @@ def test_explicit_negative_treatment_sets_negative_and_clears_good_law_date():
     provider.pages[None] = _page([201])
     provider.metadata[201] = _meta()
     provider.texts[201] = (
-        "The court overruled Smith v. Wilkie, 30 Vet.App. 123 in part."
+        "EN BANC\nThe court overruled Smith v. Wilkie, 30 Vet.App. 123 in part."
     )
 
     check = check_case(_case(), provider)
@@ -1288,9 +1288,26 @@ def test_explicit_negative_treatment_sets_negative_and_clears_good_law_date():
     assert treatment.gate_reason == ""
     assert check.gated_treatment_findings == []
     assert check.later_citing_opinions[0].treatment_eligible is True
+
+
+def test_same_tier_cavc_without_en_banc_is_not_binding():
+    provider = FakeProvider()
+    provider.pages[None] = _page([201])
+    provider.metadata[201] = _meta()
+    provider.texts[201] = (
+        "The court overruled Smith v. Wilkie, 30 Vet.App. 123 in part."
+    )
+
+    check = check_case(_case(), provider)
+
+    assert check.status == "negative"
+    assert len(check.negative_treatments) == 1
+    treatment = check.negative_treatments[0]
+    assert treatment.binding is None
+    assert check.binding_negative_treatments == []
+    assert check.persuasive_negative_treatments == []
     assert treatment.excerpt in provider.texts[201]
     assert treatment.citing_case == "Jones v. McDonough"
-    assert check.binding_negative_treatments == [treatment]
     assert check.persuasive_negative_treatments == []
     assert check.later_reaffirmance is False
 
@@ -1548,11 +1565,11 @@ def test_timeline_splits_binding_and_persuasive_and_flags_later_reaffirmance():
     provider.metadata[201] = _meta(
         case="Alpha v. McDonough", date="2020-01-01", court=COURT_CAVC
     )
-    provider.texts[201] = "The court overruled Smith v. Wilkie, 30 Vet.App. 123."
+    provider.texts[201] = "EN BANC\nThe court overruled Smith v. Wilkie, 30 Vet.App. 123."
     provider.metadata[202] = _meta(
         case="Beta v. McDonough", date="2021-01-01", court=COURT_CAVC
     )
-    provider.texts[202] = "The court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
+    provider.texts[202] = "EN BANC\nThe court reaffirmed Smith v. Wilkie, 30 Vet.App. 123."
     provider.metadata[203] = _meta(
         case="Gamma v. McDonough", date="2019-01-01", court=COURT_BVA
     )

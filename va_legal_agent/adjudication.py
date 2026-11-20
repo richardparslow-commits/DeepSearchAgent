@@ -201,16 +201,23 @@ def _now() -> str:
 
 
 def _item_id(
-    finding: NegativeTreatment, target_case: str, target_citation: str, disposition: str
+    finding: NegativeTreatment,
+    target_case: str,
+    target_citation: str,
+    disposition: str = "",
 ) -> str:
     material = "\x1f".join(
         (
             target_case,
             target_citation,
-            finding.citing_url,
-            finding.treatment,
-            finding.excerpt,
-            disposition,
+            finding.source_opinion_id or "",
+            finding.citing_case or "",
+            finding.citing_citation or "",
+            finding.citing_date or "",
+            finding.citing_url or "",
+            finding.opinion_role or "",
+            finding.treatment or "",
+            finding.excerpt or "",
         )
     )
     return "adj-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:20]
@@ -289,7 +296,10 @@ def _queue_item(
 
 
 def build_adjudication_queue(
-    checks: list[CitatorCheck], *, source: str = ""
+    checks: list[CitatorCheck],
+    *,
+    source: str = "",
+    prior: AdjudicationQueue | list[AdjudicationItem] | None = None,
 ) -> AdjudicationQueue:
     """Build a de-duplicated evidence-first queue from citator checks.
 
@@ -303,6 +313,14 @@ def build_adjudication_queue(
     """
     items: list[AdjudicationItem] = []
     seen: set[str] = set()
+    prior_map: dict[str, AdjudicationItem] = {}
+    if prior is not None:
+        prior_list = (
+            prior.items if isinstance(prior, AdjudicationQueue) else prior
+        )
+        for p_item in prior_list:
+            prior_map[p_item.id] = p_item
+
     for check in checks:
         for finding in check.negative_treatments:
             item = _queue_item(
@@ -315,6 +333,9 @@ def build_adjudication_queue(
             )
             if item.id not in seen:
                 seen.add(item.id)
+                if item.id in prior_map:
+                    item.review = prior_map[item.id].review
+                    item.history = list(prior_map[item.id].history)
                 items.append(item)
         for finding in check.gated_treatment_findings:
             item = _queue_item(
@@ -327,7 +348,16 @@ def build_adjudication_queue(
             )
             if item.id not in seen:
                 seen.add(item.id)
+                if item.id in prior_map:
+                    item.review = prior_map[item.id].review
+                    item.history = list(prior_map[item.id].history)
                 items.append(item)
+
+    for p_id, p_item in prior_map.items():
+        if p_id not in seen and p_item.review.status != "pending":
+            seen.add(p_id)
+            items.append(p_item)
+
     items.sort(
         key=lambda item: (
             item.priority != "high",

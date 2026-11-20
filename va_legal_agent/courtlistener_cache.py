@@ -46,13 +46,24 @@ class CacheEntry:
 # persisting a token in the request metadata of an otherwise valid cache entry.
 _SENSITIVE_KEYS = {
     "access_token",
+    "access-token",
     "api-key",
     "api_key",
     "apikey",
     "authorization",
+    "auth",
     "token",
     "x_api_key",
     "x-api-key",
+    "key",
+    "secret",
+    "password",
+    "pass",
+    "passwd",
+    "client_secret",
+    "client-secret",
+    "subscription_key",
+    "subscription-key",
 }
 
 

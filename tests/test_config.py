@@ -623,3 +623,20 @@ def test_mask_url_userinfo_malformed_and_port_edge_cases():
         "http://[REDACTED]@host:8080/"
     )
 
+def test_mask_url_userinfo_encoded_and_extended_keys():
+    from va_legal_agent.config import mask_url_userinfo
+
+    assert mask_url_userinfo("https://api.example.com?api%5Fkey=secret123") == (
+        "https://api.example.com?api%5Fkey=[REDACTED]"
+    )
+    assert mask_url_userinfo("https://api.example.com?key=secret123") == (
+        "https://api.example.com?key=[REDACTED]"
+    )
+    assert mask_url_userinfo("https://api.example.com?password=secret123") == (
+        "https://api.example.com?password=[REDACTED]"
+    )
+    assert mask_url_userinfo("https://api.example.com?client_secret=secret123") == (
+        "https://api.example.com?client_secret=[REDACTED]"
+    )
+
+

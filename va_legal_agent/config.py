@@ -1,5 +1,3 @@
-"""Shared configuration: a typed settings object plus guarded env parsing."""
-
 from __future__ import annotations
 
 import logging
@@ -9,7 +7,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit, unquote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +33,47 @@ MAX_ENV_FLOAT_SECONDS = 3600.0
 # Query parameters that can carry credentials even when the URL authority has
 # no userinfo. They are masked in diagnostic/config output, never in the live
 # client setting.
-_SENSITIVE_URL_QUERY_KEYS = frozenset({"api_key", "api-key", "token", "access_token"})
+_SENSITIVE_URL_QUERY_KEYS = frozenset({
+    "api_key",
+    "api-key",
+    "token",
+    "access_token",
+    "key",
+    "secret",
+    "password",
+    "pass",
+    "passwd",
+    "private_key",
+    "private-key",
+    "signing_key",
+    "client_id",
+    "client_secret",
+    "client-secret",
+    "subscription_key",
+    "subscription-key",
+    "api_key",
+    "x_api_key",
+    "x-api-key",
+    "authorization",
+    "auth",
+    "password",
+    "passwd",
+    "subscription_key",
+    "subscription-key",
+    "api_key",
+    "x_api_key",
+    "x-api-key",
+    "authorization",
+    "auth",
+    "password",
+    "passwd",
+    "subscription_key",
+    "subscription-key",
+    "api%5Fkey",
+    "access%5Ftoken",
+    "client%5Fsecret",
+    "subscription%5Fkey",
+})
 
 
 def mask_url_userinfo(url: str | None) -> str | None:
@@ -59,7 +97,7 @@ def mask_url_userinfo(url: str | None) -> str | None:
     has_userinfo = parts.username is not None or parts.password is not None
     query_chunks = parts.query.split("&") if parts.query else []
     sensitive_query = any(
-        chunk.partition("=")[0].strip().lower() in _SENSITIVE_URL_QUERY_KEYS
+        unquote_plus(chunk.partition("=")[0].strip()).lower() in _SENSITIVE_URL_QUERY_KEYS
         for chunk in query_chunks
     )
     if not has_userinfo and not sensitive_query:
@@ -69,7 +107,7 @@ def mask_url_userinfo(url: str | None) -> str | None:
         masked_chunks: list[str] = []
         for chunk in query_chunks:
             key, separator, _value = chunk.partition("=")
-            if key.strip().lower() in _SENSITIVE_URL_QUERY_KEYS:
+            if unquote_plus(key.strip()).lower() in _SENSITIVE_URL_QUERY_KEYS:
                 masked_chunks.append(f"{key}=[REDACTED]" if separator else key)
             else:
                 masked_chunks.append(chunk)

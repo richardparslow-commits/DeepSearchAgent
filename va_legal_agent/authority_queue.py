@@ -52,9 +52,13 @@ def _identity(case: CaseRecord) -> tuple[str, ...]:
     """Return a stable identity key for duplicate authority records."""
     opinion_id = (case.courtlistener_opinion_id or "").strip()
     if opinion_id:
-        # Multi-opinion clusters arrive as "101,102"; the first id names the
-        # same cluster as a bare "101", so dedupe on the leading id.
-        return ("opinion", opinion_id.split(",")[0])
+        # Multi-opinion clusters arrive as "101,102" or "102,101"; the sorted
+        # first id names the canonical cluster identifier.
+        sorted_ids = sorted(
+            [part.strip() for part in opinion_id.split(",") if part.strip()]
+        )
+        if sorted_ids:
+            return ("opinion", sorted_ids[0])
     citation = " ".join((case.citation or "").split()).casefold()
     date = (case.decision_date or "").strip()
     if citation and date:
@@ -105,7 +109,11 @@ def _check_matches_case(case: CaseRecord, check: CitatorCheck) -> bool:
         ]
         if value.strip()
     }
-    if case_ids & check_ids:
+    if case_ids and check_ids:
+        if case_ids & check_ids:
+            return True
+        return False
+    elif case_ids & check_ids:
         return True
 
     case_citations = {
@@ -121,13 +129,24 @@ def _check_matches_case(case: CaseRecord, check: CitatorCheck) -> bool:
         )
         if key
     }
-    if case_citations & check_citations:
+    if case_citations and check_citations:
+        if case_citations & check_citations:
+            return True
+        return False
+    elif case_citations & check_citations:
         return True
 
     case_url = (case.url or "").strip().casefold()
     check_url = (check.target_url or "").strip().casefold()
-    if case_url and check_url and case_url == check_url:
-        return True
+    if case_url and check_url:
+        if case_url == check_url:
+            return True
+        return False
+
+    case_date = (case.decision_date or "").strip()
+    check_date = (check.target_decision_date or "").strip()
+    if case_date and check_date and case_date != check_date:
+        return False
 
     case_title = _title_key(case.title)
     check_title = _title_key(check.target_case)

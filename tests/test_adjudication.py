@@ -453,3 +453,34 @@ def test_aud4_citator_queue_api_is_unchanged_by_vba_workflow_engine():
     assert len(queue.items) == 1
     assert queue.items[0].kind == "treatment_finding"
     assert queue.items[0].proposal is not None
+
+
+def test_item_id_stable_across_disposition_reclassification():
+    from va_legal_agent.adjudication import _item_id
+
+    finding = _treatment(url="https://example.test/same")
+    id1 = _item_id(finding, "Target Case", "30 Vet.App. 1", disposition="negative")
+    id2 = _item_id(finding, "Target Case", "30 Vet.App. 1", disposition="withheld")
+    id3 = _item_id(finding, "Target Case", "30 Vet.App. 1", disposition="gated")
+    assert id1 == id2 == id3
+
+
+def test_build_adjudication_queue_preserves_prior_decisions():
+    finding = _treatment()
+    check = _check(authoritative=[finding])
+    queue1 = build_adjudication_queue([check])
+    item_id = queue1.items[0].id
+
+    # Adjudicate item in queue1
+    queue1.items[0].review.status = "overrule_confirmed"
+    queue1.items[0].review.reviewer = "senior_adjudicator"
+    queue1.items[0].review.rationale = "Verified against official reporter"
+
+    # Rebuild queue with prior
+    queue2 = build_adjudication_queue([check], prior=queue1)
+    assert len(queue2.items) == 1
+    assert queue2.items[0].id == item_id
+    assert queue2.items[0].review.status == "overrule_confirmed"
+    assert queue2.items[0].review.reviewer == "senior_adjudicator"
+    assert queue2.items[0].review.rationale == "Verified against official reporter"
+

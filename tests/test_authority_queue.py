@@ -692,3 +692,37 @@ def test_annotate_entry_dedups_findings_reasons_and_gated_without_reason():
     assert len(gated_reasons) == 1
     assert "; gate:" not in gated_reasons[0]
 
+
+
+def test_identity_sorts_multi_opinion_ids():
+    from va_legal_agent.authority_queue import _identity
+
+    case1 = _case("Test Case A", opinion_id="101,102")
+    case2 = _case("Test Case B", opinion_id="102,101")
+    assert _identity(case1) == _identity(case2)
+
+
+def test_check_matches_case_rejects_conflicting_identifiers():
+    from va_legal_agent.authority_queue import _check_matches_case
+
+    # Same title and court, but conflicting opinion IDs
+    case = _case("Smith v. Wilkie", opinion_id="111")
+    check = _check("Smith v. Wilkie", opinion_id="222")
+    assert not _check_matches_case(case, check)
+
+    # Same title and court, but conflicting citations
+    case = _case("Smith v. Wilkie", citation="30 Vet.App. 123")
+    check = _check("Smith v. Wilkie", citation="35 Vet.App. 456")
+    assert not _check_matches_case(case, check)
+
+    # Same title and court, but conflicting URLs
+    case = _case("Smith v. Wilkie", url="https://example.test/case1")
+    check = _check("Smith v. Wilkie", url="https://example.test/case2")
+    assert not _check_matches_case(case, check)
+
+    # Same title and court, but conflicting decision dates
+    case = _case("Smith v. Wilkie", date="2018-01-01")
+    check = _check("Smith v. Wilkie")
+    check.target_decision_date = "2021-01-01"
+    assert not _check_matches_case(case, check)
+

@@ -1639,6 +1639,29 @@ def test_auto_run_with_dry_run_is_usage_error(capsys, monkeypatch):
     assert exc.value.code != 0
 
 
+def test_auto_run_rejects_start_at_and_only_blocked(capsys, monkeypatch):
+    """--start-at and --only-blocked are not allowed with --auto-run."""
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--start-at", "1", "tinnitus"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+    _, err = capsys.readouterr()
+    assert "--start-at and --only-blocked only apply to --batch-dry-run" in err
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["va-legal-agent", "--auto-run", "--only-blocked", "tinnitus"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code != 0
+    _, err = capsys.readouterr()
+    assert "--start-at and --only-blocked only apply to --batch-dry-run" in err
+
+
 def test_dry_run_output_file_write_failure(capsys, monkeypatch, tmp_path):
     """An unwritable --output-file is a usage error for --dry-run."""
     monkeypatch.setattr(

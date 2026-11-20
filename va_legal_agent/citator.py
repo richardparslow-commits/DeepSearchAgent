@@ -70,7 +70,7 @@ from .providers import (
     _positive_id,
 )
 from .search import SearchError, classify_search_error
-from .topics import AUTHORITY_WEIGHTS
+from .topics import AUTHORITY_WEIGHTS, COURT_SUPREME
 
 # Ranking requires one metadata read per candidate, so the candidate pool is
 # deliberately bounded. Four times the review cap (at least 20, at most one
@@ -1810,18 +1810,33 @@ def extract_reaffirmance_signals(
     )
 
 
-def _binding_for_courts(target_court: str, citing_court: str) -> bool | None:
+_EN_BANC_RE = re.compile(r"\ben\s+banc\b", re.IGNORECASE)
+
+
+def _binding_for_courts(
+    target_court: str, citing_court: str, citing_en_banc: bool = False
+) -> bool | None:
     """Whether a citing court outranks (or matches) the target court."""
     target_weight = AUTHORITY_WEIGHTS.get(target_court, 0)
     citing_weight = AUTHORITY_WEIGHTS.get(citing_court, 0)
     if not target_weight or not citing_weight:
         return None
-    return citing_weight >= target_weight
+    if citing_weight > target_weight:
+        return True
+    if citing_weight < target_weight:
+        return False
+    if target_court == COURT_SUPREME or citing_en_banc:
+        return True
+    return None
 
 
-def _binding_for(target: _Target, citing_court: str) -> bool | None:
+def _binding_for(
+    target: _Target, citing_court: str, citing_en_banc: bool = False
+) -> bool | None:
     """Whether a citing court outranks (or matches) the target court."""
-    return _binding_for_courts(target.case.court, citing_court)
+    return _binding_for_courts(
+        target.case.court, citing_court, citing_en_banc=citing_en_banc
+    )
 
 
 def _binding_class(value: bool | None) -> str:
@@ -2174,6 +2189,8 @@ def _review_candidates(
             gaps.append(_coverage_gap("citing_date_missing", detail))
         elif not latest or citing_date > latest:
             latest = citing_date
+        header_sample = f"{summary.case_name}\n{text[:3000]}"
+        citing_en_banc = bool(_EN_BANC_RE.search(header_sample))
         for finding in extract_negative_treatments(
             text,
             target.case_name,
@@ -2191,7 +2208,7 @@ def _review_candidates(
                 source_cluster_id=summary.cluster_id,
                 treatment=finding.treatment,
                 scope=finding.scope,
-                binding=_binding_for(target, citing_court),
+                binding=_binding_for(target, citing_court, citing_en_banc=citing_en_banc),
                 confidence=finding.confidence,
                 opinion_type=opinion_type,
                 opinion_role=opinion_role,
@@ -2241,7 +2258,7 @@ def _review_candidates(
                 source_cluster_id=summary.cluster_id,
                 treatment=finding.treatment,
                 scope=finding.scope,
-                binding=_binding_for(target, citing_court),
+                binding=_binding_for(target, citing_court, citing_en_banc=citing_en_banc),
                 confidence=finding.confidence,
                 opinion_type=opinion_type,
                 opinion_role=opinion_role,
@@ -3674,6 +3691,9 @@ def check_case(
 
     binding_treatments = [
         treatment for treatment in treatments if treatment.binding is True
+    ]
+    persuasive_treatments = [
+        treatment for treatment in treatments if treatment.binding is False
     ]
     persuasive_treatments = [
         treatment for treatment in treatments if treatment.binding is False

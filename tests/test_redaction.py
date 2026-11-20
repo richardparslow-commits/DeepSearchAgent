@@ -343,3 +343,11 @@ def test_sanitize_exception_scrubs_every_message_attribute_and_notes():
     assert secret not in exc.__notes__[0]
     assert exc.__notes__[1] == 42
 
+def test_redact_secrets_double_encoded_query_param():
+    from va_legal_agent.redaction import redact_secrets
+
+    assert redact_secrets("https://api.example.com?api%255Fkey=secret123") == (
+        "https://api.example.com?api%255Fkey=[REDACTED]"
+    )
+
+

@@ -2408,9 +2408,9 @@ def _auto_run(
                         "traceback": _format_exception(exc),
                     }
             else:
-                # Keep the first non-run verdict for issues still pending
-                # (deferred/abort); a later successful pass overwrites it.
-                results.setdefault(issue, {"issue": issue, "verdict": verdict})
+                # Update the pending verdict (deferred/abort); a later successful
+                # pass overwrites it.
+                results[issue] = {"issue": issue, "verdict": verdict}
                 next_pending.append(issue)
                 next_verdicts[issue] = verdict
         # Defensive: a planner row is expected for every pending issue. If one
@@ -2841,7 +2841,7 @@ def main() -> None:
         print_settings()
         return
 
-    if (args.start_at is not None or args.only_blocked) and not (args.batch_dry_run or args.auto_run):
+    if (args.start_at is not None or args.only_blocked) and not args.batch_dry_run:
         parser.error("--start-at and --only-blocked only apply to --batch-dry-run.")
 
     if not args.issue and not (args.batch_dry_run or args.auto_run):
