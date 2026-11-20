@@ -150,7 +150,9 @@ def test_verify_federal_register_part_reports_latest_rule(monkeypatch):
     captured = {}
 
     def fake_get(url, params=None, headers=None, timeout=None, **kwargs):
-        captured.update(url=url, params=params)
+        captured.update(
+            url=url, params=params, headers=headers, timeout=timeout, kwargs=kwargs
+        )
         return FakeResponse(
             payload={
                 "results": [
@@ -167,10 +169,35 @@ def test_verify_federal_register_part_reports_latest_rule(monkeypatch):
 
     check = auth.verify_federal_register_part("3", today=date(2026, 11, 14))
 
+    assert check.authority == "38 C.F.R. Part 3"
+    assert check.source == "Federal Register"
     assert check.status == "verified"
-    assert "Service Connection Updates" in check.detail
-    assert captured["params"]["conditions[cfr][part]"] == "3"
-    assert captured["params"]["conditions[publication_date][gte]"] == "2025-11-14"
+    assert (
+        check.detail == "Latest rule (2026-10-01): Service Connection Updates"
+    )
+    assert check.url == "https://www.federalregister.gov/d/2026-12345"
+
+    assert (
+        captured["url"]
+        == "https://www.federalregister.gov/api/v1/documents.json"
+    )
+    assert captured["headers"] == auth._headers()
+    assert captured["timeout"] == auth._timeout()
+    assert captured["params"] == {
+        "conditions[cfr][title]": "38",
+        "conditions[cfr][part]": "3",
+        "conditions[type][]": "RULE",
+        "conditions[publication_date][gte]": "2025-11-14",
+        "order": "newest",
+        "per_page": 1,
+        "fields[]": [
+            "document_number",
+            "title",
+            "publication_date",
+            "html_url",
+            "type",
+        ],
+    }
 
 
 def test_verify_federal_register_part_no_recent_documents(monkeypatch):
@@ -182,7 +209,45 @@ def test_verify_federal_register_part_no_recent_documents(monkeypatch):
 
     check = auth.verify_federal_register_part("3", today=date(2026, 11, 14))
 
+    assert check.authority == "38 C.F.R. Part 3"
+    assert check.source == "Federal Register"
     assert check.status == "no_recent_documents"
+    assert (
+        check.detail
+        == "No rule affecting 38 C.F.R. Part 3 was published in the last 365 days."
+    )
+    assert check.url == "https://www.federalregister.gov/"
+
+
+def test_verify_federal_register_part_defaults_today_and_handles_missing_fields(monkeypatch):
+    captured_params = {}
+
+    def fake_get(url, params=None, **kwargs):
+        captured_params.update(params or {})
+        return FakeResponse(
+            payload={
+                "results": [
+                    # Non-dict rows filtered out
+                    "not-a-dict",
+                    123,
+                    # Dict with missing title, date, url
+                    {},
+                ]
+            }
+        )
+
+    monkeypatch.setattr(auth.requests, "get", fake_get)
+
+    # Calling without `today` exercises the `today or datetime.now(timezone.utc).date()` branch
+    check = auth.verify_federal_register_part("4")
+
+    assert check.authority == "38 C.F.R. Part 4"
+    assert check.status == "verified"
+    assert check.detail == "Latest rule (): Untitled rule"
+    assert check.url == "https://www.federalregister.gov/"
+    assert captured_params["conditions[cfr][part]"] == "4"
+    assert captured_params["conditions[cfr][title]"] == "38"
+    assert captured_params["conditions[type][]"] == "RULE"
 
 
 def test_govinfo_search_requires_key(monkeypatch):
@@ -689,8 +754,11 @@ def test_verify_federal_register_part_reports_request_failure(monkeypatch):
 
     check = auth.verify_federal_register_part("3", today=date(2026, 11, 14))
 
+    assert check.authority == "38 C.F.R. Part 3"
+    assert check.source == "Federal Register"
     assert check.status == "unavailable"
     assert "FR down" in check.detail
+    assert check.url == "https://www.federalregister.gov/"
 
 
 def test_govinfo_search_wraps_request_errors(monkeypatch):
