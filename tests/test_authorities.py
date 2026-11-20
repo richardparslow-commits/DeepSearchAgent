@@ -79,16 +79,55 @@ def test_validate_cavc_panel_cases_conflict_confirmation_and_not_listed(monkeypa
     assert confirmed.cavc_panel_status == "verified_nonprecedential"
     assert unlisted.cavc_panel_status == "not_listed"
     assert [check.status for check in checks] == ["conflict", "verified", "not_listed"]
-    assert "Panel Opinions" in checks[0].detail
+
+    assert checks[0].authority == "CAVC docket 24-1234"
+    assert checks[0].source == "CAVC"
+    assert checks[0].status == "conflict"
+    assert (
+        checks[0].detail
+        == "The docket appears on the official Panel Opinions list, "
+        "but the decision carries a Rule 30(a) non-citation marker."
+    )
+    assert checks[0].url == "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
+
+    assert checks[1].authority == "CAVC docket 24-9999"
+    assert checks[1].source == "CAVC"
+    assert checks[1].status == "verified"
+    assert (
+        checks[1].detail
+        == "Rule 30(a) marker confirmed: the docket is not on the "
+        "official Panel Opinions list, so it is a single-judge "
+        "disposition and not citable as precedent."
+    )
+    assert checks[1].url == "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
+
+    assert checks[2].authority == "CAVC docket 24-5555"
+    assert checks[2].source == "CAVC"
+    assert checks[2].status == "not_listed"
+    assert (
+        checks[2].detail
+        == "The docket was not found on the official Panel Opinions "
+        "list; panel status was not asserted."
+    )
+    assert checks[2].url == "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
 
 
 def test_validate_cavc_panel_cases_panel_listed_sets_unknown_precedential(monkeypatch):
     monkeypatch.setattr(auth, "fetch_cavc_panel_dockets", lambda: {"24-1234"})
-    case = _case(precedential=None, rule_30a=False)
+    case = _case(docket="24-1234", precedential=None, rule_30a=False)
 
     checks = auth.validate_cavc_panel_cases([case])
 
+    assert len(checks) == 1
+    assert checks[0].authority == "CAVC docket 24-1234"
+    assert checks[0].source == "CAVC"
     assert checks[0].status == "verified"
+    assert (
+        checks[0].detail
+        == "The docket appears on the official Panel Opinions list "
+        "(panel or full-court opinion)."
+    )
+    assert checks[0].url == "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
     assert case.precedential is True
     assert case.cavc_panel_status == "panel"
 
@@ -102,8 +141,11 @@ def test_validate_cavc_panel_cases_unavailable(monkeypatch):
     checks = auth.validate_cavc_panel_cases([_case()])
 
     assert len(checks) == 1
+    assert checks[0].authority == "CAVC Panel Opinions list"
+    assert checks[0].source == "CAVC"
     assert checks[0].status == "unavailable"
-    assert "list down" in checks[0].detail
+    assert checks[0].detail == "list down"
+    assert checks[0].url == "https://www.uscourts.cavc.gov/opinions.php?fullsite=yes"
 
 
 def test_extract_cfr_sections_is_unique_and_ordered():
@@ -529,7 +571,10 @@ def test_validate_cavc_panel_cases_without_cavc_cases_does_not_fetch(monkeypatch
 def test_validate_cavc_panel_cases_skips_a_case_without_a_docket(monkeypatch):
     monkeypatch.setattr(auth, "fetch_cavc_panel_dockets", lambda: {"24-1234"})
 
-    assert auth.validate_cavc_panel_cases([_case(docket="")]) == []
+    # Case without docket is skipped via continue, but subsequent case is still processed
+    checks = auth.validate_cavc_panel_cases([_case(docket=""), _case(docket="24-1234")])
+    assert len(checks) == 1
+    assert checks[0].authority == "CAVC docket 24-1234"
 
 
 def test_validate_cavc_panel_cases_panel_with_known_precedential_status(monkeypatch):
