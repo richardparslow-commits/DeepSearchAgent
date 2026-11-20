@@ -65,6 +65,153 @@ def test_parse_cavc_panel_dockets_ignores_page_dates():
     assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
 
 
+def test_parse_cavc_panel_dockets_requires_documents_href():
+    """Only anchors with href containing 'documents/' are scanned."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234.pdf">24-1234</a></td>'
+        '<td><a href="/other/Case_25-5678.pdf">25-5678</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_case_insensitive_documents():
+    """The documents/ check is case-insensitive."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/DOCUMENTS/Case_24-1234.pdf">24-1234</a></td>'
+        '<td><a href="/Documents/Case_25-5678.pdf">25-5678</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234", "25-5678"}
+
+
+def test_parse_cavc_panel_dockets_requires_anchor_tag():
+    """Only <a> tags are scanned, not other elements."""
+    html = (
+        '<table><tr>'
+        '<td><span class="docket">24-1234</span></td>'
+        '<td><a href="/documents/Case_25-5678.pdf">25-5678</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"25-5678"}
+
+
+def test_parse_cavc_panel_dockets_requires_href_attribute():
+    """Anchors without href attribute are skipped."""
+    html = (
+        '<table><tr>'
+        '<td><a>24-1234</a></td>'
+        '<td><a href="/documents/Case_25-5678.pdf">25-5678</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"25-5678"}
+
+
+def test_parse_cavc_panel_dockets_docket_format_variants():
+    """Various docket formats are correctly normalized."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234.pdf">24-1234</a></td>'
+        '<td><a href="/documents/Case_24-0123.pdf">24-0123</a></td>'
+        '<td><a href="/documents/Case_24-00123.pdf">24-00123</a></td>'
+        '<td><a href="/documents/Case_05-99999.pdf">05-99999</a></td>'
+        '</tr></table>'
+    )
+    # Leading zeros are stripped: 24-0123 -> 24-123, 24-00123 -> 24-123
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234", "24-123", "05-99999"}
+
+
+def test_parse_cavc_panel_dockets_rule_30a_marker():
+    """(E) marker is stripped during normalization."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234(E).pdf">24-1234(E)</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_regex_boundary_checks():
+    """Regex boundaries prevent partial matches in longer numbers."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_123-45678.pdf">123-45678</a></td>'
+        '<td><a href="/documents/Case_12-34567.pdf">12-34567</a></td>'
+        '<td><a href="/documents/Case_99-123456.pdf">99-123456</a></td>'  # 6 digits - too many
+        '</tr></table>'
+    )
+    # Only 2-digit prefix and 3-5 digit suffix allowed
+    # "123-45678" has 3 digits before dash, so negative lookbehind prevents match
+    # "12-34567" matches (2 digits, 5 digits)
+    # "99-123456" has 6 digits suffix, too many
+    assert auth.parse_cavc_panel_dockets(html) == {"12-34567"}
+
+
+def test_parse_cavc_panel_dockets_empty_input():
+    """Empty or None input returns empty set."""
+    assert auth.parse_cavc_panel_dockets("") == set()
+    assert auth.parse_cavc_panel_dockets(None) == set()
+
+
+def test_parse_cavc_panel_dockets_empty_html():
+    """Empty HTML returns empty set."""
+    assert auth.parse_cavc_panel_dockets("<html></html>") == set()
+    assert auth.parse_cavc_panel_dockets("<table></table>") == set()
+    assert auth.parse_cavc_panel_dockets("<a href='/documents/test.pdf'></a>") == set()
+
+
+def test_parse_cavc_panel_dockets_malformed_html():
+    """Malformed HTML should not crash and returns empty set."""
+    html = "<table><tr><td><a href='/documents/test.pdf'>24-1234</td></tr></table>"
+    # BeautifulSoup is forgiving
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_deduplication():
+    """Duplicate dockets are deduplicated."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234.pdf">24-1234</a></td>'
+        '<td><a href="/documents/Case_24-1234.pdf">24-1234</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_discard_empty_string():
+    """Empty strings are discarded from results."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234.pdf">24-1234</a></td>'
+        '<td><a href="/documents/Case_.pdf"></a></td>'
+        '</tr></table>'
+    )
+    # Empty string from no match should be discarded
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_regex_group_capture():
+    """Regex groups are correctly captured: group(1) is 2-digit prefix, group(2) is suffix."""
+    # The regex has two capture groups: (\d{2}) and (\d{3,5})
+    # Input "24-1234" -> group(1)="24", group(2)="1234"
+    # Result: "24-1234"
+    html = '<a href="/documents/Case_24-1234.pdf">24-1234</a>'
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
+def test_parse_cavc_panel_dockets_e_marker_case_insensitive():
+    """(E) and (e) markers are both handled."""
+    html = (
+        '<table><tr>'
+        '<td><a href="/documents/Case_24-1234(e).pdf">24-1234(e)</a></td>'
+        '<td><a href="/documents/Case_24-1234(E).pdf">24-1234(E)</a></td>'
+        '</tr></table>'
+    )
+    assert auth.parse_cavc_panel_dockets(html) == {"24-1234"}
+
+
 def test_validate_cavc_panel_cases_conflict_confirmation_and_not_listed(monkeypatch):
     monkeypatch.setattr(
         auth, "fetch_cavc_panel_dockets", lambda: {"24-1234", "24-5678"}
